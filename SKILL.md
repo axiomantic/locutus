@@ -35,9 +35,16 @@ A 100% prompt-based protocol and instruction set that turns any Redis instance i
 Before executing any commands, resolve your Redis connection string and configuration:
 
 ```bash
-# 1. Resolve REDIS_URL from environment, .env, or default to localhost
+# 1. Resolve REDIS_URL with precedence:
+#    a. Environment variable REDIS_URL
+#    b. Override in AGENTS.md (e.g., "redis_url: ..." or "REDIS_URL=...")
+#    c. Local .env file
+#    d. ~/.redis_a2a_env
+#    e. Default to local/Docker container: redis://127.0.0.1:6379
 if [ -z "$REDIS_URL" ]; then
-  if [ -f .env ] && grep -q '^REDIS_URL=' .env; then
+  if [ -f AGENTS.md ] && grep -Ei '^(redis_url|REDIS_URL)[:=]' AGENTS.md >/dev/null 2>&1; then
+    export REDIS_URL=$(grep -Ei '^(redis_url|REDIS_URL)[:=]' AGENTS.md | head -n 1 | sed -E 's/^[^:=]+[:=][[:space:]]*//' | tr -d '"' | tr -d "'")
+  elif [ -f .env ] && grep -q '^REDIS_URL=' .env; then
     export REDIS_URL=$(grep '^REDIS_URL=' .env | cut -d '=' -f2- | tr -d '"' | tr -d "'")
   elif [ -f ~/.redis_a2a_env ]; then
     source ~/.redis_a2a_env
@@ -48,13 +55,40 @@ fi
 
 # 2. Key prefix (defaults to "a2a:")
 export A2A_PREFIX="${A2A_PREFIX:-a2a:}"
+
+# 3. Docker Auto-Start Check:
+# If connecting to localhost and Redis is not responding, ensure the a2a-redis container is running
+export A2A_CONTAINER="${A2A_CONTAINER:-a2a-redis}"
+if [[ "$REDIS_URL" == *"127.0.0.1"* || "$REDIS_URL" == *"localhost"* ]]; then
+  if command -v docker >/dev/null 2>&1; then
+    if [ -z "$(docker ps -q -f name=^/${A2A_CONTAINER}$)" ]; then
+      if [ "$(docker ps -aq -f name=^/${A2A_CONTAINER}$)" ]; then
+        echo "Starting existing ${A2A_CONTAINER} container..."
+        docker start "$A2A_CONTAINER"
+      else
+        echo "Launching new ${A2A_CONTAINER} container..."
+        docker run -d --name "$A2A_CONTAINER" -p 6379:6379 redis:alpine
+      fi
+      sleep 1
+    fi
+  fi
+fi
+
+# 4. Host CLI check: If redis-cli is not installed on the host, route via Docker
+if ! command -v redis-cli >/dev/null 2>&1; then
+  if command -v docker >/dev/null 2>&1 && [ "$(docker ps -q -f name=^/${A2A_CONTAINER}$)" ]; then
+    redis-cli() {
+      docker exec -i "$A2A_CONTAINER" redis-cli "$@"
+    }
+  fi
+fi
 ```
 
 ---
 
 ## 3. The Embedded Lua Scripts
 
-Use these exact Lua snippets inside `redis-cli -u "$REDIS_URL" EVAL "<LUA>" 0 ...`.
+Use these exact Lua snippets inside `redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL "<LUA>" 0 ...`.
 
 ### Script A: Registration & Heartbeat Refresh (`LUA_REGISTER`)
 Registers agent name, assigns comma-separated tags, records metadata, and sets an expiring heartbeat.
@@ -226,7 +260,7 @@ Execute Script A to claim your name, and Script D to drain any pre-existing mess
 
 ```bash
 # Register
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,n,t,ttl,now = ARGV[1],ARGV[2],ARGV[3] or "",tonumber(ARGV[4]) or 150,redis.call("TIME")[1]
 redis.call("SET", p.."heartbeat:"..n, "1", "EX", ttl)
 redis.call("SADD", p.."active_agents", n)
@@ -239,7 +273,7 @@ return "OK"
 ' 0 "$A2A_PREFIX" "$MY_NAME" "$MY_TAGS" 150
 
 # Catch-up / Drain any existing backlog
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,n,c = ARGV[1],ARGV[2],tonumber(ARGV[3]) or 50
 local res = {}
 for i=1,c do
@@ -257,7 +291,7 @@ return res
 Launch a background command that blocks until a message arrives or timeout expires:
 
 ```bash
-redis-cli -u "$REDIS_URL" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
 ```
 
 - **In assistants with background completion notifications (e.g., Claude Code, Antigravity)**:
@@ -267,11 +301,11 @@ redis-cli -u "$REDIS_URL" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
   - **Case A: Output is `(nil)` (90s Timeout)**:
     - Refresh heartbeat:
       ```bash
-      redis-cli -u "$REDIS_URL" SET "${A2A_PREFIX}heartbeat:${MY_NAME}" 1 EX 150
+      redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" SET "${A2A_PREFIX}heartbeat:${MY_NAME}" 1 EX 150
       ```
     - Immediately re-arm:
       ```bash
-      redis-cli -u "$REDIS_URL" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+      redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
       ```
   - **Case B: Output contains a message**:
     - `BRPOP` returns two lines: `1) "a2a:inbox:<name>"` and `2) "{\"id\": ...}"`.
@@ -280,7 +314,7 @@ redis-cli -u "$REDIS_URL" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
     - If `type` is `task` or `query`, send a reply back to `from`.
     - Re-arm the listener immediately:
       ```bash
-      redis-cli -u "$REDIS_URL" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+      redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
       ```
 
 ---
@@ -301,7 +335,7 @@ MSG_JSON='{
   "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
 }'
 
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,r,m,ttl = ARGV[1],ARGV[2],ARGV[3],tonumber(ARGV[4]) or 604800
 redis.call("LPUSH", p.."inbox:"..r, m)
 redis.call("EXPIRE", p.."inbox:"..r, ttl)
@@ -312,7 +346,7 @@ return "OK"
 ### Sending Multicast (O2M by Tag or `*`)
 ```bash
 # Send to all agents with tag "qa" (or "*" for all agents)
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,tag,m = ARGV[1],ARGV[2],ARGV[3]
 local targets = (tag == "*") and redis.call("SMEMBERS", p.."active_agents") or redis.call("SMEMBERS", p.."tag:"..tag)
 local count = 0
@@ -345,7 +379,7 @@ REPLY_JSON='{
   "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
 }'
 
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,r,m = ARGV[1],ARGV[2],ARGV[3]
 redis.call("LPUSH", p.."inbox:"..r, m)
 redis.call("EXPIRE", p.."inbox:"..r, 604800)
@@ -360,7 +394,7 @@ return "OK"
 To see who is online and what tags they handle:
 
 ```bash
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p = ARGV[1]
 local agents = redis.call("SMEMBERS", p.."active_agents")
 local out = {}
@@ -380,7 +414,7 @@ return out
 When the operator ends the session or retires your agent:
 
 ```bash
-redis-cli -u "$REDIS_URL" EVAL '
+redis-cli -u "${REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
 local p,n = ARGV[1],ARGV[2]
 local t = redis.call("HGET", p.."agent:"..n, "tags") or ""
 redis.call("DEL", p.."heartbeat:"..n)
