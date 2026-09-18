@@ -12,7 +12,8 @@ import os
 import unittest
 
 A2A_REDIS_URL = os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
-PREFIX = "a2a_test:"
+A2A_REDIS_PREFIX = os.environ.get("A2A_REDIS_PREFIX", os.environ.get("A2A_PREFIX", "a2a_test:"))
+PREFIX = A2A_REDIS_PREFIX
 
 # Lua Scripts extracted directly from SKILL.md
 LUA_REGISTER = """

@@ -12,14 +12,14 @@ A 100% prompt-based protocol and instruction set that turns any Redis instance i
 ## 1. Quick Reference & Core Invariants
 
 1. **Zero External Glue**: You do not write or execute helper scripts from disk. You execute standard `redis-cli` commands with embedded Lua scripts provided directly in this document.
-2. **Namespace Isolation**: All keys are prefixed with `$A2A_PREFIX` (default: `a2a:`). Never touch or query keys outside this prefix to avoid clobbering existing Redis usage.
+2. **Namespace Isolation**: All keys are prefixed with `$A2A_REDIS_PREFIX` (default: `a2a:`). Never touch or query keys outside this prefix to avoid clobbering existing Redis usage.
 3. **Queue Architecture (Fan-Out on Send)**:
-   - Every agent listens to exactly **one** primitive: `${A2A_PREFIX}inbox:<my_name>`.
+   - Every agent listens to exactly **one** primitive: `${A2A_REDIS_PREFIX}inbox:<my_name>`.
    - **Direct (O2O)**: Pushed straight to the recipient's inbox.
    - **Multicast (O2M)**: The sender's Lua script queries the tag roster, prunes expired agents, and fans out directly into each recipient's inbox.
    - **Offline Queuing**: Because messages are kept in the recipient's inbox list, any offline or disconnected agent receives its full backlog upon startup/reconnect.
 4. **Heartbeat Cadence via Listener Timeout**:
-   - The background listener runs `BRPOP ${A2A_PREFIX}inbox:<my_name> 90`.
+   - The background listener runs `BRPOP ${A2A_REDIS_PREFIX}inbox:<my_name> 90`.
    - When idle, it exits every 90 seconds. The assistant refreshes its heartbeat (`EX 150`) and immediately re-arms `BRPOP`.
    - When a message arrives, `BRPOP` exits immediately with the payload.
    - **Result**: Zero CPU, zero polling tokens while idle, with an automatic liveness heartbeat.
@@ -54,10 +54,17 @@ if [ -z "$A2A_REDIS_URL" ]; then
     export A2A_REDIS_URL="${A2A_REDIS_URL:-$REDIS_URL}"
   fi
 fi
-export A2A_REDIS_URL="${A2A_REDIS_URL:-redis://127.0.0.1:6379}"
-
 # 2. Key prefix (defaults to "a2a:")
-export A2A_PREFIX="${A2A_PREFIX:-a2a:}"
+if [ -z "$A2A_REDIS_PREFIX" ]; then
+  if [ -f AGENTS.md ] && grep -Ei '^(a2a_redis_prefix|A2A_REDIS_PREFIX)[:=]' AGENTS.md >/dev/null 2>&1; then
+    export A2A_REDIS_PREFIX=$(grep -Ei '^(a2a_redis_prefix|A2A_REDIS_PREFIX)[:=]' AGENTS.md | head -n 1 | sed -E 's/^[^:=]+[:=][[:space:]]*//' | tr -d '"' | tr -d "'")
+  elif [ -f .env ] && grep -q '^A2A_REDIS_PREFIX=' .env; then
+    export A2A_REDIS_PREFIX=$(grep '^A2A_REDIS_PREFIX=' .env | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+  elif [ -n "$A2A_PREFIX" ]; then
+    export A2A_REDIS_PREFIX="$A2A_PREFIX"
+  fi
+fi
+export A2A_REDIS_PREFIX="${A2A_REDIS_PREFIX:-a2a:}"
 
 # 3. Docker Auto-Start Check:
 # If connecting to localhost and Redis is not responding, ensure the a2a-redis container is running
@@ -273,7 +280,7 @@ for tag in string.gmatch(t, "([^,]+)") do
     if tr ~= "" then redis.call("SADD", p.."tag:"..tr, n) end
 end
 return "OK"
-' 0 "$A2A_PREFIX" "$MY_NAME" "$MY_TAGS" 150
+' 0 "$A2A_REDIS_PREFIX" "$MY_NAME" "$MY_TAGS" 150
 
 # Catch-up / Drain any existing backlog
 redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
@@ -285,7 +292,7 @@ for i=1,c do
     table.insert(res, m)
 end
 return res
-' 0 "$A2A_PREFIX" "$MY_NAME" 50
+' 0 "$A2A_REDIS_PREFIX" "$MY_NAME" 50
 ```
 
 *If any messages are returned from the drain command, process them immediately!*
@@ -294,7 +301,7 @@ return res
 Launch a background command that blocks until a message arrives or timeout expires:
 
 ```bash
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_REDIS_PREFIX}inbox:${MY_NAME}" 90
 ```
 
 - **In assistants with background completion notifications (e.g., Claude Code, Antigravity)**:
@@ -304,11 +311,11 @@ redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbo
   - **Case A: Output is `(nil)` (90s Timeout)**:
     - Refresh heartbeat:
       ```bash
-      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" SET "${A2A_PREFIX}heartbeat:${MY_NAME}" 1 EX 150
+      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" SET "${A2A_REDIS_PREFIX}heartbeat:${MY_NAME}" 1 EX 150
       ```
     - Immediately re-arm:
       ```bash
-      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_REDIS_PREFIX}inbox:${MY_NAME}" 90
       ```
   - **Case B: Output contains a message**:
     - `BRPOP` returns two lines: `1) "a2a:inbox:<name>"` and `2) "{\"id\": ...}"`.
@@ -317,7 +324,7 @@ redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbo
     - If `type` is `task` or `query`, send a reply back to `from`.
     - Re-arm the listener immediately:
       ```bash
-      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_PREFIX}inbox:${MY_NAME}" 90
+      redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${A2A_REDIS_PREFIX}inbox:${MY_NAME}" 90
       ```
 
 ---
@@ -343,7 +350,7 @@ local p,r,m,ttl = ARGV[1],ARGV[2],ARGV[3],tonumber(ARGV[4]) or 604800
 redis.call("LPUSH", p.."inbox:"..r, m)
 redis.call("EXPIRE", p.."inbox:"..r, ttl)
 return "OK"
-' 0 "$A2A_PREFIX" "bob" "$MSG_JSON" 604800
+' 0 "$A2A_REDIS_PREFIX" "bob" "$MSG_JSON" 604800
 ```
 
 ### Sending Multicast (O2M by Tag or `*`)
@@ -363,7 +370,7 @@ for _, a in ipairs(targets) do
     end
 end
 return count
-' 0 "$A2A_PREFIX" "qa" "$MSG_JSON"
+' 0 "$A2A_REDIS_PREFIX" "qa" "$MSG_JSON"
 ```
 
 ### Replying to a Message
@@ -387,7 +394,7 @@ local p,r,m = ARGV[1],ARGV[2],ARGV[3]
 redis.call("LPUSH", p.."inbox:"..r, m)
 redis.call("EXPIRE", p.."inbox:"..r, 604800)
 return "OK"
-' 0 "$A2A_PREFIX" "$ORIGINAL_FROM" "$REPLY_JSON"
+' 0 "$A2A_REDIS_PREFIX" "$ORIGINAL_FROM" "$REPLY_JSON"
 ```
 
 ---
@@ -407,7 +414,7 @@ for _, a in ipairs(agents) do
     table.insert(out, a.." | alive="..tostring(alive).." | tags="..tags)
 end
 return out
-' 0 "$A2A_PREFIX"
+' 0 "$A2A_REDIS_PREFIX"
 ```
 
 ---
@@ -428,7 +435,7 @@ for tag in string.gmatch(t, "([^,]+)") do
     if tr ~= "" then redis.call("SREM", p.."tag:"..tr, n) end
 end
 return "OK"
-' 0 "$A2A_PREFIX" "$MY_NAME"
+' 0 "$A2A_REDIS_PREFIX" "$MY_NAME"
 ```
 
 ---

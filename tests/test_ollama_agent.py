@@ -47,6 +47,7 @@ def run_bash(cmd: str) -> str:
         env = dict(os.environ)
         env.setdefault("A2A_REDIS_URL", "redis://127.0.0.1:6379")
         env.setdefault("REDIS_URL", "redis://127.0.0.1:6379")
+        env.setdefault("A2A_REDIS_PREFIX", "a2a:")
         env.setdefault("A2A_PREFIX", "a2a:")
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
         output = (res.stdout + res.stderr).strip()
