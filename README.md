@@ -47,10 +47,10 @@ aider --read SKILL.md
 
 ## Getting Started
 
-### 1. Set Redis URL
-Ensure `REDIS_URL` is set in your shell, `.env`, or `~/.redis_a2a_env`:
+### 1. Set Redis URL (Optional)
+Defaults to `redis://127.0.0.1:6379`. To override, set `A2A_REDIS_URL` in your shell, `AGENTS.md`, `.env`, or `~/.redis_a2a_env`:
 ```bash
-export REDIS_URL="redis://127.0.0.1:6379"
+export A2A_REDIS_URL="redis://127.0.0.1:6379"
 ```
 
 ### 2. Instruct Your Assistant

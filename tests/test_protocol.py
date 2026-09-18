@@ -8,9 +8,10 @@ and backlog batch draining directly using redis-cli commands.
 import json
 import subprocess
 import time
+import os
 import unittest
 
-REDIS_URL = "redis://127.0.0.1:6379"
+A2A_REDIS_URL = os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
 PREFIX = "a2a_test:"
 
 # Lua Scripts extracted directly from SKILL.md
@@ -120,12 +121,12 @@ return "OK"
 """
 
 def run_redis(*args):
-    cmd = ["redis-cli", "-u", REDIS_URL] + list(args)
+    cmd = ["redis-cli", "-u", A2A_REDIS_URL] + list(args)
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
 def run_eval(script, numkeys, *args):
-    cmd = ["redis-cli", "-u", REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
+    cmd = ["redis-cli", "-u", A2A_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
