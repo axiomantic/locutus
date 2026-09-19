@@ -66,7 +66,20 @@ if [ -z "$A2A_REDIS_PREFIX" ]; then
 fi
 export A2A_REDIS_PREFIX="${A2A_REDIS_PREFIX:-a2a:}"
 
-# 3. Docker Auto-Start Check:
+# 3. Resolve scripts directory
+if [ -z "$A2A_SCRIPTS_DIR" ]; then
+  if [ -d "./scripts" ] && [ -f "./scripts/register.lua" ]; then
+    export A2A_SCRIPTS_DIR="$(pwd)/scripts"
+  elif [ -d "$HOME/.gemini/config/skills/redis-a2a/scripts" ]; then
+    export A2A_SCRIPTS_DIR="$HOME/.gemini/config/skills/redis-a2a/scripts"
+  elif [ -d ".claude/skills/redis-a2a/scripts" ]; then
+    export A2A_SCRIPTS_DIR="$(pwd)/.claude/skills/redis-a2a/scripts"
+  else
+    export A2A_SCRIPTS_DIR="$(pwd)/scripts"
+  fi
+fi
+
+# 4. Docker Auto-Start Check:
 # If connecting to localhost and Redis is not responding, ensure the a2a-redis container is running
 export A2A_CONTAINER="${A2A_CONTAINER:-a2a-redis}"
 if [[ "$A2A_REDIS_URL" == *"127.0.0.1"* || "$A2A_REDIS_URL" == *"localhost"* ]]; then
@@ -84,7 +97,7 @@ if [[ "$A2A_REDIS_URL" == *"127.0.0.1"* || "$A2A_REDIS_URL" == *"localhost"* ]];
   fi
 fi
 
-# 4. Host CLI check: If redis-cli is not installed on the host, route via Docker
+# 5. Host CLI check: If redis-cli is not installed on the host, route via Docker
 if ! command -v redis-cli >/dev/null 2>&1; then
   if command -v docker >/dev/null 2>&1 && [ "$(docker ps -q -f name=^/${A2A_CONTAINER}$)" ]; then
     redis-cli() {
@@ -96,137 +109,22 @@ fi
 
 ---
 
-## 3. The Embedded Lua Scripts
+## 3. Lua Script Inventory (`scripts/`)
 
-Use these exact Lua snippets inside `redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "<LUA>" 0 ...`.
-
-### Script A: Registration & Heartbeat Refresh (`LUA_REGISTER`)
-Registers agent name, assigns comma-separated tags, records metadata, and sets an expiring heartbeat.
-
-```lua
-local prefix = ARGV[1]
-local name = ARGV[2]
-local tags_csv = ARGV[3] or ""
-local ttl = tonumber(ARGV[4]) or 150
-local now = redis.call('TIME')[1]
-
--- 1. Refresh Heartbeat
-redis.call('SET', prefix .. 'heartbeat:' .. name, '1', 'EX', ttl)
-
--- 2. Add to active roster and store metadata
-redis.call('SADD', prefix .. 'active_agents', name)
-redis.call('HSET', prefix .. 'agent:' .. name, 'tags', tags_csv, 'last_seen', now)
-
--- 3. Index tags
-for tag in string.gmatch(tags_csv, "([^,]+)") do
-    local trimmed = string.match(tag, "^%s*(.-)%s*$")
-    if trimmed ~= "" then
-        redis.call('SADD', prefix .. 'tag:' .. trimmed, name)
-    end
-end
-return "OK"
+All server-side coordination is executed atomically via Lua scripts located in `$A2A_SCRIPTS_DIR`.
+Execute them cleanly using:
+```bash
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/<script>.lua")" 0 [args...]
 ```
 
-### Script B: Direct O2O Send (`LUA_SEND_O2O`)
-Appends a message to the target agent's persistent inbox and refreshes inbox TTL (default 7 days) to prevent orphaned key accumulation.
-
-```lua
-local prefix = ARGV[1]
-local recipient = ARGV[2]
-local msg_json = ARGV[3]
-local inbox_ttl = tonumber(ARGV[4]) or 604800
-
-redis.call('LPUSH', prefix .. 'inbox:' .. recipient, msg_json)
-redis.call('EXPIRE', prefix .. 'inbox:' .. recipient, inbox_ttl)
-return "OK"
-```
-
-### Script C: Multicast O2M Send with Auto-Pruning (`LUA_MULTICAST`)
-Fans out to all agents matching a tag (or `*` for all). Automatically prunes dead agents whose heartbeats expired, preventing phantom inbox accumulation.
-
-```lua
-local prefix = ARGV[1]
-local target_tag = ARGV[2]
-local msg_json = ARGV[3]
-local targets = {}
-
-if target_tag == "*" then
-    targets = redis.call('SMEMBERS', prefix .. 'active_agents')
-else
-    targets = redis.call('SMEMBERS', prefix .. 'tag:' .. target_tag)
-end
-
-local delivered = 0
-for _, agent in ipairs(targets) do
-    if redis.call('EXISTS', prefix .. 'heartbeat:' .. agent) == 1 then
-        redis.call('LPUSH', prefix .. 'inbox:' .. agent, msg_json)
-        redis.call('EXPIRE', prefix .. 'inbox:' .. agent, 604800)
-        delivered = delivered + 1
-    else
-        -- Prune inactive agent from registry
-        if target_tag == "*" then
-            redis.call('SREM', prefix .. 'active_agents', agent)
-        else
-            redis.call('SREM', prefix .. 'tag:' .. target_tag, agent)
-        end
-    end
-end
-return delivered
-```
-
-### Script D: Catch-Up Batch Drain (`LUA_DRAIN`)
-Atomically drains up to $N$ backlogged messages from an inbox. Used during boot, reconnection, or turn start.
-
-```lua
-local prefix = ARGV[1]
-local name = ARGV[2]
-local count = tonumber(ARGV[3]) or 50
-local messages = {}
-
-for i = 1, count do
-    local msg = redis.call('RPOP', prefix .. 'inbox:' .. name)
-    if not msg then break end
-    table.insert(messages, msg)
-end
-return messages
-```
-
-### Script E: Directory & Peer Discovery (`LUA_DIRECTORY`)
-Lists all registered agents, their active heartbeat status (`1` or `0`), and their tags.
-
-```lua
-local prefix = ARGV[1]
-local agents = redis.call('SMEMBERS', prefix .. 'active_agents')
-local result = {}
-
-for _, agent in ipairs(agents) do
-    local alive = redis.call('EXISTS', prefix .. 'heartbeat:' .. agent)
-    local tags = redis.call('HGET', prefix .. 'agent:' .. agent, 'tags') or ""
-    table.insert(result, agent .. "|" .. tostring(alive) .. "|" .. tags)
-end
-return result
-```
-
-### Script F: Clean Unregister / Shutdown (`LUA_UNREGISTER`)
-Removes an agent from the active directory, its indexed tags, and deletes its heartbeat.
-
-```lua
-local prefix = ARGV[1]
-local name = ARGV[2]
-local tags_csv = redis.call('HGET', prefix .. 'agent:' .. name, 'tags') or ""
-
-redis.call('DEL', prefix .. 'heartbeat:' .. name)
-redis.call('SREM', prefix .. 'active_agents', name)
-redis.call('DEL', prefix .. 'agent:' .. name)
-
-for tag in string.gmatch(tags_csv, "([^,]+)") do
-    local trimmed = string.match(tag, "^%s*(.-)%s*$")
-    if trimmed ~= "" then
-        redis.call('SREM', prefix .. 'tag:' .. trimmed, name)
-    end
-end
-return "OK"
-```
+| Script File | Purpose | Parameters (ARGV) |
+| :--- | :--- | :--- |
+| [`register.lua`](scripts/register.lua) | Register identity, index tags, and arm heartbeat | `ARGV[1]: prefix`, `ARGV[2]: name`, `ARGV[3]: tags_csv`, `ARGV[4]: ttl_sec` |
+| [`send_o2o.lua`](scripts/send_o2o.lua) | Direct message to recipient inbox with queue TTL | `ARGV[1]: prefix`, `ARGV[2]: recipient`, `ARGV[3]: msg_json`, `ARGV[4]: inbox_ttl` |
+| [`multicast.lua`](scripts/multicast.lua) | Fan-out to tag or `*` with dead-agent pruning | `ARGV[1]: prefix`, `ARGV[2]: target_tag`, `ARGV[3]: msg_json`, `ARGV[4]: inbox_ttl` |
+| [`drain.lua`](scripts/drain.lua) | Atomically pop up to N pending messages from inbox | `ARGV[1]: prefix`, `ARGV[2]: name`, `ARGV[3]: max_count` |
+| [`directory.lua`](scripts/directory.lua) | List all active agents, heartbeat status, and tags | `ARGV[1]: prefix` |
+| [`unregister.lua`](scripts/unregister.lua) | Clean logout, remove from roster and indexed tags | `ARGV[1]: prefix`, `ARGV[2]: name` |
 
 ---
 
@@ -270,29 +168,10 @@ Execute Script A to claim your name, and Script D to drain any pre-existing mess
 
 ```bash
 # Register
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,n,t,ttl,now = ARGV[1],ARGV[2],ARGV[3] or "",tonumber(ARGV[4]) or 150,redis.call("TIME")[1]
-redis.call("SET", p.."heartbeat:"..n, "1", "EX", ttl)
-redis.call("SADD", p.."active_agents", n)
-redis.call("HSET", p.."agent:"..n, "tags", t, "last_seen", now)
-for tag in string.gmatch(t, "([^,]+)") do
-    local tr = string.match(tag, "^%s*(.-)%s*$")
-    if tr ~= "" then redis.call("SADD", p.."tag:"..tr, n) end
-end
-return "OK"
-' 0 "$A2A_REDIS_PREFIX" "$MY_NAME" "$MY_TAGS" 150
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/register.lua")" 0 "$A2A_REDIS_PREFIX" "$MY_NAME" "$MY_TAGS" 150
 
 # Catch-up / Drain any existing backlog
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,n,c = ARGV[1],ARGV[2],tonumber(ARGV[3]) or 50
-local res = {}
-for i=1,c do
-    local m = redis.call("RPOP", p.."inbox:"..n)
-    if not m then break end
-    table.insert(res, m)
-end
-return res
-' 0 "$A2A_REDIS_PREFIX" "$MY_NAME" 50
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/drain.lua")" 0 "$A2A_REDIS_PREFIX" "$MY_NAME" 50
 ```
 
 *If any messages are returned from the drain command, process them immediately!*
@@ -345,32 +224,13 @@ MSG_JSON='{
   "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
 }'
 
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,r,m,ttl = ARGV[1],ARGV[2],ARGV[3],tonumber(ARGV[4]) or 604800
-redis.call("LPUSH", p.."inbox:"..r, m)
-redis.call("EXPIRE", p.."inbox:"..r, ttl)
-return "OK"
-' 0 "$A2A_REDIS_PREFIX" "bob" "$MSG_JSON" 604800
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/send_o2o.lua")" 0 "$A2A_REDIS_PREFIX" "bob" "$MSG_JSON" 604800
 ```
 
 ### Sending Multicast (O2M by Tag or `*`)
 ```bash
 # Send to all agents with tag "qa" (or "*" for all agents)
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,tag,m = ARGV[1],ARGV[2],ARGV[3]
-local targets = (tag == "*") and redis.call("SMEMBERS", p.."active_agents") or redis.call("SMEMBERS", p.."tag:"..tag)
-local count = 0
-for _, a in ipairs(targets) do
-    if redis.call("EXISTS", p.."heartbeat:"..a) == 1 then
-        redis.call("LPUSH", p.."inbox:"..a, m)
-        redis.call("EXPIRE", p.."inbox:"..a, 604800)
-        count = count + 1
-    else
-        if tag == "*" then redis.call("SREM", p.."active_agents", a) else redis.call("SREM", p.."tag:"..tag, a) end
-    end
-end
-return count
-' 0 "$A2A_REDIS_PREFIX" "qa" "$MSG_JSON"
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/multicast.lua")" 0 "$A2A_REDIS_PREFIX" "qa" "$MSG_JSON" 604800
 ```
 
 ### Replying to a Message
@@ -389,12 +249,7 @@ REPLY_JSON='{
   "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
 }'
 
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,r,m = ARGV[1],ARGV[2],ARGV[3]
-redis.call("LPUSH", p.."inbox:"..r, m)
-redis.call("EXPIRE", p.."inbox:"..r, 604800)
-return "OK"
-' 0 "$A2A_REDIS_PREFIX" "$ORIGINAL_FROM" "$REPLY_JSON"
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/send_o2o.lua")" 0 "$A2A_REDIS_PREFIX" "$ORIGINAL_FROM" "$REPLY_JSON" 604800
 ```
 
 ---
@@ -404,17 +259,7 @@ return "OK"
 To see who is online and what tags they handle:
 
 ```bash
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p = ARGV[1]
-local agents = redis.call("SMEMBERS", p.."active_agents")
-local out = {}
-for _, a in ipairs(agents) do
-    local alive = redis.call("EXISTS", p.."heartbeat:"..a)
-    local tags = redis.call("HGET", p.."agent:"..a, "tags") or ""
-    table.insert(out, a.." | alive="..tostring(alive).." | tags="..tags)
-end
-return out
-' 0 "$A2A_REDIS_PREFIX"
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/directory.lua")" 0 "$A2A_REDIS_PREFIX"
 ```
 
 ---
@@ -424,18 +269,7 @@ return out
 When the operator ends the session or retires your agent:
 
 ```bash
-redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL '
-local p,n = ARGV[1],ARGV[2]
-local t = redis.call("HGET", p.."agent:"..n, "tags") or ""
-redis.call("DEL", p.."heartbeat:"..n)
-redis.call("SREM", p.."active_agents", n)
-redis.call("DEL", p.."agent:"..n)
-for tag in string.gmatch(t, "([^,]+)") do
-    local tr = string.match(tag, "^%s*(.-)%s*$")
-    if tr ~= "" then redis.call("SREM", p.."tag:"..tr, n) end
-end
-return "OK"
-' 0 "$A2A_REDIS_PREFIX" "$MY_NAME"
+redis-cli -u "${A2A_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$A2A_SCRIPTS_DIR/unregister.lua")" 0 "$A2A_REDIS_PREFIX" "$MY_NAME"
 ```
 
 ---

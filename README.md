@@ -65,4 +65,18 @@ In another assistant session:
 
 ## File Structure
 
-- [`SKILL.md`](./SKILL.md): The canonical prompt and protocol specification containing all embedded Lua scripts, JSON schemas, and command templates.
+```
+.
+├── SKILL.md                 # Canonical prompt & protocol specification
+├── README.md                # Quickstart and cross-assistant usage guide
+├── scripts/                 # Single source of truth for pure Redis Lua scripts
+│   ├── register.lua         # Atomic registration, tag indexing, heartbeat
+│   ├── send_o2o.lua         # Direct point-to-point task queueing
+│   ├── multicast.lua        # Group fan-out with automatic dead-agent pruning
+│   ├── drain.lua            # Offline backlog batch draining
+│   ├── directory.lua        # Peer discovery and heartbeat status
+│   └── unregister.lua       # Clean logout and tag deregistration
+└── tests/
+    ├── test_protocol.py     # Deterministic unit test suite
+    └── test_ollama_agent.py # End-to-end Ollama tool-calling agent simulation
+```

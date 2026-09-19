@@ -49,6 +49,7 @@ def run_bash(cmd: str) -> str:
         env.setdefault("REDIS_URL", "redis://127.0.0.1:6379")
         env.setdefault("A2A_REDIS_PREFIX", "a2a:")
         env.setdefault("A2A_PREFIX", "a2a:")
+        env.setdefault("A2A_SCRIPTS_DIR", os.path.abspath("scripts"))
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
         output = (res.stdout + res.stderr).strip()
         print(f"[OUTPUT]: {output[:300]}")
@@ -125,21 +126,55 @@ def main():
                     "content": result
                 })
 
-    # Verify Redis state
-    print("\n--- Verifying Redis State ---")
+    # Verify Redis state & strict message content validation
+    print("\n--- Verifying Redis State & Message Content ---")
     hb = subprocess.run(["redis-cli", "GET", "a2a:heartbeat:alice"], capture_output=True, text=True).stdout.strip()
     print(f"Alice heartbeat: {hb}")
+    assert hb == "1", f"Expected Alice heartbeat to be '1', got '{hb}'"
+    print("✓ Alice heartbeat is active ('1')")
 
     inbox_len = subprocess.run(["redis-cli", "LLEN", "a2a:inbox:bob"], capture_output=True, text=True).stdout.strip()
     print(f"Bob inbox length: {inbox_len}")
+    assert inbox_len and int(inbox_len) > 0, "Bob inbox is empty! No message delivered."
+    print("✓ Bob inbox has pending message(s)")
 
-    if inbox_len and int(inbox_len) > 0:
-        msg = subprocess.run(["redis-cli", "RPOP", "a2a:inbox:bob"], capture_output=True, text=True).stdout.strip()
-        print(f"\nSUCCESS! Bob received message from Alice:\n{msg}")
-        return 0
-    else:
-        print("\nFAILURE: Bob did not receive a message in his inbox.")
+    raw_msg = subprocess.run(["redis-cli", "RPOP", "a2a:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    print(f"\nRaw Message Received:\n{raw_msg}")
+
+    try:
+        msg = json.loads(raw_msg)
+    except json.JSONDecodeError as e:
+        print(f"FAILURE: Message is not valid JSON: {e}")
         return 1
+
+    # 1. Verify Sender and Recipient
+    assert msg.get("from") == "alice", f"Expected from='alice', got '{msg.get('from')}'"
+    print("✓ Sender is 'alice'")
+    assert msg.get("to") == "bob", f"Expected to='bob', got '{msg.get('to')}'"
+    print("✓ Recipient is 'bob'")
+
+    # 2. Verify Protocol Message Type
+    assert msg.get("type") == "task", f"Expected type='task', got '{msg.get('type')}'"
+    print("✓ Protocol type is 'task'")
+
+    # 3. Verify Subject and Body Content
+    subject = msg.get("subject", "")
+    assert "Math Task" in subject or "math" in subject.lower(), f"Subject unexpected: '{subject}'"
+    print(f"✓ Subject matches: '{subject}'")
+
+    body = msg.get("body", "")
+    assert "25" in body and "4" in body, f"Body does not contain expected calculation (25 * 4): '{body}'"
+    print(f"✓ Body contains expected task instructions: '{body}'")
+
+    # 4. Verify Envelope Metadata
+    msg_id = msg.get("id")
+    assert msg_id and len(msg_id) > 0, "Message ID is missing"
+    timestamp = msg.get("timestamp")
+    assert timestamp and len(timestamp) > 0, "Timestamp is missing"
+    print(f"✓ Envelope metadata valid (id='{msg_id}', timestamp='{timestamp}')")
+
+    print("\nALL CONTENT AND ENVELOPE CHECKS PASSED!")
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

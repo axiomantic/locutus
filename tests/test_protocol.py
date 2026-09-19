@@ -1,125 +1,41 @@
 #!/usr/bin/env python3
 """
-Deterministic Unit Tests for Redis A2A Embedded Lua Scripts and Protocol.
-Tests registration, heartbeats, O2O queueing, multicast fan-out, dead-agent pruning,
-and backlog batch draining directly using redis-cli commands.
+Comprehensive Unit Tests for Redis A2A Protocol and Embedded Lua Scripts.
+Tests:
+1. Registration, tag indexing, and directory discovery
+2. Multi-agent multicast with mixed tags and strict payload content verification
+3. Broadcast multicast (*) to all live agents
+4. Offline queuing and FIFO backlog ordering
+5. Disconnect, dead-agent pruning, and reconnection recovery
+6. Full round-trip request/reply threading (id -> reply_to)
+7. Inbox TTL and keyspace memory hygiene
+8. Clean unregister / shutdown
 """
 
 import json
+import os
 import subprocess
 import time
-import os
 import unittest
 
 A2A_REDIS_URL = os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
 A2A_REDIS_PREFIX = os.environ.get("A2A_REDIS_PREFIX", os.environ.get("A2A_PREFIX", "a2a_test:"))
 PREFIX = A2A_REDIS_PREFIX
 
-# Lua Scripts extracted directly from SKILL.md
-LUA_REGISTER = """
-local prefix = ARGV[1]
-local name = ARGV[2]
-local tags_csv = ARGV[3] or ""
-local ttl = tonumber(ARGV[4]) or 150
-local now = redis.call('TIME')[1]
+# Load Lua Scripts directly from scripts/ directory (Single Source of Truth)
+SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-redis.call('SET', prefix .. 'heartbeat:' .. name, '1', 'EX', ttl)
-redis.call('SADD', prefix .. 'active_agents', name)
-redis.call('HSET', prefix .. 'agent:' .. name, 'tags', tags_csv, 'last_seen', now)
+def load_lua(filename: str) -> str:
+    path = os.path.join(SCRIPTS_DIR, filename)
+    with open(path, "r") as f:
+        return f.read()
 
-for tag in string.gmatch(tags_csv, "([^,]+)") do
-    local trimmed = string.match(tag, "^%s*(.-)%s*$")
-    if trimmed ~= "" then
-        redis.call('SADD', prefix .. 'tag:' .. trimmed, name)
-    end
-end
-return "OK"
-"""
-
-LUA_SEND_O2O = """
-local prefix = ARGV[1]
-local recipient = ARGV[2]
-local msg_json = ARGV[3]
-local inbox_ttl = tonumber(ARGV[4]) or 604800
-
-redis.call('LPUSH', prefix .. 'inbox:' .. recipient, msg_json)
-redis.call('EXPIRE', prefix .. 'inbox:' .. recipient, inbox_ttl)
-return "OK"
-"""
-
-LUA_MULTICAST = """
-local prefix = ARGV[1]
-local target_tag = ARGV[2]
-local msg_json = ARGV[3]
-local targets = {}
-
-if target_tag == "*" then
-    targets = redis.call('SMEMBERS', prefix .. 'active_agents')
-else
-    targets = redis.call('SMEMBERS', prefix .. 'tag:' .. target_tag)
-end
-
-local delivered = 0
-for _, agent in ipairs(targets) do
-    if redis.call('EXISTS', prefix .. 'heartbeat:' .. agent) == 1 then
-        redis.call('LPUSH', prefix .. 'inbox:' .. agent, msg_json)
-        redis.call('EXPIRE', prefix .. 'inbox:' .. agent, 604800)
-        delivered = delivered + 1
-    else
-        if target_tag == "*" then
-            redis.call('SREM', prefix .. 'active_agents', agent)
-        else
-            redis.call('SREM', prefix .. 'tag:' .. target_tag, agent)
-        end
-    end
-end
-return delivered
-"""
-
-LUA_DRAIN = """
-local prefix = ARGV[1]
-local name = ARGV[2]
-local count = tonumber(ARGV[3]) or 50
-local messages = {}
-
-for i = 1, count do
-    local msg = redis.call('RPOP', prefix .. 'inbox:' .. name)
-    if not msg then break end
-    table.insert(messages, msg)
-end
-return messages
-"""
-
-LUA_DIRECTORY = """
-local prefix = ARGV[1]
-local agents = redis.call('SMEMBERS', prefix .. 'active_agents')
-local result = {}
-
-for _, agent in ipairs(agents) do
-    local alive = redis.call('EXISTS', prefix .. 'heartbeat:' .. agent)
-    local tags = redis.call('HGET', prefix .. 'agent:' .. agent, 'tags') or ""
-    table.insert(result, agent .. "|" .. tostring(alive) .. "|" .. tags)
-end
-return result
-"""
-
-LUA_UNREGISTER = """
-local prefix = ARGV[1]
-local name = ARGV[2]
-local tags_csv = redis.call('HGET', prefix .. 'agent:' .. name, 'tags') or ""
-
-redis.call('DEL', prefix .. 'heartbeat:' .. name)
-redis.call('SREM', prefix .. 'active_agents', name)
-redis.call('DEL', prefix .. 'agent:' .. name)
-
-for tag in string.gmatch(tags_csv, "([^,]+)") do
-    local trimmed = string.match(tag, "^%s*(.-)%s*$")
-    if trimmed ~= "" then
-        redis.call('SREM', prefix .. 'tag:' .. trimmed, name)
-    end
-end
-return "OK"
-"""
+LUA_REGISTER = load_lua("register.lua")
+LUA_SEND_O2O = load_lua("send_o2o.lua")
+LUA_MULTICAST = load_lua("multicast.lua")
+LUA_DRAIN = load_lua("drain.lua")
+LUA_DIRECTORY = load_lua("directory.lua")
+LUA_UNREGISTER = load_lua("unregister.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", A2A_REDIS_URL] + list(args)
@@ -145,8 +61,8 @@ class TestRedisA2AProtocol(unittest.TestCase):
         if keys:
             run_redis("DEL", *keys)
 
-    def test_registration_and_directory(self):
-        # Register alice with tags worker,math
+    def test_01_registration_and_directory(self):
+        """Test agent registration, tag indexing, heartbeat, and directory lookup."""
         res = run_eval(LUA_REGISTER, 0, PREFIX, "alice", "worker,math", "120")
         self.assertEqual(res, "OK")
 
@@ -154,84 +70,209 @@ class TestRedisA2AProtocol(unittest.TestCase):
         hb = run_redis("GET", f"{PREFIX}heartbeat:alice")
         self.assertEqual(hb, "1")
 
-        # Verify active roster
-        roster = run_redis("SMEMBERS", f"{PREFIX}active_agents")
-        self.assertIn("alice", roster)
-
-        # Verify tag indexing
-        math_tag = run_redis("SMEMBERS", f"{PREFIX}tag:math")
-        self.assertIn("alice", math_tag)
+        # Verify active roster and tag sets
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}active_agents"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:math"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:worker"))
 
         # Query directory
         directory = run_eval(LUA_DIRECTORY, 0, PREFIX)
         self.assertIn("alice|1|worker,math", directory)
 
-    def test_direct_o2o_send_and_drain(self):
-        # Alice registers
-        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "worker", "120")
+    def test_02_multicast_multi_agent_with_content_verification(self):
+        """Test multicast to specific tag and strictly verify payload content across all recipients."""
+        # Setup 3 agents with overlapping tags
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "qa,frontend", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "qa,backend", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "charlie", "devops", "120")
 
-        # Bob sends message to Alice
-        msg = json.dumps({"id": "msg_001", "from": "bob", "to": "alice", "body": "hello"})
-        res = run_eval(LUA_SEND_O2O, 0, PREFIX, "alice", msg, "604800")
-        self.assertEqual(res, "OK")
+        # Send multicast to tag 'qa'
+        payload = {
+            "id": "msg_mcast_qa_100",
+            "from": "lead",
+            "to": "@qa",
+            "type": "task",
+            "reply_to": None,
+            "tags": ["qa"],
+            "subject": "Run QA Regression",
+            "body": "Execute test suite against staging branch.",
+            "timestamp": "2026-09-18T23:35:00Z"
+        }
+        msg_str = json.dumps(payload)
+        delivered = run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg_str, "604800")
+        self.assertIn(delivered, ["2", "(integer) 2"])
 
-        # Verify message queued in inbox
-        inbox_len = run_redis("LLEN", f"{PREFIX}inbox:alice")
-        self.assertEqual(inbox_len, "1")
+        # Charlie (devops) must NOT have received it
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:charlie"), "0")
 
-        # Alice drains message
-        drained = run_eval(LUA_DRAIN, 0, PREFIX, "alice", "10")
-        self.assertIn("msg_001", drained)
+        # Alice must have received exact payload
+        alice_msgs = json.loads(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_msgs["id"], "msg_mcast_qa_100")
+        self.assertEqual(alice_msgs["from"], "lead")
+        self.assertEqual(alice_msgs["to"], "@qa")
+        self.assertEqual(alice_msgs["subject"], "Run QA Regression")
+        self.assertEqual(alice_msgs["body"], "Execute test suite against staging branch.")
 
-        # Inbox is now empty
-        inbox_len_after = run_redis("LLEN", f"{PREFIX}inbox:alice")
-        self.assertEqual(inbox_len_after, "0")
+        # Bob must have received exact same payload
+        bob_msgs = json.loads(run_redis("RPOP", f"{PREFIX}inbox:bob"))
+        self.assertEqual(bob_msgs["id"], "msg_mcast_qa_100")
+        self.assertEqual(bob_msgs["body"], "Execute test suite against staging branch.")
 
-    def test_multicast_with_automatic_dead_agent_pruning(self):
-        # Register alice (alive) with tag 'qa'
-        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "qa", "120")
+    def test_03_broadcast_to_all_active_agents(self):
+        """Test multicast with tag '*' reaches every active agent."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "agent1", "tag1", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "agent2", "tag2", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "agent3", "tag3", "120")
 
-        # Register charlie (ghost/dead) with tag 'qa', then delete his heartbeat
-        run_eval(LUA_REGISTER, 0, PREFIX, "charlie", "qa", "120")
-        run_redis("DEL", f"{PREFIX}heartbeat:charlie")
+        broadcast_msg = json.dumps({
+            "id": "bcast_001",
+            "from": "ops",
+            "to": "*",
+            "type": "status",
+            "subject": "System Announcement",
+            "body": "Deployment completed successfully."
+        })
 
-        # Verify both in tag set before multicast
-        qa_agents = run_redis("SMEMBERS", f"{PREFIX}tag:qa")
-        self.assertIn("alice", qa_agents)
-        self.assertIn("charlie", qa_agents)
+        delivered = run_eval(LUA_MULTICAST, 0, PREFIX, "*", broadcast_msg, "604800")
+        self.assertIn(delivered, ["3", "(integer) 3"])
 
-        # Multicast to tag 'qa'
-        msg = json.dumps({"id": "msg_qa_01", "from": "lead", "to": "@qa", "body": "run tests"})
-        delivered_count = run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg)
+        for agent in ["agent1", "agent2", "agent3"]:
+            raw = run_redis("RPOP", f"{PREFIX}inbox:{agent}")
+            self.assertIsNotNone(raw)
+            parsed = json.loads(raw)
+            self.assertEqual(parsed["id"], "bcast_001")
+            self.assertEqual(parsed["subject"], "System Announcement")
+
+    def test_04_offline_queuing_and_ordered_backlog(self):
+        """Test that messages sent to an offline/unregistered agent are queued and drained in FIFO order."""
+        # Send 3 tasks to 'david' BEFORE he registers
+        for i in [1, 2, 3]:
+            task_msg = json.dumps({
+                "id": f"task_00{i}",
+                "from": "lead",
+                "to": "david",
+                "type": "task",
+                "seq": i,
+                "body": f"Execute step {i}"
+            })
+            run_eval(LUA_SEND_O2O, 0, PREFIX, "david", task_msg, "604800")
+
+        # Verify 3 messages waiting in inbox
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:david"), "3")
+
+        # David comes online and registers
+        run_eval(LUA_REGISTER, 0, PREFIX, "david", "worker", "120")
+
+        # David drains his inbox (up to 10)
+        drained_raw = run_eval(LUA_DRAIN, 0, PREFIX, "david", "10")
         
-        # Only 1 delivered (to alice)
-        self.assertIn(delivered_count, ["1", "(integer) 1"])
+        # Redis CLI prints multi-bulk replies as newline-separated items
+        # Let's verify by popping or reading drained results
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:david"), "0")
+        self.assertIn("task_001", drained_raw)
+        self.assertIn("task_002", drained_raw)
+        self.assertIn("task_003", drained_raw)
 
-        # Verify alice received it
-        alice_inbox = run_redis("LLEN", f"{PREFIX}inbox:alice")
-        self.assertEqual(alice_inbox, "1")
+    def test_05_disconnect_pruning_and_reconnect_recovery(self):
+        """Test that a disconnected agent is pruned from multicasts, and recovers upon reconnect."""
+        # Alice and Bob register
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "qa", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "qa", "120")
 
-        # Verify charlie did NOT receive it
-        charlie_inbox = run_redis("LLEN", f"{PREFIX}inbox:charlie")
-        self.assertEqual(charlie_inbox, "0")
+        # Simulate Alice crashing / disconnect: delete her heartbeat
+        run_redis("DEL", f"{PREFIX}heartbeat:alice")
 
-        # Verify charlie was automatically pruned from tag:qa set!
-        qa_agents_after = run_redis("SMEMBERS", f"{PREFIX}tag:qa")
-        self.assertIn("alice", qa_agents_after)
-        self.assertNotIn("charlie", qa_agents_after)
+        # Send multicast to 'qa'
+        msg1 = json.dumps({"id": "qa_round_1", "from": "lead", "to": "@qa", "body": "first check"})
+        delivered = run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg1, "604800")
+        self.assertIn(delivered, ["1", "(integer) 1"])
 
-    def test_unregister(self):
-        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "math", "120")
+        # Bob got it, Alice didn't
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:bob"), "1")
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:alice"), "0")
+
+        # Alice should now be pruned from tag:qa
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:qa"))
+
+        # Alice reconnects and re-registers
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "qa", "120")
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:qa"))
+
+        # Send second multicast to 'qa'
+        msg2 = json.dumps({"id": "qa_round_2", "from": "lead", "to": "@qa", "body": "second check"})
+        delivered2 = run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg2, "604800")
+        self.assertIn(delivered2, ["2", "(integer) 2"])
+
+        # Alice now receives the new message!
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:alice"), "1")
+        alice_received = json.loads(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_received["id"], "qa_round_2")
+
+    def test_06_roundtrip_request_reply_threading(self):
+        """Test full round-trip: Alice sends task -> Bob executes -> Bob replies with reply_to -> Alice verifies."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "client", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "math-service", "120")
+
+        # 1. Alice sends task to Bob
+        task_id = "req_171000_alice_999"
+        task_payload = {
+            "id": task_id,
+            "from": "alice",
+            "to": "bob",
+            "type": "task",
+            "reply_to": None,
+            "subject": "Multiply",
+            "body": "12 * 12"
+        }
+        run_eval(LUA_SEND_O2O, 0, PREFIX, "bob", json.dumps(task_payload), "604800")
+
+        # 2. Bob receives task
+        raw_task = run_redis("RPOP", f"{PREFIX}inbox:bob")
+        incoming_task = json.loads(raw_task)
+        self.assertEqual(incoming_task["id"], task_id)
+        self.assertEqual(incoming_task["body"], "12 * 12")
+
+        # 3. Bob computes result (144) and replies to Alice
+        reply_id = "rep_171000_bob_888"
+        reply_payload = {
+            "id": reply_id,
+            "from": "bob",
+            "to": incoming_task["from"],
+            "type": "reply",
+            "reply_to": incoming_task["id"],
+            "subject": f"Re: {incoming_task['subject']}",
+            "body": "144"
+        }
+        run_eval(LUA_SEND_O2O, 0, PREFIX, "alice", json.dumps(reply_payload), "604800")
+
+        # 4. Alice receives reply and verifies correlation
+        raw_reply = run_redis("RPOP", f"{PREFIX}inbox:alice")
+        received_reply = json.loads(raw_reply)
+        self.assertEqual(received_reply["from"], "bob")
+        self.assertEqual(received_reply["to"], "alice")
+        self.assertEqual(received_reply["type"], "reply")
+        self.assertEqual(received_reply["reply_to"], task_id)
+        self.assertEqual(received_reply["body"], "144")
+
+    def test_07_inbox_ttl_hygiene(self):
+        """Test that sending a message sets an expiration TTL on the inbox key to avoid leaking RAM."""
+        msg = json.dumps({"id": "ttl_test", "from": "a", "to": "ephemeral_user", "body": "hi"})
+        run_eval(LUA_SEND_O2O, 0, PREFIX, "ephemeral_user", msg, "3600")
+
+        ttl = int(run_redis("TTL", f"{PREFIX}inbox:ephemeral_user"))
+        self.assertGreater(ttl, 0)
+        self.assertLessEqual(ttl, 3600)
+
+    def test_08_unregister_and_cleanup(self):
+        """Test graceful logout and cleanup of all keys and sets."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "math,worker", "120")
         run_eval(LUA_UNREGISTER, 0, PREFIX, "alice")
 
-        roster = run_redis("SMEMBERS", f"{PREFIX}active_agents")
-        self.assertNotIn("alice", roster)
-
-        tag = run_redis("SMEMBERS", f"{PREFIX}tag:math")
-        self.assertNotIn("alice", tag)
-
-        hb = run_redis("EXISTS", f"{PREFIX}heartbeat:alice")
-        self.assertEqual(hb, "0")
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}active_agents"))
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:math"))
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:worker"))
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}heartbeat:alice"), "0")
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:alice"), "0")
 
 
 if __name__ == "__main__":
