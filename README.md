@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-30%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-41%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
@@ -14,6 +14,30 @@
 *Connect multiple AI coding assistants across terminals, editors, and machines with a single command-line tool. No background services or daemons required.*
 
 </div>
+
+---
+
+## Table of Contents
+
+- [What is Locutus?](#what-is-locutus)
+- [30-Second Quickstart](#30-second-quickstart)
+- [How it Works with Redis](#how-it-works-with-redis)
+- [Comparison](#comparison)
+- [How Messages Flow](#how-messages-flow)
+- [Installation & Setup](#installation--setup)
+  - [Option 1: Unified One-Line Installer (Recommended)](#option-1-unified-one-line-installer-recommended)
+  - [Option 2: Install AI Agent Skill (Using Skill Tools)](#option-2-install-the-ai-agent-skill-using-skill-tools)
+  - [Option 3: Install Native Engine (Binary / Package Managers)](#option-3-install-the-native-engine-binary--package-managers)
+- [Uninstallation](#uninstallation)
+- [CLI Reference](#cli-reference)
+- [Configuration Architecture & Profiles](#configuration-architecture--profiles)
+- [Security & Prompt Firewall](#security)
+- [Message and Assistant Lifecycles](#message-and-assistant-lifecycles)
+- [Redis Cluster Support](#redis-cluster-support-hash-tags)
+- [Assistant Integration](#assistant-integration-skill--slash-commands)
+- [Performance & Benchmarks](#performance--benchmarks)
+- [Testing & Verification](#testing--verification)
+- [License](#license)
 
 ---
 
@@ -40,20 +64,31 @@ curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/ins
 # irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
 ```
 
-### 2. Try it in Two Terminals
+### 2. Try it in Your Terminals
 
-**Terminal A (Worker):**
+**Terminal A (Worker 1):**
 ```bash
 locutus open worker-1 "backend,qa"
 locutus listen 90
 ```
 *Registers `worker-1` and waits for incoming tasks with zero CPU and zero token consumption.*
 
-**Terminal B (Sender):**
+**Terminal B (Worker 2):**
 ```bash
-locutus send --to worker-1 --subject "Run Tests" --body "pytest tests/auth"
+locutus open worker-2 "frontend,qa"
+locutus listen 90
 ```
-*Terminal A receives and prints the cryptographically authenticated message instantly.*
+*Registers `worker-2` and waits on its own inbox.*
+
+**Terminal C (Coordinator / Sender):**
+```bash
+# 1-to-1 Direct Task (O2O):
+locutus send --to worker-1 --subject "Run Tests" --body "pytest tests/auth"
+
+# 1-to-Many Group Broadcast (O2M):
+locutus broadcast --tags "qa" --subject "Deploy Staging" --body "Verify build v1.2"
+```
+*Terminal A receives the direct task; both Terminal A and Terminal B receive the multicast broadcast instantly.*
 
 ### 3. Or Use it Inside Your AI Assistant
 
@@ -62,30 +97,23 @@ Once installed, ask **Claude Code**, **Antigravity**, or **OpenCode**:
 
 ---
 
-### Why no background service?
+## How it Works with Redis
 
-Most multi-agent frameworks require running a background server process (like a Python web server or message broker). That creates extra operational work:
-- You must start, monitor, and restart server processes.
-- You must configure network ports, firewall rules, and connections.
-- Background processes use CPU and memory continuously, even when idle.
-
-**Locutus has no background daemon.** It is a single compiled binary that runs commands directly against Redis (`locutus send`, `locutus listen`). Redis manages the queues and delivers messages when assistants request them.
-
-### How it works with Redis
+Locutus has **no background daemon or server process**. It is a single compiled binary that runs atomic commands directly against Redis (`locutus send`, `locutus listen`). Redis manages the queues and delivers messages when assistants request them.
 
 Locutus maps communication directly onto standard Redis data structures:
 
-1. **Inboxes (Redis Lists)**:
+1. **Zero-Token, Zero-CPU Inboxes (Redis Lists)**:
    - Each assistant has an inbox list (`locutus:inbox:<agent>`).
-   - Senders push messages to the list with `LPUSH`.
-   - Receivers wait for messages with `BRPOP`. This blocking wait happens inside Redis, so idle listeners consume **zero CPU** and **zero AI tokens** while waiting.
+   - Senders push messages with `LPUSH`.
+   - Receivers wait for messages with `BRPOP`. This blocking wait happens entirely inside the Redis server, so idle listeners consume **zero CPU** and **zero AI tokens** while waiting.
 
 2. **Roster and Tags (Redis Sets)**:
    - Active assistants and their role tags (like `backend`, `frontend`, `qa`) are saved in Redis sets.
    - You can see who is online instantly with `locutus who`.
 
-3. **Group Messaging (Set Intersection)**:
-   - When sending to a group (for example, `locutus broadcast --tags "qa"`), Redis finds matching assistants directly on the server using set intersection.
+3. **Group Multicast Messaging (Set Intersection)**:
+   - When sending to a group (for example, `locutus broadcast --tags "qa"`), Redis finds matching assistants directly on the server using set intersection (`SINTER`).
 
 4. **Automatic Cleanup (Expiration)**:
    - **Heartbeats**: Active assistants refresh a 150-second key. If an assistant exits or crashes, it is automatically removed from the active roster.
@@ -190,12 +218,14 @@ If you manage command-line tools with your system package manager:
 ```bash
 brew install axiomantic/tap/locutus
 
-# Equip your coding assistants:
-npx skills add axiomantic/locutus -g
-# Or using skilz:
-skilz install https://github.com/axiomantic/locutus
-# Or offline from local Homebrew files:
+# Recommended (automatic updates when Homebrew upgrades locutus):
+ln -sf "$(brew --prefix)/share/locutus/skills/locutus" ~/.claude/skills/locutus
+
+# Or install via skills.sh (copies local skill to assistant):
 npx skills add $(brew --prefix)/share/locutus/skills/locutus -g
+
+# Or install via skilz:
+skilz install -f $(brew --prefix)/share/locutus/skills/locutus
 ```
 
 #### Debian / Ubuntu APT Repository
@@ -207,9 +237,14 @@ echo "deb [trusted=yes] https://axiomantic.github.io/locutus/apt/ ./" | sudo tee
 sudo apt-get update
 sudo apt-get install -y locutus
 
-# 3. Equip your coding assistants (offline skill files installed to /usr/share/locutus/skills/locutus):
+# 3. Equip your coding assistants:
+# Recommended (automatic updates when APT upgrades locutus):
+ln -sf /usr/share/locutus/skills/locutus ~/.claude/skills/locutus
+
+# Or install via skills.sh (copies local skill to assistant):
 npx skills add /usr/share/locutus/skills/locutus -g
-# Or using skilz:
+
+# Or install via skilz:
 skilz install -f /usr/share/locutus/skills/locutus
 ```
 
@@ -219,9 +254,9 @@ scoop install https://raw.githubusercontent.com/axiomantic/locutus/main/packagin
 
 # Scoop automatically runs post-install hooks to equip your skills.
 # You can also manually equip or reconfigure at any time:
-npx skills add axiomantic/locutus -g
+npx skills add "$dir\skills\locutus" -g
 # Or using skilz:
-skilz install https://github.com/axiomantic/locutus
+skilz install -f "$dir\skills\locutus"
 ```
 
 #### Standalone Pre-Compiled Binaries
@@ -430,18 +465,20 @@ Empirically measured end-to-end wall-clock timings on Apple Silicon against loca
 
 ## Testing & Verification
 
-Locutus includes a 100% automated black-box test suite:
+Locutus includes a 100% automated test suite:
 
 ```bash
-# Run all 32 unit tests (Protocol, Security, Native Binary, Cross-Runtime)
+# Run all 41 hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
 .venv/bin/python3 -m unittest discover tests
 
-# Run live single-agent autonomous Ollama test
+# Optional: Run live single-agent autonomous Ollama test (requires local Ollama)
 .venv/bin/python3 tests/test_ollama_agent.py
 
-# Run live multi-agent autonomous ping-pong test
+# Optional: Run live multi-agent autonomous ping-pong test (requires local Ollama)
 .venv/bin/python3 tests/test_multi_agent_pingpong.py
 ```
+
+Continuous Integration (GitHub Actions) runs strictly the 41 hermetic unit tests against live Redis services across Ubuntu Linux, macOS, and Windows. The standalone LLM scripts are for local end-to-end model verification and are automatically omitted from CI runs.
 
 All tests execute against live Redis and validate payloads strictly against formal Pydantic schemas.
 

@@ -112,4 +112,45 @@
 - [x] Total test suite expanded to 25/25 tests passing in under 2 seconds.
 - [x] Streamlined `SKILL.md` from 365 lines down to 99 lines.
 
+---
+
+## Completed Tasks
+
+### 16. Package Manager Local Paths, Symlinks & Upgrade Ergonomics
+- [x] **Local Path Guidance in Caveats & Postinst**:
+  - Direct users to local paths (`/usr/share/locutus/skills/locutus` for Debian, `$(brew --prefix)/share/locutus/skills/locutus` for Homebrew, `$dir\skills\locutus` for Scoop).
+- [x] **Evaluate Symlink vs Copying for Package Manager Upgrades**:
+  - Direct symlink (`ln -sf <pkgshare_path> ~/.claude/skills/locutus`) documented as recommended for automated package manager upgrades.
+  - Provided `npx skills add <path> -g` and `skilz install -f <path>` as alternative local-path commands.
+  - Updated `Formula/locutus.rb`, `scripts/update-homebrew-tap.sh`, and `.github/workflows/release.yml`.
+
+### 17. README Streamlining & Section Pruning
+- [x] **Remove "Why no background service?" section**:
+  - Pruned redundant section from `README.md`.
+- [x] **Fold remaining essentials into "How it works with Redis"**:
+  - Clearly articulated zero-CPU, zero-token `BRPOP` blocking wait and daemonless architecture.
+
+### 18. Quickstart Example: 1-to-1 and 1-to-Many Multicast
+- [x] **Expand 30-Second Quickstart**:
+  - Demonstrates both 1-to-1 direct messaging (`locutus send --to worker-1`) and 1-to-many multicast (`locutus broadcast --tags "qa"`).
+
+### 19. Table of Contents (TOC) for README
+- [x] **Table of Contents Added**:
+  - Added clean markdown-linked Table of Contents with jump links to all major sections in `README.md`.
+
+### 20. CI Test Scope vs LLM Integration Tests
+- [x] **Document Hermetic CI vs Manual LLM Tests**:
+  - Documented that CI runs strictly the hermetic unit tests (`unittest discover tests`) with zero external/LLM dependencies.
+  - Ollama integration scripts (`test_ollama_agent.py`, `test_multi_agent_pingpong.py`) do not subclass `unittest.TestCase` and run only on manual invocation.
+
+### 21. Deep Code Review & Green Mirage Forensic Audit
+- [x] **Green Mirage Integrity Audit (`auditing-green-mirage`)**:
+  - Audited all unit tests line-by-line across `tests/test_installer.py`, `tests/test_nim_binary.py`, and `tests/test_protocol.py`.
+  - Fixed vacuous green bug in `test_05_npx_skills_discovery` (conditional assertion without skip or fail).
+  - Fixed Redis error propagation in `src/locutus.nim` (`runLuaScript` and `doListen` now check exit codes and report errors).
+  - Added negative control tests: `test_18_non_json_payload_dropped` (malformed inbox string rejected by firewall) and `test_19_unreachable_redis_error_handling` (unreachable Redis exits non-zero).
+  - Expanded test suite to **41 unit tests** (40 passing, 1 Windows-only test skipped on macOS).
+  - Generated audit report artifact at `auditing_green_mirage_report.md`.
+
+
 

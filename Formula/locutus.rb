@@ -42,11 +42,14 @@ class Locutus < Formula
   def caveats
     <<~EOS
       To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):
-        npx skills add axiomantic/locutus -g
-        # Or using skilz:
-        skilz install https://github.com/axiomantic/locutus
-        # Or offline from local Homebrew files:
+        # Recommended (automatic updates when Homebrew upgrades locutus):
+        ln -sf "#{opt_pkgshare}/skills/locutus" ~/.claude/skills/locutus
+
+        # Or install via skills.sh (copies local skill to assistant):
         npx skills add #{opt_pkgshare}/skills/locutus -g
+
+        # Or install via skilz:
+        skilz install -f #{opt_pkgshare}/skills/locutus
     EOS
   end
 

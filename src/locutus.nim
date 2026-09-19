@@ -221,14 +221,20 @@ proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[
   var shaArgs: seq[string] = @["EVALSHA", scriptSha, "0"]
   for a in evalArgs:
     shaArgs.add(a)
-  let (shaOut, _) = execRedis(redisUrl, shaArgs)
+  let (shaOut, exitCode1) = execRedis(redisUrl, shaArgs)
   if "NOSCRIPT" in shaOut:
     # Fallback to EVAL and automatically cache the script in Redis
     var evalCmd: seq[string] = @["EVAL", scriptText, "0"]
     for a in evalArgs:
       evalCmd.add(a)
-    let (evalOut, _) = execRedis(redisUrl, evalCmd)
+    let (evalOut, exitCode2) = execRedis(redisUrl, evalCmd)
+    if exitCode2 != 0:
+      stderr.writeLine("Redis error: " & evalOut.strip())
+      quit(exitCode2)
     return evalOut.strip()
+  if exitCode1 != 0:
+    stderr.writeLine("Redis error: " & shaOut.strip())
+    quit(exitCode1)
   return shaOut.strip()
 
 # Agent Identity Persistence
@@ -421,11 +427,17 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
   var remaining = timeoutSec
 
   # Keep heartbeat alive while actively listening
-  discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", "150"])
+  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", "150"])
+  if hbCode != 0:
+    stderr.writeLine("Redis error: " & hbOut.strip())
+    quit(hbCode)
 
   while remaining > 0:
     var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $remaining])
-    if exitCode != 0 or outStr.strip().len == 0:
+    if exitCode != 0:
+      stderr.writeLine("Redis error: " & outStr.strip())
+      quit(exitCode)
+    if outStr.strip().len == 0:
       echo "(nil)"
       return
 

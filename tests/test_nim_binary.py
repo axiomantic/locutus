@@ -393,6 +393,39 @@ class TestLocutusNimBinary(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def test_18_non_json_payload_dropped(self):
+        """Verify that malformed non-JSON messages in Redis are dropped to stderr and don't crash listener."""
+        agent = "agent_malformed_test"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Inject completely invalid non-JSON raw text
+        subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "LPUSH", f"{TEST_PREFIX}inbox:{agent}", "NOT_JSON_RAW_DATA_{{{"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+            check=True
+        )
+
+        listen_res = self.run_locutus(["listen", agent, "1"])
+        self.assertEqual(listen_res.returncode, 0)
+        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertIn("Dropping non-JSON payload from inbox", listen_res.stderr)
+
+        self.run_locutus(["close", agent])
+
+    def test_19_unreachable_redis_error_handling(self):
+        """Verify that attempting to contact an unreachable Redis instance returns a non-zero exit code."""
+        # Use an unassigned port that immediately rejects connection
+        res = self.run_locutus([
+            "--redis-url", "redis://127.0.0.1:1",
+            "send",
+            "--to", "nobody",
+            "--subject", "Fail",
+            "--body", "Payload"
+        ])
+        self.assertNotEqual(res.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
