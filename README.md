@@ -2,16 +2,16 @@
 
 # Locutus
 
-**Daemonless, Cryptographically-Authenticated Inter-Process Communication (IPC) Protocol and Message Router for Heterogeneous Autonomous Coding Agents over Key-Value Datastores with Redis Cluster Hash-Slot Affinity (ISO/IEC 19514 / ISO/IEC 2382)**
+**Fast, simple message exchange between AI coding assistants over Redis.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-25%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-30%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
 
-*Sub-millisecond inter-agent coordination across terminals, projects, and machines with zero background daemons and a cryptographic prompt-injection firewall.*
+*Connect multiple AI coding assistants across terminals, editors, and machines with a single command-line tool. No background services or daemons required.*
 
 </div>
 
@@ -19,59 +19,56 @@
 
 ## What is Locutus?
 
-**Locutus** connects multiple coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, Ollama) across terminals, workspaces, or machines using Redis data structures and a standalone CLI tool.
+**Locutus** is a command-line tool that lets AI coding assistants (such as Claude Code, Cursor, Windsurf, Antigravity, and Ollama) send messages to each other.
 
-### Daemonless Architecture: Why No Broker Daemon?
+Instead of running a complex background service, Locutus stores queues and routes messages directly through **Redis**.
 
-Traditional multi-agent frameworks require running dedicated background server processes (such as custom HTTP/WebSocket servers, broker services, or polling sidecars). These add operational overhead:
-- Server daemons require supervisor processes (systemd, Docker) to monitor and restart on failure.
-- Daemons require configuring open network ports, host bindings, and connection handshakes.
-- Daemons consume background CPU and RAM continuously, even when no agents are active.
+### Why no background service?
 
-**Locutus requires no intermediate daemon:**
-There is no Locutus daemon process running on the host. Locutus is a standalone compiled CLI tool that uses Redis directly as the message broker and state store. Agents communicate by executing standard CLI commands (`locutus send`, `locutus listen`) against any local or remote Redis instance.
+Most multi-agent frameworks require running a background server process (like a Python web server or message broker). That creates extra operational work:
+- You must start, monitor, and restart server processes.
+- You must configure network ports, firewall rules, and connections.
+- Background processes use CPU and memory continuously, even when idle.
 
-### System Architecture: Redis Data Structure Mapping
+**Locutus has no background daemon.** It is a single compiled binary that runs commands directly against Redis (`locutus send`, `locutus listen`). Redis manages the queues and delivers messages when assistants request them.
 
-Locutus implements message exchange and coordination by mapping communication functions directly onto native Redis data structures:
+### How it works with Redis
 
-1. **Message Queues (Redis Lists / `LPUSH` & `BRPOP`)**:
-   - Each agent's inbox is stored as a Redis list (`{prefix}:inbox:<agent>`).
-   - Senders push authenticated JSON messages to the head of the list with `LPUSH`.
-   - Receivers wait for incoming work using blocking pop (`BRPOP`). Redis handles the blocking wait internally, allowing agents to sleep with zero CPU polling and zero token consumption until a message arrives.
+Locutus maps communication directly onto standard Redis data structures:
 
-2. **Agent Directory (Redis Sets / `SADD`, `SREM`, `SMEMBERS`)**:
-   - Active agents and functional tag groups (e.g., `backend`, `frontend`, `qa`) are stored in Redis sets (`{prefix}:active_agents` and `{prefix}:tag:<tag>`).
-   - Discovery commands (`locutus who`) read directly from these sets in $\mathcal{O}(1)$ time without keyspace scanning.
+1. **Inboxes (Redis Lists)**:
+   - Each assistant has an inbox list (`locutus:inbox:<agent>`).
+   - Senders push messages to the list with `LPUSH`.
+   - Receivers wait for messages with `BRPOP`. This blocking wait happens inside Redis, so idle listeners consume **zero CPU** and **zero AI tokens** while waiting.
 
-3. **Multicast Routing (Redis `SINTER`)**:
-   - Multicast broadcasts (`locutus broadcast --tags "backend,qa"`) compute target recipients on the Redis server using set intersection (`SINTER`).
-   - Fanout occurs entirely within Redis, avoiding client-side candidate roster transfers.
+2. **Roster and Tags (Redis Sets)**:
+   - Active assistants and their role tags (like `backend`, `frontend`, `qa`) are saved in Redis sets.
+   - You can see who is online instantly with `locutus who`.
 
-4. **Liveness & Expiration (Redis TTLs / `EXPIRE`)**:
-   - **Heartbeats**: Active listeners maintain presence via an ephemeral key (`{prefix}:heartbeat:<agent>`) with a 150-second TTL. If an agent process exits or crashes, its heartbeat key expires automatically, and subsequent routing passes prune the inactive agent from the directory.
-   - **Inboxes**: Each message delivery updates a 7-day sliding expiration on `{prefix}:inbox:<agent>`, preventing abandoned queues from consuming memory indefinitely.
+3. **Group Messaging (Set Intersection)**:
+   - When sending to a group (for example, `locutus broadcast --tags "qa"`), Redis finds matching assistants directly on the server using set intersection.
 
-5. **Atomic Transactions (Embedded Lua / `EVALSHA`)**:
-   - State transitions requiring multiple operations (such as roster updates, dead-agent pruning, and multi-queue fanout) run inside Redis as atomic Lua scripts using cached script hashes (`EVALSHA`).
+4. **Automatic Cleanup (Expiration)**:
+   - **Heartbeats**: Active assistants refresh a 150-second key. If an assistant exits or crashes, it is automatically removed from the active roster.
+   - **Inboxes**: Inboxes have a 7-day expiration that refreshes with every new message, automatically cleaning up abandoned queues.
 
-6. **Cluster Compatibility (Hash Tags / `{...}`)**:
-   - In Redis Cluster environments, key names include curly bracket hash tags (e.g., `{locutus:project}:inbox:<agent>`).
-   - Redis uses only the bracketed text to determine shard placement, ensuring all project keys reside on the same hash slot and preventing `CROSSSLOT` errors during multi-key commands (`SINTER`, `SMEMBERS`).
+5. **Redis Cluster Support**:
+   - In a Redis Cluster, Locutus groups project keys using hash tags (such as `{locutus:project}:inbox:<name>`). This ensures all keys for a project live on the same cluster node, preventing multi-key errors.
 
-### Why Locutus?
+### Comparison
 
 | Traditional Agent Frameworks | Locutus Architecture |
 | :--- | :--- |
-| ❌ Heavy Python/Node background server daemons | ⚡ **Daemonless**: Zero background processes; direct Redis client calls |
-| ❌ Fragile WebSocket / HTTP bridges requiring open ports | ⚡ **Standard Redis**: Works over local or hosted Redis (AWS, Upstash, Redis Cluster) |
-| ❌ 500ms+ startup latency & high RAM overhead | ⚡ **Sub-millisecond latency**: 289 KB standalone native binary (1ms cold start) |
-| ❌ Vulnerable to prompt injection from untrusted messages | ⚡ **Air-Gap Prompt Firewall**: Drops unauthenticated payloads at process boundary |
-| ❌ Idle listeners consume continuous LLM tokens | ⚡ **Zero-token idle**: Blocking `BRPOP` consumes 0 LLM tokens while waiting |
+| ❌ Heavy Python/Node background server daemons | ⚡ **Daemonless**: Single CLI tool; direct Redis calls |
+| ❌ Complex WebSocket/HTTP setup requiring open ports | ⚡ **Standard Redis**: Works with local or hosted Redis (AWS, Upstash, Redis Cluster) |
+| ❌ High memory usage and slow startup | ⚡ **Fast and lightweight**: Single small native binary with instant startup |
+| ❌ Vulnerable to prompt injection from untrusted messages | ⚡ **Built-in Authentication**: Drops unauthenticated or tampered messages automatically |
+| ❌ Idle listeners consume continuous AI tokens | ⚡ **Zero-token idle**: Blocking wait consumes 0 AI tokens while waiting for work |
 
 ---
 
-## Architecture & Data Flow
+## How Messages Flow
+
 
 Every agent receives tasks through a single atomic inbox: `${PREFIX}inbox:<agent_name>`.
 
@@ -337,59 +334,54 @@ encrypt = true
 ---
 
 
-## Cryptographic Security Model
+## Security
 
-Locutus implements an **Air-Gap Prompt-Injection Firewall** to safeguard coding assistants from malicious prompt injection, cluster forgery, or rogue tasks:
+Locutus protects coding assistants from prompt injection, forged messages, and unauthorized commands:
 
 ```text
-Incoming Redis Data ──► [Host OS: locutus listen]
+Incoming Redis Data ──► [Host: locutus listen]
                                  │
-                   Verify HMAC-SHA256 Signature
-                  (Key: ~/.config/locutus/secret)
+                    Verify HMAC-SHA256 Signature
+                   (Key: ~/.config/locutus/secret)
                                  │
-                   ┌─────────────┴─────────────┐
-                   ▼                           ▼
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
             [VALID SIGNATURE]          [FORGED / TAMPERED]
-                   │                           │
-         Deliver JSON to stdout         Drop to stderr only
-                   │                           │
-                   ▼                           ▼
-          Assistant LLM Context         Context Protected!
-          Processes Safe Task           (Attacker Thwarted)
+                    │                           │
+          Deliver JSON to stdout         Drop to stderr only
+                    │                           │
+                    ▼                           ▼
+           Assistant LLM Context         Context Protected!
+           Processes Safe Task           (Attacker Blocked)
 ```
 
-1. **Host-Level Verification**: Messages are cryptographically validated by `locutus listen` at the process boundary *before* reaching standard output.
-2. **Untrusted Data Dropped**: Unauthenticated, forged, or tampered payloads are completely dropped before they can enter an LLM's context window.
-3. **Zero Secret Leakage**: The cluster secret (`~/.config/locutus/secret`, `0600`) never enters LLM prompts, Git commits, or Redis keys.
-4. **Optional End-to-End Encryption (E2EE)**: While HMAC-SHA256 authentication is mandatory by default to prevent forgery and prompt injection, full payload encryption is optional. Setting `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies with AES-256-CBC PBKDF2 (10,000 iterations), ensuring raw plaintext never touches Redis memory or persistence files.
+1. **Host-Level Verification**: Messages are checked by `locutus listen` on your computer before reaching standard output.
+2. **Untrusted Messages Dropped**: Forged or unauthenticated messages are rejected immediately. They never enter the assistant's context window.
+3. **Local Secret**: The secret key (`~/.config/locutus/secret`, `0600` permissions) stays on your machine. It never enters prompts, Git commits, or Redis keys.
+4. **Optional Encryption**: Set `LOCUTUS_ENCRYPT=1` to encrypt message bodies with AES-256-CBC, ensuring plain text is never stored in Redis.
 
 ---
 
-## TTL Lifecycle & Keyspace Hygiene
+## Message and Assistant Lifecycles
 
-Locutus enforces automatic keyspace hygiene to prevent unbounded memory growth on long-running Redis instances:
+Locutus cleans up keys automatically so Redis memory does not grow unbounded:
 
-- **Inbox Lists (`inbox:<agent>`)**: Automatically armed with an expiring TTL (default: **7 days** / 604,800 seconds). Each new message pushed to an inbox atomically resets the 7-day TTL window. Offline agents that remain disconnected for more than 7 days have their stale inboxes automatically pruned by Redis.
-- **Heartbeats (`heartbeat:<agent>`)**: Armed with a strict **150-second TTL** (2.5 minutes). Active listeners (`locutus listen`) continually refresh this heartbeat.
-- **Dead-Agent Sweeper**: When routing multicast or directory queries, Locutus checks agent heartbeat existence. Agents whose heartbeats have expired are atomically pruned from active rosters and tag indices.
+- **Inboxes**: Inboxes expire after **7 days** of inactivity. Every new message resets the 7-day timer.
+- **Heartbeats**: Active listeners refresh a **150-second heartbeat**. If an assistant exits or crashes, its heartbeat expires.
+- **Automatic Cleanup**: When messages or queries are routed, assistants with expired heartbeats are automatically removed from the roster and tag groups.
 
 ---
 
-## Redis Cluster Compatibility (Hash Tags)
+## Redis Cluster Support (Hash Tags)
 
-In a **Redis Cluster**, keys are automatically distributed across 16,384 hash slots across multiple shards. Multi-key operations (`SINTER`, `SMEMBERS`, `LPUSH`) and atomic Lua transactions will fail with `CROSSSLOT Keys in request don't hash to the same slot` if keys belong to different slots.
+In a Redis Cluster, keys are distributed across multiple shards. Multi-key operations (`SINTER`, `SMEMBERS`) require that related keys live on the same shard.
 
-Locutus supports native **Redis Cluster Hash Tags `{...}`**:
-- When `LOCUTUS_CLUSTER=1` or `LOCUTUS_REDIS_CLUSTER=1` is set, Locutus automatically encapsulates the project namespace in curly braces:
-  `{locutus:<project>}:inbox:<name>`
-  `{locutus:<project>}:active_agents`
-  `{locutus:<project>}:tag:<t>`
-  `{locutus:<project>}:heartbeat:<name>`
-- Redis only hashes the substring inside `{...}` to compute the slot number, guaranteeing that **all keys for the project reside on the exact same cluster shard**.
-- Alternatively, you can specify custom hash tags directly in `LOCUTUS_REDIS_PREFIX`:
-  ```bash
-  export LOCUTUS_REDIS_PREFIX="{my-cluster-team}:"
-  ```
+Locutus supports Redis Cluster hash tags automatically:
+- Set `LOCUTUS_CLUSTER=1` (or `cluster = true` in config).
+- Locutus wraps the project prefix in curly brackets: `{locutus:<project>}:inbox:<name>`.
+- Redis hashes only the text inside `{...}`, guaranteeing that **all keys for the same project live on the exact same cluster shard**.
+- You can also specify custom hash tags directly in `prefix` (for example, `prefix = "{team-alpha}:"`).
+
 
 ## Assistant Integration (Skill & Slash Commands)
 
