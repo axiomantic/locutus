@@ -221,6 +221,24 @@ locutus leader renew orchestrator 30
 locutus leader resign orchestrator
 ```
 
+#### Directed Acyclic Graph (DAG) Workflow Engine (`locutus workflow`)
+Coordinate multi-stage task pipelines with automatic dependency resolution and stage unlocking:
+```bash
+# 1. Define pipeline DAG:
+locutus workflow define release_pipeline --steps "lint,test,build,deploy" --deps "test:lint;build:lint;deploy:test,build"
+
+# 2. Query ready unblocked steps:
+locutus workflow next release_pipeline --raw
+# => lint
+
+# 3. Resolve completed steps to unlock downstream dependencies:
+locutus workflow resolve release_pipeline lint --output "passed"
+# Unlocks 'test' and 'build'
+
+# 4. Check status or inspect outputs:
+locutus workflow status release_pipeline
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -403,6 +421,32 @@ locutus leader status cluster_lead
 
 # 4. Release leadership to standby nodes:
 locutus leader resign cluster_lead
+```
+
+### 12. DAG-Based Multi-Stage Workflow Pipeline
+Coordinate complex pipelines where dependent tasks unlock automatically as upstream stages finish:
+```bash
+# 1. Define pipeline graph:
+locutus workflow define release_pipeline \
+  --steps "lint,test,build,deploy" \
+  --deps "test:lint;build:lint;deploy:test,build"
+
+# 2. Query ready unblocked steps:
+ready_steps=$(locutus workflow next release_pipeline --raw)
+# => "lint"
+
+# 3. Worker executes 'lint' and resolves it:
+locutus workflow resolve release_pipeline lint --output "lint passed"
+# 'test' and 'build' are now ready!
+
+# 4. Resolve 'test' and 'build':
+locutus workflow resolve release_pipeline test --output "tests passed"
+locutus workflow resolve release_pipeline build --output "artifacts packaged"
+# 'deploy' is now unlocked!
+
+# 5. Final deployment step:
+locutus workflow resolve release_pipeline deploy --output "deployed to prod"
+# Pipeline status is now 'completed'
 ```
 
 ---

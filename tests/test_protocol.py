@@ -63,6 +63,7 @@ LUA_FLOOR = load_lua("floor.lua")
 LUA_CANCEL = load_lua("cancel.lua")
 LUA_BALLOT = load_lua("ballot.lua")
 LUA_LEADER = load_lua("leader.lua")
+LUA_WORKFLOW = load_lua("workflow.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -792,6 +793,47 @@ class TestRedisA2AProtocol(unittest.TestCase):
         # 6. Now Bob can acquire immediately
         bob_acq = run_eval(LUA_LEADER, 0, PREFIX, "acquire", role, "bob", "10")
         self.assertEqual(bob_acq, "ELECTED")
+
+    def test_27_workflow_dag_lua_protocol(self):
+        """Test workflow.lua via Redis EVAL."""
+        flow_id = f"flow_{int(time.time() * 1000)}"
+
+        # 1. Define DAG: lint -> test -> build; test & build -> deploy
+        steps = "lint,test,build,deploy"
+        deps = "test:lint;build:lint;deploy:test,build"
+        d_res = run_eval(LUA_WORKFLOW, 0, PREFIX, "define", flow_id, steps, deps, "3600")
+        self.assertEqual(d_res, "DEFINED")
+
+        # 2. Next: only 'lint' should be ready
+        nxt_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "next", flow_id)
+        nxt = json.loads(nxt_json)
+        self.assertEqual(nxt["ready"], ["lint"])
+
+        # 3. Resolve 'lint'
+        r1_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_id, "lint", "lint passed")
+        r1 = json.loads(r1_json)
+        self.assertEqual(r1["status"], "running")
+        # Now 'test' and 'build' should be unlocked / ready!
+        self.assertIn("test", r1["unlocked"])
+        self.assertIn("build", r1["unlocked"])
+        self.assertNotIn("deploy", r1["unlocked"])
+
+        # 4. Resolve 'test'
+        r2_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_id, "test")
+        r2 = json.loads(r2_json)
+        # 'deploy' should NOT be unlocked yet because 'build' is still pending
+        self.assertNotIn("deploy", r2["unlocked"])
+
+        # 5. Resolve 'build'
+        r3_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_id, "build")
+        r3 = json.loads(r3_json)
+        # Now 'deploy' should be unlocked!
+        self.assertIn("deploy", r3["unlocked"])
+
+        # 6. Resolve 'deploy' -> complete whole workflow!
+        r4_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_id, "deploy")
+        r4 = json.loads(r4_json)
+        self.assertEqual(r4["status"], "completed")
 
 
 if __name__ == "__main__":

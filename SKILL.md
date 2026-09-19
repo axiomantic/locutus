@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, electing resilient mesh leaders with automated lease failover, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'leader election', 'acquire leader', 'failover', 'mesh leader', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, orchestrating multi-stage DAG task pipelines, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, orchestrating multi-stage pipelines with automatic dependency resolution, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, electing resilient mesh leaders with automated lease failover, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'leader election', 'acquire leader', 'failover', 'mesh leader', 'scatter', 'gather', 'quorum', 'workflow', 'dag', 'pipeline', 'task dependencies', 'resolve step', 'workflow next', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -275,6 +275,19 @@ locutus leader renew orchestrator 30
 locutus leader resign orchestrator
 ```
 
+#### M. Directed Acyclic Graph (DAG) Workflows (`locutus workflow`)
+Coordinate complex multi-stage pipelines with automatic dependency resolution:
+```bash
+# 1. Define DAG pipeline:
+locutus workflow define release_flow --steps "lint,test,build,deploy" --deps "test:lint;build:lint;deploy:test,build"
+
+# 2. Query ready unblocked steps:
+ready=$(locutus workflow next release_flow --raw)
+
+# 3. Complete a step and automatically unlock downstream stages:
+locutus workflow resolve release_flow lint --output "passed"
+```
+
 ### Step 4: Graceful Exit
 When the session ends or user asks to disconnect:
 ```bash
@@ -458,6 +471,37 @@ locutus leader acquire cluster_lead 30
 
 # 4. Graceful handoff: primary resigns, instantly waking standbys:
 locutus leader resign cluster_lead
+```
+
+### Playbook 14: DAG-Based Multi-Stage Workflow Pipeline
+*Goal: Coordinate multi-stage task pipelines where dependent tasks automatically unlock as parent steps complete.*
+```bash
+# 1. Define pipeline graph: lint -> test, build; test & build -> deploy:
+locutus workflow define release_pipeline \
+  --steps "lint,test,build,deploy" \
+  --deps "test:lint;build:lint;deploy:test,build"
+
+# 2. Query ready steps (returns bare step names with --raw):
+ready_steps=$(locutus workflow next release_pipeline --raw)
+# => "lint"
+
+# 3. Worker executes 'lint', then resolves it:
+locutus workflow resolve release_pipeline lint --output "lint clean"
+# Automatically unlocks dependent stages 'test' and 'build'
+
+# 4. Check ready steps again:
+ready_steps=$(locutus workflow next release_pipeline --raw)
+# => "test"
+#    "build"
+
+# 5. Workers run 'test' and 'build' concurrently and resolve them:
+locutus workflow resolve release_pipeline test --output "all tests green"
+locutus workflow resolve release_pipeline build --output "artifacts packaged"
+# 'deploy' is now unlocked because both dependencies ('test' and 'build') are resolved!
+
+# 6. Worker runs deploy and resolves it:
+locutus workflow resolve release_pipeline deploy --output "deployed to prod"
+# Workflow status transitions to 'completed'
 ```
 
 ---

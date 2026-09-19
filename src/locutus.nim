@@ -74,6 +74,7 @@ const
   cancelLua*     = staticRead("../scripts/cancel.lua")
   ballotLua*     = staticRead("../scripts/ballot.lua")
   leaderLua*     = staticRead("../scripts/leader.lua")
+  workflowLua*   = staticRead("../scripts/workflow.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -101,6 +102,7 @@ let
   cancelSha*     = computeSha1(cancelLua)
   ballotSha*     = computeSha1(ballotLua)
   leaderSha*     = computeSha1(leaderLua)
+  workflowSha*   = computeSha1(workflowLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -1121,6 +1123,71 @@ proc doLeaderStatus*(cfg: LocutusConfig, role: string) =
     quit(1)
   echo res
 
+proc doWorkflowDefine*(cfg: LocutusConfig, flowId, steps, deps: string, ttlSec: int = 86400) =
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "define", flowId, steps, deps, $ttlSec, ts])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doWorkflowNext*(cfg: LocutusConfig, flowId: string, rawOutput: bool = false) =
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "next", flowId])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  if rawOutput:
+    try:
+      let n = parseJson(res)
+      if n.hasKey("ready"):
+        for item in n["ready"]:
+          echo item.getStr()
+    except CatchableError:
+      echo res
+  else:
+    echo res
+
+proc doWorkflowResolve*(cfg: LocutusConfig, flowId, step, output: string, rawOutput: bool = false) =
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "resolve", flowId, step, output, ts])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  if rawOutput:
+    try:
+      let n = parseJson(res)
+      if n.hasKey("unlocked"):
+        for item in n["unlocked"]:
+          echo item.getStr()
+    except CatchableError:
+      echo res
+  else:
+    echo res
+
+proc doWorkflowFail*(cfg: LocutusConfig, flowId, step, reason: string) =
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "fail", flowId, step, reason])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doWorkflowStatus*(cfg: LocutusConfig, flowId: string, rawOutput: bool = false) =
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "status", flowId])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  if rawOutput:
+    try:
+      let n = parseJson(res)
+      if n.hasKey("status"):
+        echo n["status"].getStr()
+      else:
+        echo res
+    except CatchableError:
+      echo res
+  else:
+    echo res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1418,6 +1485,7 @@ proc main() =
     echo "  locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>"
     echo "  locutus ballot <open|cast|tally|status> <ballot_id> [args...]"
     echo "  locutus leader <acquire|renew|resign|status> <role> [args...]"
+    echo "  locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -2174,6 +2242,74 @@ proc main() =
     else:
       stderr.writeLine("Unknown leader action: " & action)
       stderr.writeLine("Usage: locutus leader <acquire|renew|resign|status> <role> [args...]")
+      quit(1)
+
+  of "workflow", "dag":
+    if args.len < 3:
+      stderr.writeLine("Error: Missing workflow action or flow ID.")
+      stderr.writeLine("Usage:")
+      stderr.writeLine("  locutus workflow define <flow_id> --steps <s1,s2,...> [--deps <c:p1,p2;...>] [--ttl <sec>]")
+      stderr.writeLine("  locutus workflow next <flow_id> [--raw]")
+      stderr.writeLine("  locutus workflow resolve <flow_id> <step> [--output <msg>] [--raw]")
+      stderr.writeLine("  locutus workflow fail <flow_id> <step> [--reason <msg>]")
+      stderr.writeLine("  locutus workflow status <flow_id> [--raw]")
+      quit(1)
+
+    let action = args[1].toLowerAscii
+    let flowId = args[2]
+
+    var steps = ""
+    var deps = ""
+    var ttlSec = 86400
+    var stepName = ""
+    var outputMsg = ""
+    var reasonMsg = ""
+    var rawOutput = false
+
+    var posArgs: seq[string] = @[]
+    var i = 3
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--steps="): steps = a[8..^1]
+      elif a == "--steps" and i + 1 < args.len: steps = args[i+1]; inc i
+      elif a.startsWith("--deps="): deps = a[7..^1]
+      elif a == "--deps" and i + 1 < args.len: deps = args[i+1]; inc i
+      elif a.startsWith("--ttl="):
+        try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+      elif a == "--ttl" and i + 1 < args.len:
+        try: ttlSec = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif a.startsWith("--output="): outputMsg = a[9..^1]
+      elif a == "--output" and i + 1 < args.len: outputMsg = args[i+1]; inc i
+      elif a.startsWith("--reason="): reasonMsg = a[9..^1]
+      elif a == "--reason" and i + 1 < args.len: reasonMsg = args[i+1]; inc i
+      elif a == "--raw": rawOutput = true
+      elif not a.startsWith("-"):
+        posArgs.add(a)
+      inc i
+
+    case action
+    of "define", "create":
+      doWorkflowDefine(cfg, flowId, steps, deps, ttlSec)
+    of "next", "ready":
+      doWorkflowNext(cfg, flowId, rawOutput)
+    of "resolve", "complete":
+      if posArgs.len > 0: stepName = posArgs[0]
+      if stepName.len == 0:
+        stderr.writeLine("Error: Missing step name to resolve.")
+        quit(1)
+      doWorkflowResolve(cfg, flowId, stepName, outputMsg, rawOutput)
+    of "fail":
+      if posArgs.len > 0: stepName = posArgs[0]
+      if stepName.len == 0:
+        stderr.writeLine("Error: Missing step name to fail.")
+        quit(1)
+      doWorkflowFail(cfg, flowId, stepName, reasonMsg)
+    of "status", "show":
+      doWorkflowStatus(cfg, flowId, rawOutput)
+    else:
+      stderr.writeLine("Unknown workflow action: " & action)
+      stderr.writeLine("Usage: locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]")
       quit(1)
 
   of "status":

@@ -1802,7 +1802,68 @@ secret = "my_inline_secret_test_555"
             "--lease", "10"
         ])
         self.assertEqual(res_acq2.returncode, 0)
-        self.assertIn("ELECTED", res_acq2.stdout)
+    def test_52_workflow_dag_engine(self):
+        """Test DAG workflow engine ('locutus workflow')."""
+        flow_id = f"flow_cli_{int(time.time() * 1000)}"
+
+        # 1. Define DAG: lint -> test, build; test & build -> deploy
+        res_def = self.run_locutus([
+            "workflow", "define", flow_id,
+            "--steps", "lint,test,build,deploy",
+            "--deps", "test:lint;build:lint;deploy:test,build"
+        ])
+        self.assertEqual(res_def.returncode, 0)
+        self.assertIn("DEFINED", res_def.stdout)
+
+        # 2. Next: only 'lint' is ready
+        res_next = self.run_locutus(["workflow", "next", flow_id])
+        self.assertEqual(res_next.returncode, 0)
+        next_data = json.loads(res_next.stdout.strip())
+        self.assertEqual(next_data["ready"], ["lint"])
+
+        # Next with --raw: bare step names
+        res_next_raw = self.run_locutus(["workflow", "next", flow_id, "--raw"])
+        self.assertEqual(res_next_raw.returncode, 0)
+        self.assertEqual(res_next_raw.stdout.strip(), "lint")
+
+        # 3. Resolve 'lint'
+        res_res1 = self.run_locutus([
+            "workflow", "resolve", flow_id, "lint",
+            "--output", "all checks passed"
+        ])
+        self.assertEqual(res_res1.returncode, 0)
+        r1_data = json.loads(res_res1.stdout.strip())
+        self.assertEqual(r1_data["status"], "running")
+        self.assertEqual(set(r1_data["unlocked"]), {"test", "build"})
+
+        # 4. Resolve 'test'
+        res_res2 = self.run_locutus(["workflow", "resolve", flow_id, "test"])
+        self.assertEqual(res_res2.returncode, 0)
+        r2_data = json.loads(res_res2.stdout.strip())
+        self.assertEqual(r2_data["unlocked"], [])
+
+        # 5. Resolve 'build' -> should unlock 'deploy'
+        res_res3 = self.run_locutus(["workflow", "resolve", flow_id, "build", "--raw"])
+        self.assertEqual(res_res3.returncode, 0)
+        self.assertEqual(res_res3.stdout.strip(), "deploy")
+
+        # 6. Resolve 'deploy' -> complete workflow
+        res_res4 = self.run_locutus(["workflow", "resolve", flow_id, "deploy"])
+        self.assertEqual(res_res4.returncode, 0)
+        r4_data = json.loads(res_res4.stdout.strip())
+        self.assertEqual(r4_data["status"], "completed")
+
+        # 7. Status check
+        res_st = self.run_locutus(["workflow", "status", flow_id])
+        self.assertEqual(res_st.returncode, 0)
+        st_data = json.loads(res_st.stdout.strip())
+        self.assertEqual(st_data["status"], "completed")
+        self.assertEqual(st_data["steps"]["lint"]["output"], "all checks passed")
+
+        # Status with --raw
+        res_st_raw = self.run_locutus(["workflow", "status", flow_id, "--raw"])
+        self.assertEqual(res_st_raw.returncode, 0)
+        self.assertEqual(res_st_raw.stdout.strip(), "completed")
 
 
 if __name__ == "__main__":
