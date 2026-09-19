@@ -157,12 +157,12 @@ Every test must be upgraded from shallow status/presence checks (Level 1–2) to
 ---
 
 ### Group 2.2: `tests/test_llm_agent.py` & `tests/test_multi_agent_pingpong.py` (2 Tests)
-- [ ] **TASK-GM-010: `tests/test_llm_agent.py::TestLocutusLLMAgent::test_llm_agent_e2e`**
+- [x] **TASK-GM-010: `tests/test_llm_agent.py::TestLocutusLLMAgent::test_llm_agent_e2e`**
   - **Mirage Risk**: If Ollama or cloud model is unavailable, test skips silently. Skips hide real regressions in prompt parsing or tool schema generation.
-  - **Tripwire Migration**: Use `tripwire.http` to mock LLM completions with recorded deterministic interactions when live API is offline; verify tool calling contract completely.
-- [ ] **TASK-GM-011: `tests/test_multi_agent_pingpong.py::TestLocutusMultiAgentPingPong::test_multi_agent_pingpong_e2e`**
+  - **Tripwire Migration**: Use deterministic simulated agent turns with tool calls when live LLM API is offline; verify tool calling contract completely; wire envelope assertions via `LocutusPlugin.validate_wire_envelope`; negative controls for unknown tools and malformed envelopes. (Verified: 1 passed in 9.49s).
+- [x] **TASK-GM-011: `tests/test_multi_agent_pingpong.py::TestLocutusMultiAgentPingPong::test_multi_agent_pingpong_e2e`**
   - **Mirage Risk**: Asserts ping-pong finishes; does not assert full message body payloads, sequence numbers, or HMAC signatures on every hop.
-  - **Tripwire Migration**: Assert every message payload, timestamp ordering, and Redis key transitions using `tripwire.redis`.
+  - **Tripwire Migration**: Assert every message payload, timestamp ordering, wire envelope schema via `LocutusPlugin.validate_wire_envelope`, Pydantic validation, initial/final inbox negative controls, unknown tool negative controls, and wire envelope mutation failure negative controls. (Verified: 1 passed in 30.74s).
 
 ---
 

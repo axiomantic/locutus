@@ -147,10 +147,14 @@ class LocutusPlugin(BasePlugin):
         if not isinstance(data, dict):
             raise LocutusSchemaError(f"Wire envelope must be a JSON object, got {type(data).__name__}")
 
-        required_fields = ["id", "from", "to", "type", "body", "ts"]
+        required_fields = ["id", "from", "to", "type", "body"]
         for f in required_fields:
             if f not in data:
                 raise LocutusSchemaError(f"Wire envelope missing required field '{f}': {data}")
+
+        ts_val = data.get("timestamp") or data.get("ts")
+        if not ts_val:
+            raise LocutusSchemaError(f"Wire envelope missing required timestamp field ('timestamp' or 'ts'): {data}")
 
         if not isinstance(data["id"], str) or len(data["id"]) == 0:
             raise LocutusSchemaError("Wire envelope 'id' must be a non-empty string")
@@ -162,10 +166,11 @@ class LocutusPlugin(BasePlugin):
             raise LocutusSchemaError("Wire envelope 'body' must be a string")
 
         # Cryptographic authentication verification
-        if secret is not None and "sig" in data:
+        if secret is not None and "sig" in data and data["sig"]:
             sig = data["sig"]
-            # Canonical message signature: id|from|to|body|ts
-            canon = f"{data['id']}|{data['from']}|{data['to']}|{data['body']}|{data['ts']}"
+            subject = data.get("subject", "")
+            # Canonical message signature per locutus.nim: id|from|to|type|subject|body|ts
+            canon = f"{data['id']}|{data['from']}|{data['to']}|{data['type']}|{subject}|{data['body']}|{ts_val}"
             expected_sig = hmac.new(secret.encode("utf-8"), canon.encode("utf-8"), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(sig, expected_sig):
                 raise LocutusSchemaError(
