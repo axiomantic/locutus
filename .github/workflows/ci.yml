@@ -30,6 +30,7 @@ jobs:
 
       - name: Install Nim via asdf-nim
         run: |
+          source "${ASDF_DIR:-$HOME/.asdf}/asdf.sh"
           asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
           asdf install nim 2.2.0
           asdf global nim 2.2.0
@@ -82,6 +83,7 @@ jobs:
 
       - name: Install Nim via asdf-nim
         run: |
+          source "${ASDF_DIR:-$HOME/.asdf}/asdf.sh"
           asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
           asdf install nim 2.2.0
           asdf global nim 2.2.0
@@ -133,9 +135,10 @@ jobs:
           & "C:\redis\redis-cli.exe" ping
 
       - name: Set up Nim compiler
-        uses: jasonr/nim-action@v1
+        uses: jiro4989/setup-nim-action@v2
         with:
-          version: '2.2.0'
+          nim-version: '2.2.0'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up official Nimble & DLLs
         uses: nim-lang/setup-nimble-action@v1
