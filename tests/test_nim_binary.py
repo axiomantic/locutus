@@ -950,7 +950,7 @@ secret = "my_inline_secret_test_555"
         for flag in [["--version"], ["-v"], ["version"]]:
             res = self.run_locutus(flag)
             self.assertEqual(res.returncode, 0)
-            self.assertEqual(res.stdout.strip(), "locutus 0.1.0")
+            self.assertEqual(res.stdout.strip(), "locutus 0.1.1")
 
     def test_36_listen_default_blocks_silently(self):
         """Test that 'locutus listen <agent>' with no timeout blocks silently and receives messages."""

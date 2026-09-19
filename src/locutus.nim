@@ -44,7 +44,7 @@ const
   lockLua*       = staticRead("../scripts/lock.lua")
   unlockLua*     = staticRead("../scripts/unlock.lua")
   enqueueLua*    = staticRead("../scripts/enqueue.lua")
-  LocutusVersion* = "0.1.0"
+  LocutusVersion* = "0.1.1"
 
 # Cryptographic Helpers
 proc computeSha1*(text: string): string =
