@@ -529,7 +529,8 @@ proc formatConfigPaths*(): string =
   return lines.join("\n")
 
 proc initConfigFile*(target: string = "workspace"): string =
-  let path = if target in ["user", "global", "home"]:
+  let norm = target.toLowerAscii.strip(chars = {'-', ' '})
+  let path = if norm in ["user", "global", "home", "u"]:
     getUserConfigPath()
   else:
     getCurrentDir() / ".locutus.toml"

@@ -61,14 +61,19 @@ proc getOpenSslExe*(): string =
         return candidate
   return "openssl"
 
-proc getSecret*(): string =
+proc getSecret*(cfg: LocutusConfig = LocutusConfig()): string =
+  if cfg.secret.len > 0:
+    return cfg.secret
   let envSecret = getEnv("LOCUTUS_SECRET", "")
   if envSecret.len > 0:
     return envSecret
-  let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
-  let home = getHomeDir()
-  let configDir = home / ".config" / "locutus"
-  let secretFile = if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
+  let secretFile = if cfg.secretFile.len > 0:
+    cfg.secretFile
+  else:
+    let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
+    let home = getHomeDir()
+    let configDir = home / ".config" / "locutus"
+    if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
   if fileExists(secretFile):
     return readFile(secretFile).strip()
 
@@ -99,20 +104,26 @@ proc verifyHmac*(secret, data, expectedSig: string): bool =
     return false
   return CRYPTO_memcmp(computed.cstring, expectedSig.cstring, computed.len.csize_t) == 0
 
-proc getPassArg*(): string =
+proc getPassArg*(cfg: LocutusConfig = LocutusConfig()): string =
+  if cfg.secret.len > 0:
+    putEnv("LOCUTUS_SECRET", cfg.secret)
+    return "env:LOCUTUS_SECRET"
   let envSecret = getEnv("LOCUTUS_SECRET", "")
   if envSecret.len > 0:
     return "env:LOCUTUS_SECRET"
-  let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
-  let home = getHomeDir()
-  let configDir = home / ".config" / "locutus"
-  let secretFile = if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
+  let secretFile = if cfg.secretFile.len > 0:
+    cfg.secretFile
+  else:
+    let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
+    let home = getHomeDir()
+    let configDir = home / ".config" / "locutus"
+    if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
   if fileExists(secretFile):
     return "file:" & secretFile
-  discard getSecret()
+  discard getSecret(cfg)
   return "file:" & secretFile
 
-proc encryptAes*(plaintext, secret: string): string =
+proc encryptAes*(plaintext, secret: string, cfg: LocutusConfig = LocutusConfig()): string =
   let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
   createDir(tmpDir)
   let randomId = $rand(100000..999999)
@@ -122,7 +133,7 @@ proc encryptAes*(plaintext, secret: string): string =
     writeFile(inPath, plaintext)
     secureFilePermissions(inPath)
 
-    let passArg = getPassArg()
+    let passArg = getPassArg(cfg)
     let opensslBin = getOpenSslExe()
     var p = startProcess(opensslBin, args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
     let outStr = p.outputStream.readAll()
@@ -137,7 +148,7 @@ proc encryptAes*(plaintext, secret: string): string =
     if fileExists(inPath): removeFile(inPath)
     if fileExists(outPath): removeFile(outPath)
 
-proc decryptAes*(ciphertext, secret: string): string =
+proc decryptAes*(ciphertext, secret: string, cfg: LocutusConfig = LocutusConfig()): string =
   let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
   createDir(tmpDir)
   let randomId = $rand(100000..999999)
@@ -147,7 +158,7 @@ proc decryptAes*(ciphertext, secret: string): string =
     writeFile(inPath, ciphertext)
     secureFilePermissions(inPath)
 
-    let passArg = getPassArg()
+    let passArg = getPassArg(cfg)
     let opensslBin = getOpenSslExe()
     var p = startProcess(opensslBin, args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
     let outStr = p.outputStream.readAll()
@@ -272,8 +283,9 @@ proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string): string =
   return cfg.project & "-worker"
 
 # Core Operations
-proc doRegister*(cfg: LocutusConfig, name, tags: string, ttl: int = 150): string =
-  return runLuaScript(cfg.redisUrl, registerLua, registerSha, [cfg.prefix, name, tags, $ttl])
+proc doRegister*(cfg: LocutusConfig, name, tags: string, ttl: int = -1): string =
+  let effectiveTtl = if ttl > 0: ttl elif cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+  return runLuaScript(cfg.redisUrl, registerLua, registerSha, [cfg.prefix, name, tags, $effectiveTtl])
 
 proc doDrain*(cfg: LocutusConfig, name: string, count: int = 50): string =
   return runLuaScript(cfg.redisUrl, drainLua, drainSha, [cfg.prefix, name, $count])
@@ -338,7 +350,7 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
     cfg.project
 
   saveCurrentAgent(name)
-  discard doRegister(cfg, name, tags, 150)
+  discard doRegister(cfg, name, tags, cfg.heartbeatTtl)
   let backlog = doDrain(cfg, name, 50)
 
   echo "===================================================="
@@ -359,10 +371,10 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
 proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: string,
             tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false, customTs: string = "") =
   randomize()
-  let secret = getSecret()
+  let secret = getSecret(cfg)
   let id = if msgId.len > 0: msgId else: "msg_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
   let ts = if customTs.len > 0: customTs else: now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
-  let finalBody = if cfg.encrypt: encryptAes(body, secret) else: body
+  let finalBody = if cfg.encrypt: encryptAes(body, secret, cfg) else: body
 
   # Canonical concatenation for HMAC: id|from|to|type|subject|body|timestamp
   let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & finalBody & "|" & ts
@@ -393,6 +405,7 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 
   let msgJson = $node
 
+  let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
   let isTargetMulticast = isBroadcast or toAgent.startsWith("@") or toAgent == "*"
   if isTargetMulticast:
     var target = ""
@@ -416,20 +429,21 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
     else:
       target = if toAgent.len > 0: toAgent else: cfg.project
 
-    let res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, "604800"])
+    let res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, $effectiveTtl])
     echo res
   else:
-    let res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, "604800"])
+    let res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, $effectiveTtl])
     echo res
 
-proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
-  let secret = getSecret()
+proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
+  let secret = getSecret(cfg)
   let inboxKey = cfg.prefix & "inbox:" & name
+  let effectiveTimeout = if timeoutSec >= 0: timeoutSec elif cfg.listenTimeout > 0: cfg.listenTimeout else: 90
   let startTime = getTime().toUnix()
-  var remaining = timeoutSec
+  var remaining = effectiveTimeout
 
   # Keep heartbeat alive while actively listening
-  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", "150"])
+  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $cfg.heartbeatTtl])
   if hbCode != 0:
     stderr.writeLine("Redis error: " & hbOut.strip())
     quit(hbCode)
@@ -456,7 +470,7 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
     except JsonParsingError:
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from inbox")
       let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, timeoutSec - elapsed)
+      remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     let id = parsed.getOrDefault("id").getStr("")
@@ -474,19 +488,19 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
     if not verifyHmac(secret, canonical, sig):
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
       let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, timeoutSec - elapsed)
+      remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     # Authenticated! Decrypt if required
     if isEncrypted:
       try:
-        let decryptedBody = decryptAes(body, secret)
+        let decryptedBody = decryptAes(body, secret, cfg)
         parsed["body"] = %decryptedBody
         parsed["encrypted"] = %false
       except ValueError as e:
         stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
         let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, timeoutSec - elapsed)
+        remaining = max(0, effectiveTimeout - elapsed)
         continue
 
     echo $parsed
@@ -633,7 +647,7 @@ proc main() =
 
   of "listen":
     var explicitName = ""
-    var timeout = 90
+    var timeout = cfg.listenTimeout
     if args.len > 1:
       try:
         timeout = parseInt(args[1])
@@ -744,7 +758,7 @@ proc main() =
     echo doUnregister(cfg, name)
 
   of "get-secret":
-    echo getSecret()
+    echo getSecret(cfg)
 
   else:
     stderr.writeLine("Unknown subcommand: " & subcmd)

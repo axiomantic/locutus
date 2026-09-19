@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from tests.schema import LocutusMessage
 
@@ -467,6 +468,182 @@ class TestLocutusNimBinary(unittest.TestCase):
             self.assertEqual(tmp_files, [], f"Leaked tmp files found in {tmp_dir}: {tmp_files}")
 
         self.run_locutus(["close", agent])
+
+    def test_23_readme_example_config_comprehensive(self):
+        """Fact-check: verify that the exact example .locutus.toml in README.md is supported and parsed correctly."""
+        readme_example_toml = """redis_url = "redis://127.0.0.1:6379"
+prefix = "locutus:"
+project = "my-project"
+encrypt = false
+cluster = false
+heartbeat_ttl = 150
+message_ttl = 604800
+listen_timeout = 90
+
+# Shared secret file (avoids committing secrets into git)
+secret_file = "~/.config/locutus/secret"
+
+# Named profiles: locutus --profile staging <subcommand>
+[profiles.staging]
+redis_url = "rediss://staging.internal:6380"
+prefix = "stg:locutus:"
+encrypt = true
+
+[profiles.prod]
+redis_url = "rediss://prod-cluster.internal:6379"
+cluster = true
+encrypt = true
+"""
+        tmp_dir = tempfile.mkdtemp(prefix="locutus_readme_cfg_")
+        try:
+            cfg_path = os.path.join(tmp_dir, ".locutus.toml")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write(readme_example_toml)
+
+            clean_env = {
+                "LOCUTUS_REDIS_URL": "",
+                "LOCUTUS_REDIS_PREFIX": "",
+                "LOCUTUS_PROJECT": "",
+                "LOCUTUS_ENCRYPT": "",
+                "LOCUTUS_CLUSTER": "",
+            }
+
+            # 1. Root default profile verification
+            res = self.run_locutus(["config", "show", "--json"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res.returncode, 0)
+            data = json.loads(res.stdout)
+
+            self.assertEqual(data["redis_url"]["value"], "redis://127.0.0.1:6379")
+            self.assertEqual(data["prefix"]["value"], "locutus:")
+            self.assertEqual(data["project"]["value"], "my-project")
+            self.assertEqual(data["encrypt"]["value"], "false")
+            self.assertEqual(data["cluster"]["value"], "false")
+            self.assertEqual(data["heartbeat_ttl"]["value"], "150")
+            self.assertEqual(data["message_ttl"]["value"], "604800")
+            self.assertEqual(data["listen_timeout"]["value"], "90")
+            self.assertEqual(data["secret_file"]["value"], os.path.expanduser("~/.config/locutus/secret"))
+
+            # 2. Staging profile verification
+            res_stg = self.run_locutus(["--profile", "staging", "config", "show", "--json"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_stg.returncode, 0)
+            stg_data = json.loads(res_stg.stdout)
+            self.assertEqual(stg_data["redis_url"]["value"], "rediss://staging.internal:6380")
+            self.assertEqual(stg_data["prefix"]["value"], "stg:locutus:")
+            self.assertEqual(stg_data["encrypt"]["value"], "true")
+
+            # 3. Prod profile verification (cluster mode hashtag auto-applied)
+            res_prod = self.run_locutus(["--profile", "prod", "config", "show", "--json"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_prod.returncode, 0)
+            prod_data = json.loads(res_prod.stdout)
+            self.assertEqual(prod_data["redis_url"]["value"], "rediss://prod-cluster.internal:6379")
+            self.assertEqual(prod_data["cluster"]["value"], "true")
+            self.assertEqual(prod_data["prefix"]["value"], "{locutus:my-project}:")
+            self.assertEqual(prod_data["encrypt"]["value"], "true")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_24_all_runtime_config_options_behavior(self):
+        """Verify that every individual configuration option actually affects runtime operations."""
+        tmp_dir = tempfile.mkdtemp(prefix="locutus_runtime_cfg_")
+        custom_secret_file = os.path.join(tmp_dir, "custom_secret.key")
+        custom_secret_val = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        with open(custom_secret_file, "w") as f:
+            f.write(custom_secret_val + "\n")
+
+        cfg_content = f"""redis_url = "{REDIS_URL}"
+prefix = "{TEST_PREFIX}"
+project = "cfg_test_proj"
+agent_name = "configured_agent_99"
+heartbeat_ttl = 45
+message_ttl = 75
+listen_timeout = 1
+secret_file = "{custom_secret_file}"
+"""
+        try:
+            cfg_path = os.path.join(tmp_dir, ".locutus.toml")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write(cfg_content)
+
+            clean_env = {
+                "LOCUTUS_REDIS_URL": "",
+                "LOCUTUS_REDIS_PREFIX": "",
+                "LOCUTUS_PROJECT": "",
+                "LOCUTUS_SECRET": "",
+                "LOCUTUS_SECRET_FILE": "",
+            }
+
+            # A. Test agent_name and secret_file resolution
+            res_agent = self.run_locutus(["config", "get", "agent_name"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_agent.stdout.strip(), "configured_agent_99")
+
+            res_secret = self.run_locutus(["get-secret"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_secret.stdout.strip(), custom_secret_val)
+
+            # B. Test heartbeat_ttl affects Redis TTL on open
+            agent = "agent_heartbeat_ttl_test"
+            self.run_locutus(["open", agent, "worker"], env_overrides=clean_env, cwd=tmp_dir)
+            ttl_res = subprocess.run(
+                ["redis-cli", "-u", REDIS_URL, "TTL", f"{TEST_PREFIX}heartbeat:{agent}"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            hb_ttl = int(ttl_res.stdout.strip())
+            self.assertTrue(0 < hb_ttl <= 45, f"Expected heartbeat TTL <= 45, got {hb_ttl}")
+
+            # C. Test message_ttl affects inbox TTL on send
+            self.run_locutus(
+                ["send", "--to", agent, "--subject", "TTL Check", "--body", "Checking message TTL"],
+                env_overrides=clean_env,
+                cwd=tmp_dir
+            )
+            inbox_ttl_res = subprocess.run(
+                ["redis-cli", "-u", REDIS_URL, "TTL", f"{TEST_PREFIX}inbox:{agent}"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            msg_ttl = int(inbox_ttl_res.stdout.strip())
+            self.assertTrue(0 < msg_ttl <= 75, f"Expected inbox TTL <= 75, got {msg_ttl}")
+
+            # D. Test listen_timeout: drain message, then listen with empty inbox (should timeout in ~1s)
+            self.run_locutus(["drain", "1", agent], env_overrides=clean_env, cwd=tmp_dir)
+            start_t = time.time()
+            res_listen = self.run_locutus(["listen", agent], env_overrides=clean_env, cwd=tmp_dir)
+            elapsed = time.time() - start_t
+            self.assertEqual(res_listen.returncode, 0)
+            self.assertEqual(res_listen.stdout.strip(), "(nil)")
+            self.assertTrue(elapsed < 4.0, f"Listen with listen_timeout=1 took too long: {elapsed}s")
+
+            # E. Test inline secret configuration
+            cfg_inline_secret = f"""redis_url = "{REDIS_URL}"
+secret = "my_inline_secret_test_555"
+"""
+            cfg_inline_path = os.path.join(tmp_dir, "inline.toml")
+            with open(cfg_inline_path, "w", encoding="utf-8") as f:
+                f.write(cfg_inline_secret)
+
+            res_inline = self.run_locutus(["--config", cfg_inline_path, "get-secret"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_inline.stdout.strip(), "my_inline_secret_test_555")
+
+            self.run_locutus(["close", agent], env_overrides=clean_env, cwd=tmp_dir)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_25_config_init_targets(self):
+        """Verify that 'locutus config init' supports --project and handles existing files cleanly."""
+        tmp_dir = tempfile.mkdtemp(prefix="locutus_init_targets_")
+        try:
+            # Test --project flag format
+            res_proj = self.run_locutus(["config", "init", "--project"], cwd=tmp_dir)
+            self.assertEqual(res_proj.returncode, 0)
+            self.assertTrue(os.path.isfile(os.path.join(tmp_dir, ".locutus.toml")))
+
+            # Re-running returns warning/error message without overwriting
+            res_dup = self.run_locutus(["config", "init", "--project"], cwd=tmp_dir)
+            self.assertIn("already exists", res_dup.stdout)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
