@@ -52,7 +52,7 @@
 ### 6. Prompt Optimization & Skill Decomposition (Progressive Disclosure)
 - [x] Split architecture: core instructions in `SKILL.md`, wire format in `references/wire_spec.md`, scripts in `scripts/*.lua`.
 - [x] Safe structured parameters and unquoted heredoc message templates in `SKILL.md` to avoid bash escaping issues.
-- [x] Create operator slash command specifications in `commands/locutus.md` and `.claude/commands/locutus.md` (`/locutus open`, `/locutus send`, `/locutus broadcast`, `/locutus who`, `/locutus tag`, `/locutus close`).
+- [x] Universal skill specification in `skills/locutus/SKILL.md` (slash commands removed to prevent naming collisions in Claude Code).
 - [x] Zero-token background listener discipline (`BRPOP ... 90` doubles as heartbeat refresher).
 - [x] Reply loop prevention (replies must always be unicast O2O).
 
@@ -84,7 +84,7 @@
 - [x] Fixed `scripts/register.lua`: Automatically clean up old tag memberships on re-registration.
 - [x] Fixed `scripts/multicast.lua`: Delete orphaned `locutus:agent:<name>` hash during dead-agent pruning.
 - [x] Fixed `scripts/tag.lua`: Enforce active registration check before allowing tag modifications.
-- [x] Fixed `commands/locutus.md` & `.claude/commands/locutus.md`: Updated all legacy references to `LOCUTUS_*` and added `/locutus unregister` subcommand.
+- [x] Removed `commands/locutus.md` & `.claude/commands/locutus.md` to avoid collision with the canonical skill in Claude Code.
 - [x] Fixed `references/wire_spec.md`: Synchronized protocol title, prefix, and Pydantic schema model.
 - [x] Fixed `SKILL.md`: Updated Section 6 reply instructions to use quote-safe structured parameters.
 - [x] Fixed `tests/test_ollama_agent.py` & `tests/test_multi_agent_pingpong.py`: Passed `-u REDIS_URL` across all verification commands.

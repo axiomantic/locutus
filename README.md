@@ -37,7 +37,7 @@
 - [Configuration Architecture & Profiles](#configuration-architecture--profiles)
 - [Security & Prompt Firewall](#security--prompt-injection-firewall)
 - [Redis Cluster Support](#redis-cluster-support-hash-tags)
-- [Assistant Integration](#assistant-integration-skill--slash-commands)
+- [Assistant Integration](#assistant-integration-skill)
 - [Performance & Benchmarks](#performance--benchmarks)
 - [Testing & Verification](#testing--verification)
 - [License](#license)
@@ -513,12 +513,11 @@ Locutus supports Redis Cluster hash tags automatically:
 - You can also specify custom hash tags directly in `prefix` (for example, `prefix = "{team-alpha}:"`).
 
 
-## Assistant Integration (Skill & Slash Commands)
+## Assistant Integration (Skill)
 
 Locutus is packaged as an assistant skill for Claude Code, Antigravity, and other coding assistants:
 
-- **Skill Specification**: [`SKILL.md`](SKILL.md) (streamlined to 98 lines for minimal context overhead)
-- **Slash Commands**: `/locutus open`, `/locutus send`, `/locutus broadcast`, `/locutus who`, `/locutus tag`, `/locutus close`
+- **Skill Specification**: [`skills/locutus/SKILL.md`](skills/locutus/SKILL.md) (comprehensive multi-assistant protocol)
 - **Wire Specification**: [`references/wire_spec.md`](references/wire_spec.md)
 - **Validation Schema**: [`tests/schema.py`](tests/schema.py) (strict Pydantic envelope model)
 
