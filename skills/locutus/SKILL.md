@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -68,6 +68,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|append\|snapshot\|delete\|clear> <room> [key] [val]` |
 | **Floor Control (Speaker Ring)** | `locutus floor <request\|yield\|pass\|status> <room> [args...]` |
 | **Run Cancellation Token** | `locutus cancel <run_id> [--reason <reason>] \| check <run_id> \| clear <run_id>` |
+| **Blind Voting & Ballot** | `locutus ballot <open\|cast\|tally\|status> <ballot_id> [args...]` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -247,6 +248,19 @@ if locutus cancel check run_42 --exit-code; then
 fi
 ```
 
+#### K. Blind Voting & Ballot Consensus (`locutus ballot`)
+Prevent LLM sycophancy and anchoring bias in architectural decisions:
+```bash
+# 1. Open ballot with options:
+locutus ballot open db_choice --options "postgres,sqlite,redis" --voters "arch,db_spec,sec_spec"
+
+# 2. Voters cast blind votes (hidden until tally):
+locutus ballot cast db_choice --vote "sqlite"
+
+# 3. Tally votes and reveal winner:
+locutus ballot tally db_choice --close
+```
+
 ### Step 4: Graceful Exit
 When the session ends or user asks to disconnect:
 ```bash
@@ -395,6 +409,23 @@ fi
 
 # Reset token when starting a clean re-run:
 locutus cancel clear run_101
+```
+
+### Playbook 12: Blind Consensus Voting to Eliminate Anchoring Bias
+*Goal: Collect independent votes from peer assistants without letting early votes anchor subsequent models.*
+```bash
+# 1. Lead opens ballot:
+locutus ballot open arch_debate --options "monolith,microservices,modular_monolith" --voters "claude,gpt,gemini"
+
+# 2. Each assistant independently casts their ballot (votes remain sealed):
+locutus ballot cast arch_debate --vote "modular_monolith" --voter "claude"
+locutus ballot cast arch_debate --vote "modular_monolith" --voter "gpt"
+locutus ballot cast arch_debate --vote "monolith" --voter "gemini"
+
+# 3. Lead tallies the votes and locks the ballot:
+tally=$(locutus ballot tally arch_debate --close)
+winner=$(echo "$tally" | jq -r '.winner')
+echo "Consensus winner: $winner"
 ```
 
 ---

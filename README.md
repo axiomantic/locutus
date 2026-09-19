@@ -195,6 +195,19 @@ if locutus cancel check run_042 --exit-code; then
 fi
 ```
 
+#### Blind Voting & Ballot Consensus (`locutus ballot`)
+Eliminate anchoring bias and sycophancy in multi-agent architectural debates with sealed ballots:
+```bash
+# Open ballot with options:
+locutus ballot open db_election --options "postgres,sqlite,redis" --voters "arch,lead,qa"
+
+# Agents cast votes (votes remain concealed until tally):
+locutus ballot cast db_election --vote "sqlite" --voter "arch"
+
+# Tally votes and lock ballot:
+locutus ballot tally db_election --close
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -346,6 +359,21 @@ fi
 
 # 3. Clear token when starting fresh execution:
 locutus cancel clear run_042
+```
+
+### 10. Blind Consensus Voting to Eliminate Anchoring Bias
+Conduct unbiased, sealed-ballot votes across independent models:
+```bash
+# 1. Open ballot:
+locutus ballot open framework_choice --options "react,vue,svelte" --voters "claude,gpt,gemini"
+
+# 2. Assistants cast sealed ballots:
+locutus ballot cast framework_choice --vote "svelte" --voter "claude"
+locutus ballot cast framework_choice --vote "svelte" --voter "gpt"
+locutus ballot cast framework_choice --vote "react" --voter "gemini"
+
+# 3. Reveal tally and determine winner:
+locutus ballot tally framework_choice --close
 ```
 
 ---
@@ -576,6 +604,7 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | `locutus blackboard <cmd> <room> ...` | Shared persistent scratchpad memory (set, get, append, snapshot). | `locutus blackboard set room1 key '{"val": 1}'` |
 | `locutus floor <cmd> <room> ...` | Turn-taking floor control for roundtables (request, yield, pass, status). | `locutus floor request room1 30` |
 | `locutus cancel <run_id> ...` | Global run cancellation tokens (cancel, check, clear). | `locutus cancel run_042 --reason "Aborted"` |
+| `locutus ballot <cmd> <ballot_id> ...` | Blind voting and ballot consensus (open, cast, tally, status). | `locutus ballot open b1 --options "A,B"` |
 | `locutus status <state> [activity]` | Updates agent state (`idle`, `busy`, `error`) and activity text. | `locutus status busy "Compiling tests"` |
 | `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease (NX EX). | `locutus lock deploy_lock 30` |
 | `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |

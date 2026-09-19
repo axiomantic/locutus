@@ -72,6 +72,7 @@ const
   blackboardLua* = staticRead("../scripts/blackboard.lua")
   floorLua*      = staticRead("../scripts/floor.lua")
   cancelLua*     = staticRead("../scripts/cancel.lua")
+  ballotLua*     = staticRead("../scripts/ballot.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -97,6 +98,7 @@ let
   blackboardSha* = computeSha1(blackboardLua)
   floorSha*      = computeSha1(floorLua)
   cancelSha*     = computeSha1(cancelLua)
+  ballotSha*     = computeSha1(ballotLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -1051,6 +1053,43 @@ proc doCancelClear*(cfg: LocutusConfig, runId: string) =
     quit(1)
   echo res
 
+proc doBallotOpen*(cfg: LocutusConfig, ballotId, options, voters: string, ttlSec: int = 3600) =
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "open", ballotId, options, voters, $ttlSec, ts])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doBallotCast*(cfg: LocutusConfig, ballotId, voter, choice: string) =
+  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "cast", ballotId, voter, choice])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doBallotTally*(cfg: LocutusConfig, ballotId: string, closeBallot: bool = false, rawOutput: bool = false) =
+  let closeArg = if closeBallot: "close" else: ""
+  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "tally", ballotId, closeArg])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  if rawOutput:
+    try:
+      let parsed = parseJson(res)
+      echo parsed.getOrDefault("winner").getStr("")
+    except JsonParsingError:
+      echo res
+  else:
+    echo res
+
+proc doBallotStatus*(cfg: LocutusConfig, ballotId: string) =
+  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "status", ballotId])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1346,6 +1385,7 @@ proc main() =
     echo "  locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]"
     echo "  locutus floor <request|yield|pass|status> <room> [args...]"
     echo "  locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>"
+    echo "  locutus ballot <open|cast|tally|status> <ballot_id> [args...]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -1982,6 +2022,83 @@ proc main() =
       doCancelClear(cfg, runId)
     else:
       doCancelSet(cfg, runId, reason, byAgent, ttlSec)
+
+  of "ballot":
+    if args.len < 3:
+      stderr.writeLine("Error: Missing ballot subcommand or ballot_id.")
+      stderr.writeLine("Usage:")
+      stderr.writeLine("  locutus ballot open <ballot_id> --options <opt1,opt2> [--voters <v1,v2>] [--ttl sec]")
+      stderr.writeLine("  locutus ballot cast <ballot_id> --vote <choice> [--voter <agent>]")
+      stderr.writeLine("  locutus ballot tally <ballot_id> [--close] [--raw]")
+      stderr.writeLine("  locutus ballot status <ballot_id>")
+      quit(1)
+
+    let action = args[1].toLowerAscii
+    let ballotId = args[2]
+
+    case action
+    of "open":
+      var options = ""
+      var voters = "*"
+      var ttlSec = 3600
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--options="): options = a[10..^1]
+        elif a == "--options" and i + 1 < args.len: options = args[i+1]; inc i
+        elif a.startsWith("--voters="): voters = a[9..^1]
+        elif a == "--voters" and i + 1 < args.len: voters = args[i+1]; inc i
+        elif a.startsWith("--ttl="):
+          try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+        elif a == "--ttl" and i + 1 < args.len:
+          try: ttlSec = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif not a.startsWith("-") and options == "":
+          options = a
+        inc i
+      if options.len == 0:
+        stderr.writeLine("Error: Missing --options for ballot open.")
+        quit(1)
+      doBallotOpen(cfg, ballotId, options, voters, ttlSec)
+
+    of "cast", "vote":
+      var choice = ""
+      var voter = getActiveAgentName(cfg, "", fallbackDefault = true)
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--vote="): choice = a[7..^1]
+        elif a == "--vote" and i + 1 < args.len: choice = args[i+1]; inc i
+        elif a.startsWith("--choice="): choice = a[9..^1]
+        elif a == "--choice" and i + 1 < args.len: choice = args[i+1]; inc i
+        elif a.startsWith("--voter="): voter = a[8..^1]
+        elif a == "--voter" and i + 1 < args.len: voter = args[i+1]; inc i
+        elif not a.startsWith("-") and choice == "":
+          choice = a
+        inc i
+      if choice.len == 0:
+        stderr.writeLine("Error: Missing --vote for ballot cast.")
+        quit(1)
+      doBallotCast(cfg, ballotId, voter, choice)
+
+    of "tally":
+      var closeBallot = false
+      var rawOutput = false
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a in ["--close", "-c"]: closeBallot = true
+        elif a in ["--raw", "-r"]: rawOutput = true
+        inc i
+      doBallotTally(cfg, ballotId, closeBallot, rawOutput)
+
+    of "status", "show":
+      doBallotStatus(cfg, ballotId)
+
+    else:
+      stderr.writeLine("Unknown ballot action: " & action)
+      stderr.writeLine("Usage: locutus ballot <open|cast|tally|status> <ballot_id> [args...]")
+      quit(1)
 
   of "status":
     if args.len < 2:

@@ -1674,6 +1674,72 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_chk_after.returncode, 0)
         self.assertEqual(res_chk_after.stdout.strip(), "")
 
+    def test_50_blind_voting_ballot(self):
+        """Test blind voting and ballot consensus ('locutus ballot')."""
+        ballot_id = f"ballot_{int(time.time() * 1000)}"
+
+        # 1. Open ballot with options and restricted voters
+        res_open = self.run_locutus([
+            "ballot", "open", ballot_id,
+            "--options", "postgres,sqlite,redis",
+            "--voters", "voter_a,voter_b,voter_c"
+        ])
+        self.assertEqual(res_open.returncode, 0)
+        self.assertIn("OPEN", res_open.stdout)
+
+        # 2. Check status while open
+        res_st = self.run_locutus(["ballot", "status", ballot_id])
+        self.assertEqual(res_st.returncode, 0)
+        st_data = json.loads(res_st.stdout.strip())
+        self.assertEqual(st_data["status"], "open")
+        self.assertEqual(st_data["voted_count"], 0)
+
+        # 3. Cast votes
+        res_v1 = self.run_locutus([
+            "ballot", "cast", ballot_id,
+            "--vote", "sqlite",
+            "--voter", "voter_a"
+        ])
+        self.assertEqual(res_v1.returncode, 0)
+        self.assertIn("VOTED", res_v1.stdout)
+
+        res_v2 = self.run_locutus([
+            "ballot", "cast", ballot_id,
+            "--vote", "postgres",
+            "--voter", "voter_b"
+        ])
+        self.assertEqual(res_v2.returncode, 0)
+
+        res_v3 = self.run_locutus([
+            "ballot", "cast", ballot_id,
+            "--vote", "sqlite",
+            "--voter", "voter_c"
+        ])
+        self.assertEqual(res_v3.returncode, 0)
+
+        # 4. Reject vote from invalid option
+        res_inv = self.run_locutus([
+            "ballot", "cast", ballot_id,
+            "--vote", "oracle",
+            "--voter", "voter_a"
+        ])
+        self.assertNotEqual(res_inv.returncode, 0)
+
+        # 5. Tally votes and close ballot
+        res_tally = self.run_locutus(["ballot", "tally", ballot_id, "--close"])
+        self.assertEqual(res_tally.returncode, 0)
+        tally_data = json.loads(res_tally.stdout.strip())
+        self.assertEqual(tally_data["total_votes"], 3)
+        self.assertEqual(tally_data["winner"], "sqlite")
+        self.assertEqual(tally_data["tally"]["sqlite"], 2)
+        self.assertEqual(tally_data["tally"]["postgres"], 1)
+        self.assertEqual(tally_data["status"], "closed")
+
+        # 6. Tally with --raw prints winner
+        res_tally_raw = self.run_locutus(["ballot", "tally", ballot_id, "--raw"])
+        self.assertEqual(res_tally_raw.returncode, 0)
+        self.assertEqual(res_tally_raw.stdout.strip(), "sqlite")
+
 
 if __name__ == "__main__":
     unittest.main()

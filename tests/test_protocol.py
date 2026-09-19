@@ -61,6 +61,7 @@ LUA_ACK = load_lua("ack.lua")
 LUA_BLACKBOARD = load_lua("blackboard.lua")
 LUA_FLOOR = load_lua("floor.lua")
 LUA_CANCEL = load_lua("cancel.lua")
+LUA_BALLOT = load_lua("ballot.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -723,6 +724,38 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertEqual(clr, "CLEARED")
         after_clr = run_eval(LUA_CANCEL, 0, PREFIX, "check", run_id)
         self.assertEqual(after_clr, "")
+
+    def test_25_ballot_lua_protocol(self):
+        """Test ballot.lua via Redis EVAL."""
+        ballot_id = f"ballot_{int(time.time() * 1000)}"
+
+        # 1. Open ballot
+        open_res = run_eval(LUA_BALLOT, 0, PREFIX, "open", ballot_id, "optA,optB,optC", "alice,bob,carol", "3600")
+        self.assertEqual(open_res, "OPEN")
+
+        # 2. Cast votes
+        v1 = run_eval(LUA_BALLOT, 0, PREFIX, "cast", ballot_id, "alice", "optA")
+        self.assertEqual(v1, "VOTED")
+        v2 = run_eval(LUA_BALLOT, 0, PREFIX, "cast", ballot_id, "bob", "optB")
+        self.assertEqual(v2, "VOTED")
+
+        # Reject invalid option
+        inv = run_eval(LUA_BALLOT, 0, PREFIX, "cast", ballot_id, "carol", "optInvalid")
+        self.assertTrue(inv.startswith("ERR:"), f"Expected error, got {inv}")
+
+        # Cast valid vote for carol
+        v3 = run_eval(LUA_BALLOT, 0, PREFIX, "cast", ballot_id, "carol", "optA")
+        self.assertEqual(v3, "VOTED")
+
+        # 3. Tally
+        tally_json = run_eval(LUA_BALLOT, 0, PREFIX, "tally", ballot_id, "close")
+        tally = json.loads(tally_json)
+        self.assertEqual(tally["ballot_id"], ballot_id)
+        self.assertEqual(tally["total_votes"], 3)
+        self.assertEqual(tally["tally"]["optA"], 2)
+        self.assertEqual(tally["tally"]["optB"], 1)
+        self.assertEqual(tally["winner"], "optA")
+        self.assertEqual(tally["status"], "closed")
 
 
 if __name__ == "__main__":
