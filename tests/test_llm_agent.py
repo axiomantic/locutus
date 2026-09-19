@@ -123,6 +123,15 @@ class TestLocutusLLMAgent(unittest.TestCase):
                     if "id" in tc:
                         tool_resp["tool_call_id"] = tc["id"]
                     messages.append(tool_resp)
+                else:
+                    tool_resp = {
+                        "role": "tool",
+                        "content": f"Error: unknown tool '{name}'"
+                    }
+                    if "id" in tc:
+                        tool_resp["tool_call_id"] = tc["id"]
+                    messages.append(tool_resp)
+
 
         # Verify Redis state & strict message content validation
         print("\n--- Verifying Redis State & Message Content ---")

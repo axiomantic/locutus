@@ -149,6 +149,15 @@ PROTOCOL SPECIFICATION:
                     if "id" in tc:
                         tool_resp["tool_call_id"] = tc["id"]
                     bob_messages.append(tool_resp)
+                else:
+                    tool_resp = {
+                        "role": "tool",
+                        "content": f"Error: unknown tool '{name}'"
+                    }
+                    if "id" in tc:
+                        tool_resp["tool_call_id"] = tc["id"]
+                    bob_messages.append(tool_resp)
+
 
         # 4. Phase 3: Alice receives and validates reply
         print("\n--- Phase 3: Alice Verifies Bob's Reply ---")

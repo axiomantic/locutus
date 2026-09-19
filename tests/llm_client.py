@@ -21,7 +21,7 @@ if LLM_API_KEY:
 else:
     DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
-MODEL_NAME = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+MODEL_NAME = os.environ.get("LLM_MODEL") or DEFAULT_MODEL
 
 TOOLS = [
     {
