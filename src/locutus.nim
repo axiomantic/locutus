@@ -41,6 +41,30 @@ let
   tagSha*        = computeSha1(tagLua)
   unregisterSha* = computeSha1(unregisterLua)
 
+proc secureFilePermissions*(path: string) =
+  when not defined(windows):
+    try:
+      setFilePermissions(path, {fpUserRead, fpUserWrite})
+    except CatchableError:
+      discard
+
+proc getOpenSslExe*(): string =
+  let envExe = getEnv("OPENSSL_BIN", "")
+  if envExe.len > 0 and fileExists(envExe):
+    return envExe
+  let found = findExe("openssl")
+  if found.len > 0:
+    return found
+  when defined(windows):
+    for candidate in [
+      r"C:\Program Files\Git\usr\bin\openssl.exe",
+      r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+      r"C:\OpenSSL-Win64\bin\openssl.exe"
+    ]:
+      if fileExists(candidate):
+        return candidate
+  return "openssl"
+
 proc getSecret*(): string =
   let envSecret = getEnv("LOCUTUS_SECRET", "")
   if envSecret.len > 0:
@@ -59,7 +83,7 @@ proc getSecret*(): string =
   for b in bytes:
     hexSecret.add(toHex(b.int, 2).toLowerAscii)
   writeFile(secretFile, hexSecret)
-  setFilePermissions(secretFile, {fpUserRead, fpUserWrite})
+  secureFilePermissions(secretFile)
   return hexSecret
 
 proc computeHmacSha256*(secret, data: string): string =
@@ -99,10 +123,11 @@ proc encryptAes*(plaintext, secret: string): string =
   let inPath = tmpDir / ("enc_in_" & randomId & ".tmp")
   let outPath = tmpDir / ("enc_out_" & randomId & ".tmp")
   writeFile(inPath, plaintext)
-  setFilePermissions(inPath, {fpUserRead, fpUserWrite})
+  secureFilePermissions(inPath)
 
   let passArg = getPassArg()
-  var p = startProcess("openssl", args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+  let opensslBin = getOpenSslExe()
+  var p = startProcess(opensslBin, args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
   let outStr = p.outputStream.readAll()
   let exitCode = p.waitForExit()
   p.close()
@@ -122,10 +147,11 @@ proc decryptAes*(ciphertext, secret: string): string =
   let inPath = tmpDir / ("dec_in_" & randomId & ".tmp")
   let outPath = tmpDir / ("dec_out_" & randomId & ".tmp")
   writeFile(inPath, ciphertext)
-  setFilePermissions(inPath, {fpUserRead, fpUserWrite})
+  secureFilePermissions(inPath)
 
   let passArg = getPassArg()
-  var p = startProcess("openssl", args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+  let opensslBin = getOpenSslExe()
+  var p = startProcess(opensslBin, args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
   let outStr = p.outputStream.readAll()
   let exitCode = p.waitForExit()
   p.close()
@@ -232,7 +258,7 @@ proc saveCurrentAgent*(name: string) =
   let p = currentAgentPath()
   createDir(p.splitPath.head)
   writeFile(p, name.strip())
-  setFilePermissions(p, {fpUserRead, fpUserWrite})
+  secureFilePermissions(p)
 
 proc loadCurrentAgent*(): string =
   let p = currentAgentPath()

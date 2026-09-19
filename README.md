@@ -5,10 +5,11 @@
 **Zero-Glue Cross-Assistant Communication Bus over Redis**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/Tests-32%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](README.md)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
 
 *Sub-millisecond inter-agent coordination across terminals, projects, and machines with zero background daemons and a cryptographic prompt-injection firewall.*
 
@@ -65,6 +66,56 @@ Every agent receives tasks through a single atomic inbox: `${PREFIX}inbox:<agent
 
 ---
 
+## Installation Options
+
+Locutus is distributed as a single, static compiled binary with zero runtime dependencies. Choose your preferred installation method:
+
+### Method A: Homebrew (macOS & Linux)
+```bash
+brew install axiomantic/tap/locutus
+```
+
+### Method B: Universal One-Line Installer (macOS & Linux)
+```bash
+curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
+```
+*Installs the verified native binary into `/usr/local/bin` or `~/.local/bin`.*
+
+### Method C: Windows PowerShell Installer
+Run in PowerShell (Admin not required):
+```powershell
+irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
+```
+*Installs `locutus.exe` into `%LOCALAPPDATA%\Programs\locutus` and configures your User `PATH`.*
+
+### Method D: Scoop (Windows)
+```powershell
+scoop install https://raw.githubusercontent.com/axiomantic/locutus/main/packaging/scoop/locutus.json
+```
+
+### Method E: Debian / Ubuntu (.deb Package)
+Download the `.deb` package for your architecture from [Releases](https://github.com/axiomantic/locutus/releases):
+```bash
+# For x86_64 (amd64)
+sudo dpkg -i locutus_*_amd64.deb
+
+# For ARM64 (aarch64)
+sudo dpkg -i locutus_*_arm64.deb
+```
+
+### Method F: Pre-Compiled Standalone Binaries
+Standalone zero-dependency archives are available on the [GitHub Releases](https://github.com/axiomantic/locutus/releases) page:
+
+| OS | Architecture | Package |
+| :--- | :--- | :--- |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | `locutus-darwin-arm64.tar.gz` |
+| **macOS** | Intel x86_64 | `locutus-darwin-amd64.tar.gz` |
+| **Linux** | x86_64 (amd64) | `locutus-linux-amd64.tar.gz` |
+| **Linux** | ARM64 (aarch64) | `locutus-linux-arm64.tar.gz` |
+| **Windows** | x86_64 (amd64) | `locutus-windows-amd64.zip` |
+
+---
+
 ## 30-Second Quickstart
 
 ### 1. Install Prerequisites (Nim & Redis)
@@ -88,6 +139,14 @@ sudo systemctl start redis-server
 ```
 *(Or install the official Nim toolchain universally via `curl https://nim-lang.org/choosenim/init.sh -sSf | sh`)*
 
+**Windows:**
+```powershell
+# Install Nim and Redis via Scoop or Chocolatey
+scoop install nim redis
+# Or using Chocolatey:
+# choco install nim redis-64 -y
+```
+
 ### 2. Clone & Build Locutus
 ```bash
 # Clone
@@ -95,8 +154,12 @@ git clone https://github.com/axiomantic/locutus.git
 cd locutus
 
 # Compile standalone native binary (under 1 second)
+# On macOS / Linux:
 nim c -d:release -o:bin/locutus src/locutus.nim
 mkdir -p ~/.local/bin && cp bin/locutus ~/.local/bin/locutus
+
+# On Windows (PowerShell):
+# nim c -d:release -o:bin/locutus.exe src/locutus.nim
 ```
 
 ### 3. Open Connection in Terminal A (Worker)

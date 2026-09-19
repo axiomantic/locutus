@@ -66,9 +66,10 @@ class TestLocutusSecurity(unittest.TestCase):
         secret = res.stdout.strip()
 
         self.assertEqual(len(secret), 64)
-        file_stat = os.stat(target_path)
-        permissions = stat.S_IMODE(file_stat.st_mode)
-        self.assertEqual(permissions, 0o600, f"Expected 0600 permissions, got {oct(permissions)}")
+        if os.name != "nt":
+            file_stat = os.stat(target_path)
+            permissions = stat.S_IMODE(file_stat.st_mode)
+            self.assertEqual(permissions, 0o600, f"Expected 0600 permissions, got {oct(permissions)}")
 
     def test_02_hmac_tamper_detection(self):
         """Verify that HMAC verification fails if any envelope field (id, from, to, body, ts) is altered."""

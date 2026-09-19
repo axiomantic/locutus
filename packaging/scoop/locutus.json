@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "description": "High-performance inter-assistant communication bus over Redis with HMAC-SHA256 authentication",
+  "homepage": "https://github.com/axiomantic/locutus",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/axiomantic/locutus/releases/download/v1.0.0/locutus-windows-amd64.zip",
+      "bin": "locutus.exe"
+    }
+  },
+  "checkver": "github",
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/axiomantic/locutus/releases/download/v$version/locutus-windows-amd64.zip"
+      }
+    }
+  }
+}

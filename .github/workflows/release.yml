@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version tag
+        id: vars
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ "$VERSION" == "$GITHUB_REF" ]]; then
+            VERSION="dev"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building Locutus version ${VERSION}"
+
+      - name: Setup asdf
+        uses: asdf-vm/actions/setup@v3
+
+      - name: Install Nim via asdf-nim
+        run: |
+          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
+          asdf install nim 2.2.0
+          asdf global nim 2.2.0
+          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
+          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+
+      - name: Install cross-compilation toolchains
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-aarch64-linux-gnu mingw-w64
+
+      - name: Compile Linux x86_64 binary
+        run: |
+          nim c -d:release --opt:speed -o:dist/linux-amd64/locutus src/locutus.nim
+          strip dist/linux-amd64/locutus
+          tar -czf dist/locutus-linux-amd64.tar.gz -C dist/linux-amd64 locutus
+
+      - name: Compile Linux aarch64 binary
+        run: |
+          nim c -d:release --opt:speed --cpu:arm64 --os:linux \
+            --gcc.exe:aarch64-linux-gnu-gcc --gcc.linkerexe:aarch64-linux-gnu-gcc \
+            -o:dist/linux-arm64/locutus src/locutus.nim
+          aarch64-linux-gnu-strip dist/linux-arm64/locutus
+          tar -czf dist/locutus-linux-arm64.tar.gz -C dist/linux-arm64 locutus
+
+      - name: Compile Windows x86_64 binary
+        run: |
+          nim c -d:release --opt:speed --cpu:amd64 --os:windows \
+            --gcc.exe:x86_64-w64-mingw32-gcc --gcc.linkerexe:x86_64-w64-mingw32-gcc \
+            -o:dist/windows-amd64/locutus.exe src/locutus.nim
+          x86_64-w64-mingw32-strip dist/windows-amd64/locutus.exe
+          cd dist/windows-amd64 && zip -9 ../locutus-windows-amd64.zip locutus.exe && cd ../..
+
+      - name: Build Debian packages (.deb)
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          # Build amd64 .deb
+          mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin deb-amd64/usr/share/doc/locutus
+          cp dist/linux-amd64/locutus deb-amd64/usr/bin/
+          cp LICENSE deb-amd64/usr/share/doc/locutus/copyright
+          cp README.md deb-amd64/usr/share/doc/locutus/
+          chmod 755 deb-amd64/usr/bin/locutus
+          cat > deb-amd64/DEBIAN/control <<EOF
+          Package: locutus
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Axiomantic <info@axiomantic.org>
+          Description: High-performance inter-assistant communication bus over Redis
+           Zero-glue cross-assistant communication bus over Redis with HMAC-SHA256
+           authentication, dead-agent pruning, and optional AES-256-CBC encryption.
+          EOF
+          dpkg-deb --build deb-amd64 dist/locutus_${VERSION}_amd64.deb
+
+          # Build arm64 .deb
+          mkdir -p deb-arm64/DEBIAN deb-arm64/usr/bin deb-arm64/usr/share/doc/locutus
+          cp dist/linux-arm64/locutus deb-arm64/usr/bin/
+          cp LICENSE deb-arm64/usr/share/doc/locutus/copyright
+          cp README.md deb-arm64/usr/share/doc/locutus/
+          chmod 755 deb-arm64/usr/bin/locutus
+          cat > deb-arm64/DEBIAN/control <<EOF
+          Package: locutus
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: arm64
+          Maintainer: Axiomantic <info@axiomantic.org>
+          Description: High-performance inter-assistant communication bus over Redis
+           Zero-glue cross-assistant communication bus over Redis with HMAC-SHA256
+           authentication, dead-agent pruning, and optional AES-256-CBC encryption.
+          EOF
+          dpkg-deb --build deb-arm64 dist/locutus_${VERSION}_arm64.deb
+
+      - name: Upload Linux & Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-windows-assets
+          path: |
+            dist/locutus-linux-amd64.tar.gz
+            dist/locutus-linux-arm64.tar.gz
+            dist/locutus-windows-amd64.zip
+            dist/*.deb
+
+  build-macos:
+    name: Build macOS Release Artifacts
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup asdf
+        uses: asdf-vm/actions/setup@v3
+
+      - name: Install Nim via asdf-nim
+        run: |
+          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
+          asdf install nim 2.2.0
+          asdf global nim 2.2.0
+          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
+          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+
+      - name: Compile macOS Apple Silicon (arm64) binary
+        run: |
+          mkdir -p dist/darwin-arm64
+          nim c -d:release --opt:speed --cpu:arm64 -o:dist/darwin-arm64/locutus src/locutus.nim
+          strip dist/darwin-arm64/locutus
+          tar -czf dist/locutus-darwin-arm64.tar.gz -C dist/darwin-arm64 locutus
+
+      - name: Compile macOS Intel (x86_64) binary
+        run: |
+          mkdir -p dist/darwin-amd64
+          nim c -d:release --opt:speed --cpu:amd64 \
+            --passC:"-target x86_64-apple-macos11" \
+            --passL:"-target x86_64-apple-macos11" \
+            -o:dist/darwin-amd64/locutus src/locutus.nim
+          strip dist/darwin-amd64/locutus
+          tar -czf dist/locutus-darwin-amd64.tar.gz -C dist/darwin-amd64 locutus
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-assets
+          path: |
+            dist/locutus-darwin-arm64.tar.gz
+            dist/locutus-darwin-amd64.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-release, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Compute SHA256 Checksums
+        run: |
+          cd release-assets
+          sha256sum locutus-* *.deb > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

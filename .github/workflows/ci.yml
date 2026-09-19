@@ -7,7 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  test-linux:
+    name: Tests (Ubuntu / asdf-nim)
     runs-on: ubuntu-latest
 
     services:
@@ -24,10 +25,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Nim
-        uses: jasonr/nim-action@v1
-        with:
-          version: '2.2.0'
+      - name: Setup asdf
+        uses: asdf-vm/actions/setup@v3
+
+      - name: Install Nim via asdf-nim
+        run: |
+          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
+          asdf install nim 2.2.0
+          asdf global nim 2.2.0
+          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
+          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+
+      - name: Verify Nim compiler
+        run: |
+          which nim
+          nim -v
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,6 +58,118 @@ jobs:
           ./bin/locutus --help
 
       - name: Run test suite
+        env:
+          LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          python -m unittest discover tests
+
+  test-macos:
+    name: Tests (macOS / asdf-nim)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install and start Redis
+        run: |
+          brew install redis
+          brew services start redis
+          sleep 2
+          redis-cli ping
+
+      - name: Setup asdf
+        uses: asdf-vm/actions/setup@v3
+
+      - name: Install Nim via asdf-nim
+        run: |
+          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
+          asdf install nim 2.2.0
+          asdf global nim 2.2.0
+          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
+          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+
+      - name: Verify Nim compiler
+        run: |
+          which nim
+          nim -v
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pydantic>=2.0
+
+      - name: Compile native Nim binary
+        run: |
+          mkdir -p bin
+          nim c -d:release -o:bin/locutus src/locutus.nim
+          ./bin/locutus --help
+
+      - name: Run test suite
+        env:
+          LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          python -m unittest discover tests
+
+  test-windows:
+    name: Tests (Windows / setup-nimble-action)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install and start Redis
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip" -OutFile "redis.zip"
+          Expand-Archive -Path "redis.zip" -DestinationPath "C:\redis"
+          echo "C:\redis" >> $Env:GITHUB_PATH
+          Start-Process -FilePath "C:\redis\redis-server.exe"
+          Start-Sleep -Seconds 2
+          & "C:\redis\redis-cli.exe" ping
+
+      - name: Set up Nim compiler
+        uses: jasonr/nim-action@v1
+        with:
+          version: '2.2.0'
+
+      - name: Set up official Nimble & DLLs
+        uses: nim-lang/setup-nimble-action@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Nim and Nimble
+        shell: bash
+        run: |
+          which nim
+          nim -v
+          which nimble
+          nimble -v
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pydantic>=2.0"
+
+      - name: Compile native Nim binary
+        shell: bash
+        run: |
+          mkdir -p bin
+          nim c -d:release -o:bin/locutus.exe src/locutus.nim
+          ./bin/locutus.exe --help
+
+      - name: Run test suite
+        shell: bash
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
         run: |

@@ -6,7 +6,10 @@ from tests.schema import LocutusMessage
 
 REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
 TEST_PREFIX = "locutus_test:"
-BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
+candidate_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
+if not os.path.isfile(candidate_bin) and os.path.isfile(candidate_bin + ".exe"):
+    candidate_bin += ".exe"
+BIN_PATH = candidate_bin
 
 
 class TestLocutusNimBinary(unittest.TestCase):
