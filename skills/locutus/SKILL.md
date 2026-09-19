@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, scattering tasks to a pool for quorum aggregation, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -63,6 +63,8 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Scatter-Gather Quorum** | `locutus scatter --targets <@tag\|agent1,agent2\|\*> --subject "<subj>" --body "<body>" [--quorum N] [--timeout sec] [--raw]` |
 | **Produce to Work Queue** | `locutus enqueue <queue_name> --subject "<subj>" --body "<body>"` |
 | **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec]` |
+| **Reliable Task Claim** | `locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]` |
+| **Acknowledge Task** | `locutus ack <queue_name> <task_id>` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -282,6 +284,24 @@ replies=$(locutus scatter --targets @reviewers --subject "Review PR #42" --body 
 
 # Or fan out to explicit agents and pipe bare response bodies:
 locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "run" --raw
+```
+
+### Playbook 8: Fault-Tolerant Worker Mesh with Leases & Dead-Letter Queue
+*Goal: Ensure zero task loss even if a worker crashes or encounters an unhandled exception.*
+```bash
+# 1. Non-destructively claim task with a 120s lease:
+task=$(locutus claim batch_pipeline --lease 120)
+
+# 2. Extract task ID and payload:
+task_id=$(echo "$task" | jq -r '.id')
+payload=$(echo "$task" | jq -r '.body')
+
+# 3. Process the task safely...
+
+# 4. Confirm completion and clear lease:
+locutus ack batch_pipeline "$task_id"
+
+# Note: If the worker crashes mid-task, the lease expires after 120s and is automatically returned to the queue (or moved to dlq:batch_pipeline after 3 failed attempts).
 ```
 
 ---

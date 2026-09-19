@@ -67,6 +67,8 @@ const
   unlockLua*     = staticRead("../scripts/unlock.lua")
   enqueueLua*    = staticRead("../scripts/enqueue.lua")
   scatterLua*    = staticRead("../scripts/scatter.lua")
+  claimLua*      = staticRead("../scripts/claim.lua")
+  ackLua*        = staticRead("../scripts/ack.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -87,6 +89,8 @@ let
   unlockSha*     = computeSha1(unlockLua)
   enqueueSha*    = computeSha1(enqueueLua)
   scatterSha*    = computeSha1(scatterLua)
+  claimSha*      = computeSha1(claimLua)
+  ackSha*        = computeSha1(ackLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -865,6 +869,88 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
     echo $parsed
     return
 
+proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, leaseSec: int = 120, rawOutput: bool = false) =
+  let secret = getSecret(cfg)
+  let workerName = getActiveAgentName(cfg, "")
+  let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
+  let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: (if cfg.listenTimeout > 0: cfg.listenTimeout else: 60)
+  let startTime = getTime().toUnix()
+  var remaining = effectiveTimeout
+
+  let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+
+  if workerName.len > 0:
+    discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+
+  while isForever or remaining > 0 or effectiveTimeout == 0:
+    let res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+    if res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
+      var parsed: JsonNode
+      try:
+        parsed = parseJson(res.strip())
+      except JsonParsingError:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON claimed task")
+        quit(1)
+
+      let id = parsed.getOrDefault("id").getStr("")
+      let fromAgent = parsed.getOrDefault("from").getStr("")
+      let toAgent = parsed.getOrDefault("to").getStr("")
+      let msgType = parsed.getOrDefault("type").getStr("")
+      let subject = parsed.getOrDefault("subject").getStr("")
+      let body = parsed.getOrDefault("body").getStr("")
+      let ts = parsed.getOrDefault("timestamp").getStr("")
+      let sig = parsed.getOrDefault("sig").getStr("")
+      let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+      let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
+      if not verifyHmac(secret, canonical, sig):
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered task (ID: " & id & ")")
+        quit(1)
+
+      if isEncrypted:
+        try:
+          let decryptedBody = decryptAes(body, secret, cfg)
+          parsed["body"] = %decryptedBody
+          parsed["encrypted"] = %false
+        except ValueError as e:
+          stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted task: " & e.msg)
+          quit(1)
+
+      if rawOutput:
+        echo parsed.getOrDefault("body").getStr("")
+      else:
+        echo $parsed
+      return
+
+    if effectiveTimeout == 0:
+      return
+
+    if workerName.len > 0:
+      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+
+    let elapsed = int(getTime().toUnix() - startTime)
+    remaining = max(0, effectiveTimeout - elapsed)
+    if remaining == 0:
+      return
+
+    sleep(min(250, remaining * 1000))
+
+proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int =
+  let resStr = runLuaScript(cfg.redisUrl, ackLua, ackSha, [cfg.prefix, queueName, taskId])
+  var res = 0
+  try:
+    res = parseInt(resStr.strip())
+  except ValueError:
+    res = 0
+
+  if res == 1:
+    echo "ACK: " & taskId
+  else:
+    stderr.writeLine("Warning: Task " & taskId & " not found or already acknowledged.")
+  return res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1155,6 +1241,8 @@ proc main() =
     echo "  locutus scatter --targets <@tag|agents|*> --subject <subj> --body <body> [--quorum N] [--timeout 30] [--raw]"
     echo "  locutus enqueue <queue_name> --subject <subj> --body <body>"
     echo "  locutus work <queue_name> [timeout_sec]"
+    echo "  locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]"
+    echo "  locutus ack <queue_name> <task_id>"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -1560,6 +1648,46 @@ proc main() =
       try: timeout = parseInt(args[2])
       except ValueError: discard
     doWork(cfg, queueName, timeout)
+
+  of "claim":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing queue name.")
+      stderr.writeLine("Usage: locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]")
+      quit(1)
+    let queueName = args[1]
+    var timeout = -1
+    var lease = 120
+    var rawOutput = false
+
+    var i = 2
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--lease="):
+        try: lease = parseInt(a[8..^1]) except ValueError: discard
+      elif a == "--lease" and i + 1 < args.len:
+        try: lease = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif a.startsWith("--timeout="):
+        try: timeout = parseInt(a[10..^1]) except ValueError: discard
+      elif a == "--timeout" and i + 1 < args.len:
+        try: timeout = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif a == "--raw":
+        rawOutput = true
+      elif not a.startsWith("-"):
+        try: timeout = parseInt(a) except ValueError: discard
+      inc i
+
+    doClaim(cfg, queueName, timeout, lease, rawOutput)
+
+  of "ack":
+    if args.len < 3:
+      stderr.writeLine("Error: Missing queue name or task ID.")
+      stderr.writeLine("Usage: locutus ack <queue_name> <task_id>")
+      quit(1)
+    let queueName = args[1]
+    let taskId = args[2]
+    discard doAck(cfg, queueName, taskId)
 
   of "status":
     if args.len < 2:

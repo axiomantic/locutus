@@ -56,6 +56,8 @@ LUA_LOCK = load_lua("lock.lua")
 LUA_UNLOCK = load_lua("unlock.lua")
 LUA_ENQUEUE = load_lua("enqueue.lua")
 LUA_SCATTER = load_lua("scatter.lua")
+LUA_CLAIM = load_lua("claim.lua")
+LUA_ACK = load_lua("ack.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -628,6 +630,31 @@ class TestRedisA2AProtocol(unittest.TestCase):
         # Clean up
         run_eval(LUA_UNREGISTER, 0, PREFIX, a1)
         run_eval(LUA_UNREGISTER, 0, PREFIX, a2)
+
+    def test_21_reliable_queue_lua_protocol(self):
+        """Test claim.lua and ack.lua via Redis EVAL."""
+        q = f"proto_q_{int(time.time() * 1000)}"
+        msg = json.dumps({"id": "task_proto_1", "subject": "Job", "body": "123"})
+        # Enqueue
+        run_eval(LUA_ENQUEUE, 0, PREFIX, q, msg, "300")
+
+        # Claim
+        claimed = run_eval(LUA_CLAIM, 0, PREFIX, q, "worker1", "10", "3")
+        self.assertIsNotNone(claimed)
+        parsed = json.loads(claimed)
+        self.assertEqual(parsed["id"], "task_proto_1")
+
+        # Active lease should exist in sorted set
+        score = run_redis("ZSCORE", f"{PREFIX}leases:{q}", "task_proto_1")
+        self.assertIsNotNone(score)
+
+        # Ack
+        ack_res = run_eval(LUA_ACK, 0, PREFIX, q, "task_proto_1")
+        self.assertEqual(int(ack_res), 1)
+
+        # Lease should be gone
+        score_after = run_redis("ZSCORE", f"{PREFIX}leases:{q}", "task_proto_1")
+        self.assertEqual(score_after, "")
 
 
 if __name__ == "__main__":

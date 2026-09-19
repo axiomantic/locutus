@@ -145,6 +145,16 @@ locutus enqueue render_jobs --subject "Render Scene" --body "frame_042.blend"
 locutus work render_jobs 30
 ```
 
+#### Reliable Task Leases & Dead-Letter Queues (`locutus claim` / `locutus ack`)
+Avoid task loss if a worker agent crashes mid-task. `locutus claim` claims a task non-destructively with an automatic lease TTL. If the worker crashes before acknowledging with `locutus ack`, the task is automatically returned to the queue (or moved to `dlq:<queue>` after 3 retries):
+```bash
+# Worker claims task with a 120s lease:
+task=$(locutus claim render_jobs 30 --lease 120)
+
+# Acknowledge task upon completion:
+locutus ack render_jobs <task_id>
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -238,6 +248,19 @@ replies=$(locutus scatter --targets @reviewers --subject "Review PR #42" --body 
 
 # Or fan out to explicit agents and pipe bare response bodies:
 locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "run" --raw
+```
+
+### 6. Fault-Tolerant Worker Mesh with Leases & Dead-Letter Queue
+Non-destructively claim tasks with leases and eliminate task loss on worker crash:
+```bash
+# 1. Claim task with 120-second lease:
+task=$(locutus claim batch_pipeline --lease 120)
+task_id=$(echo "$task" | jq -r '.id')
+
+# 2. Process task safely...
+
+# 3. Confirm completion and release lease:
+locutus ack batch_pipeline "$task_id"
 ```
 
 ---

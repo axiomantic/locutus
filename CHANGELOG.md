@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reliable Task Leases, Acking & Dead-Letter Queue (`locutus claim` / `locutus ack`)**: Non-destructive queue consumption using leases (`locutus claim <queue> [--lease 120]`) and explicit acknowledgment (`locutus ack <queue> <task_id>`). If a worker agent terminates or crashes before completion, the lease expiration triggers automatic retry or escalation to `dlq:<queue>` after 3 attempts via atomic `scripts/claim.lua`.
 - **Scatter-Gather & Quorum Consensus (`locutus scatter`)**: Native orchestrator primitive for multicasting tasks across specialist pools (`--targets <@tag|agents|*>`) and gathering replies into a unified JSON array until a configurable quorum (`--quorum N`) is reached or timeout expires. Supports `--raw` output for shell piping and atomic target resolution via `scripts/scatter.lua`.
 
 ## [0.1.2] - 2026-09-19

@@ -1463,6 +1463,61 @@ secret = "my_inline_secret_test_555"
         self.run_locutus(["close", w1])
         self.run_locutus(["close", w2])
 
+    def test_46_reliable_queue_claim_ack_and_dlq(self):
+        """Test 'locutus claim' with lease, 'locutus ack', and DLQ auto-reclaim after 3 retries."""
+        q = f"reliable_q_{int(time.time() * 1000)}"
+        agent = "claim_bot"
+        self.run_locutus(["open", agent, "workers"])
+
+        # 1. Enqueue and Claim successfully with ACK
+        self.run_locutus(["enqueue", q, "--subject", "Task 1", "--body", "data:123"])
+        res_claim = self.run_locutus(["claim", q, "--lease", "5"], env_overrides={"LOCUTUS_AGENT_NAME": agent})
+        self.assertEqual(res_claim.returncode, 0, f"Claim failed: {res_claim.stderr}")
+        task1 = json.loads(res_claim.stdout.strip())
+        self.assertEqual(task1["subject"], "Task 1")
+        self.assertEqual(task1["body"], "data:123")
+        task1_id = task1["id"]
+
+        # Ack task 1
+        res_ack = self.run_locutus(["ack", q, task1_id])
+        self.assertEqual(res_ack.returncode, 0, f"Ack failed: {res_ack.stderr}")
+        self.assertIn(task1_id, res_ack.stdout)
+
+        # 2. Enqueue a task that will expire and fail 3 times -> moves to DLQ
+        self.run_locutus(["enqueue", q, "--subject", "Failing Task", "--body", "fail_data"])
+
+        # Attempt 1: Claim with 1s lease, do not ACK
+        res_c1 = self.run_locutus(["claim", q, "--lease", "1"], env_overrides={"LOCUTUS_AGENT_NAME": agent})
+        self.assertEqual(res_c1.returncode, 0)
+        t_fail = json.loads(res_c1.stdout.strip())
+        self.assertEqual(t_fail["subject"], "Failing Task")
+        time.sleep(1.2) # Wait for lease to expire
+
+        # Attempt 2: Claim again (should auto-reclaim from expired lease)
+        res_c2 = self.run_locutus(["claim", q, "--lease", "1"], env_overrides={"LOCUTUS_AGENT_NAME": agent})
+        self.assertEqual(res_c2.returncode, 0)
+        self.assertIn("Failing Task", res_c2.stdout)
+        time.sleep(1.2) # Wait for lease to expire
+
+        # Attempt 3: Claim again (third attempt)
+        res_c3 = self.run_locutus(["claim", q, "--lease", "1"], env_overrides={"LOCUTUS_AGENT_NAME": agent})
+        self.assertEqual(res_c3.returncode, 0)
+        self.assertIn("Failing Task", res_c3.stdout)
+        time.sleep(1.2) # Wait for lease to expire
+
+        # Next claim should move the task to DLQ and return nothing for this queue
+        res_c4 = self.run_locutus(["claim", q, "1", "--lease", "1"], env_overrides={"LOCUTUS_AGENT_NAME": agent})
+        self.assertEqual(res_c4.returncode, 0)
+        self.assertEqual(res_c4.stdout.strip(), "")
+
+        # Verify DLQ contains the failed task
+        # DLQ queue key is prefix + "dlq:" + q
+        res_dlq = self.run_locutus(["work", "dlq:" + q, "1"])
+        self.assertEqual(res_dlq.returncode, 0)
+        self.assertIn("Failing Task", res_dlq.stdout)
+
+        self.run_locutus(["close", agent])
+
 
 if __name__ == "__main__":
     unittest.main()
