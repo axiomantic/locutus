@@ -79,23 +79,64 @@ proc verifyHmac*(secret, data, expectedSig: string): bool =
     return false
   return CRYPTO_memcmp(computed.cstring, expectedSig.cstring, computed.len.csize_t) == 0
 
-proc encryptAes*(plaintext, secret: string): string =
-  var p = startProcess("openssl", args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", "pass:" & secret, "-base64", "-A"], options = {poUsePath})
-  p.inputStream.write(plaintext)
-  p.inputStream.close()
-  result = p.outputStream.readAll().strip()
-  discard p.waitForExit()
-  p.close()
+proc getPassArg*(): string =
+  let envSecret = getEnv("LOCUTUS_SECRET", "")
+  if envSecret.len > 0:
+    return "env:LOCUTUS_SECRET"
+  let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
+  let home = getHomeDir()
+  let configDir = home / ".config" / "locutus"
+  let secretFile = if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
+  if fileExists(secretFile):
+    return "file:" & secretFile
+  discard getSecret()
+  return "file:" & secretFile
 
-proc decryptAes*(ciphertext, secret: string): string =
-  var p = startProcess("openssl", args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", "pass:" & secret, "-base64", "-A"], options = {poUsePath})
-  p.inputStream.write(ciphertext)
-  p.inputStream.close()
-  result = p.outputStream.readAll().strip()
+proc encryptAes*(plaintext, secret: string): string =
+  let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
+  createDir(tmpDir)
+  let randomId = $rand(100000..999999)
+  let inPath = tmpDir / ("enc_in_" & randomId & ".tmp")
+  let outPath = tmpDir / ("enc_out_" & randomId & ".tmp")
+  writeFile(inPath, plaintext)
+  setFilePermissions(inPath, {fpUserRead, fpUserWrite})
+
+  let passArg = getPassArg()
+  var p = startProcess("openssl", args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+  let outStr = p.outputStream.readAll()
   let exitCode = p.waitForExit()
   p.close()
-  if exitCode != 0:
-    raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext)")
+  if fileExists(inPath): removeFile(inPath)
+
+  if exitCode != 0 or not fileExists(outPath):
+    if fileExists(outPath): removeFile(outPath)
+    raise newException(ValueError, "Encryption failed: " & outStr.strip())
+
+  result = readFile(outPath).strip()
+  if fileExists(outPath): removeFile(outPath)
+
+proc decryptAes*(ciphertext, secret: string): string =
+  let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
+  createDir(tmpDir)
+  let randomId = $rand(100000..999999)
+  let inPath = tmpDir / ("dec_in_" & randomId & ".tmp")
+  let outPath = tmpDir / ("dec_out_" & randomId & ".tmp")
+  writeFile(inPath, ciphertext)
+  setFilePermissions(inPath, {fpUserRead, fpUserWrite})
+
+  let passArg = getPassArg()
+  var p = startProcess("openssl", args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+  let outStr = p.outputStream.readAll()
+  let exitCode = p.waitForExit()
+  p.close()
+  if fileExists(inPath): removeFile(inPath)
+
+  if exitCode != 0 or not fileExists(outPath):
+    if fileExists(outPath): removeFile(outPath)
+    raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext): " & outStr.strip())
+
+  result = readFile(outPath)
+  if fileExists(outPath): removeFile(outPath)
 
 # Environment & Config Resolution
 type LocutusConfig* = object
@@ -149,22 +190,25 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
 
   # Check if redis-cli is present
   if findExe("redis-cli").len > 0:
-    var p = startProcess("redis-cli", args = fullArgs, options = {poUsePath})
+    var p = startProcess("redis-cli", args = fullArgs, options = {poUsePath, poStdErrToStdOut})
     let outStr = p.outputStream.readAll()
     let exitCode = p.waitForExit()
     p.close()
     return (outStr, exitCode)
-  else:
+  elif findExe("docker").len > 0:
     # Docker fallback
     let container = getEnv("LOCUTUS_CONTAINER", getEnv("A2A_CONTAINER", "locutus-redis"))
     var dockerArgs: seq[string] = @["exec", "-i", container, "redis-cli"]
     for a in fullArgs:
       dockerArgs.add(a)
-    var p = startProcess("docker", args = dockerArgs, options = {poUsePath})
+    var p = startProcess("docker", args = dockerArgs, options = {poUsePath, poStdErrToStdOut})
     let outStr = p.outputStream.readAll()
     let exitCode = p.waitForExit()
     p.close()
     return (outStr, exitCode)
+  else:
+    stderr.writeLine("Error: Neither 'redis-cli' nor 'docker' executable was found in PATH.")
+    quit(1)
 
 proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
   var shaArgs: seq[string] = @["EVALSHA", scriptSha, "0"]

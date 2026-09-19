@@ -311,6 +311,24 @@ class TestLocutusNimBinary(unittest.TestCase):
         self.assertNotEqual(res_b.returncode, 0)
         self.assertIn("Missing required arguments", res_b.stderr)
 
+    def test_12_large_e2ee_payload_byte_for_byte(self):
+        agent = "test_large_e2ee"
+        self.run_locutus(["open", agent, "worker"])
+
+        large_body = "Line of code: var x = 12345;\n" * 5000  # ~150 KB
+        res = self.run_locutus(
+            ["send", "--to", agent, "--subject", "Large E2EE", "--body", large_body],
+            env_overrides={"LOCUTUS_ENCRYPT": "1"}
+        )
+        self.assertEqual(res.returncode, 0)
+
+        listen_res = self.run_locutus(["listen", agent, "3"])
+        self.assertEqual(listen_res.returncode, 0)
+        payload = json.loads(listen_res.stdout)
+        self.assertEqual(payload["body"], large_body)
+
+        self.run_locutus(["close", agent])
+
 
 if __name__ == "__main__":
     unittest.main()

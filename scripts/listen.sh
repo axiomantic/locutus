@@ -91,7 +91,7 @@ if is_enc:
     ], capture_output=True, text=True)
     if dec_res.returncode != 0:
         sys.exit(5)
-    data["body"] = dec_res.stdout.strip()
+    data["body"] = dec_res.stdout
     data["encrypted"] = False
 
 print(json.dumps(data))
