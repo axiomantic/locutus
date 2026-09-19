@@ -240,10 +240,17 @@ locutus workflow status release_pipeline
 ```
 
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
-Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
+Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging). Supports monotonic fencing tokens to prevent zombie writes after lease expiration:
 ```bash
 # Acquire lease (returns 0 on success, 1 on conflict):
 locutus lock staging_deployment 30
+
+# Acquire lock with monotonic fencing token:
+locutus lock staging_deployment 30 --fencing
+# => LOCKED staging_deployment by alice (fencing: 42)
+
+# Or extract bare token for database updates:
+token=$(locutus lock staging_deployment 30 --fencing --raw)
 
 # Safely run deployment...
 
@@ -473,6 +480,20 @@ echo "$sweep_res" | jq .
 
 # 3. Clean summary line for automation:
 locutus sweep --raw
+```
+
+### 14. Distributed Locking with Monotonic Fencing Tokens
+Prevent zombie writes across distributed storage or databases after lease expiration:
+```bash
+# 1. Acquire lock and obtain monotonic integer sequence token:
+fence_token=$(locutus lock db_migration 60 --fencing --raw)
+# => "42"
+
+# 2. Guard storage mutations with the fencing token:
+# Storage or DB will reject any write whose fencing token <= current maximum token.
+
+# 3. Release lock:
+locutus unlock db_migration
 ```
 
 ---

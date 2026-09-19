@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, orchestrating multi-stage DAG task pipelines, cluster health watchdog sweeping, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, orchestrating multi-stage pipelines with automatic dependency resolution, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, electing resilient mesh leaders with automated lease failover, auditing cluster health and sweeping dead agent/listener garbage, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'leader election', 'acquire leader', 'failover', 'mesh leader', 'scatter', 'gather', 'quorum', 'workflow', 'dag', 'pipeline', 'task dependencies', 'resolve step', 'workflow next', 'sweep', 'clean dead agents', 'stale locks', 'garbage collection', 'cluster watchdog', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking with monotonic fencing tokens, orchestrating multi-stage DAG task pipelines, cluster health watchdog sweeping, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, generating monotonic fencing tokens to prevent zombie writes, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, orchestrating multi-stage pipelines with automatic dependency resolution, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, electing resilient mesh leaders with automated lease failover, auditing cluster health and sweeping dead agent/listener garbage, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'fencing token', 'monotonic counter', 'zombie writes', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'leader election', 'acquire leader', 'failover', 'mesh leader', 'scatter', 'gather', 'quorum', 'workflow', 'dag', 'pipeline', 'task dependencies', 'resolve step', 'workflow next', 'sweep', 'clean dead agents', 'stale locks', 'garbage collection', 'cluster watchdog', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -175,8 +175,10 @@ When executing critical sections or editing shared resources that must not colli
 # Acquire lease before editing a shared file (returns 0 on success, 1 on conflict):
 locutus lock file:schema.prisma 60
 
-# Or acquire lease for a deployment / critical operation:
-locutus lock deploy:staging 120
+# Acquire lock with monotonic fencing token to prevent zombie writes:
+locutus lock deploy:staging 120 --fencing
+# Or output bare token for piping:
+token=$(locutus lock deploy:staging 120 --fencing --raw)
 
 # Perform safe edits or migration...
 
@@ -534,6 +536,24 @@ echo "$sweep_res" | jq .
 # 3. Fast CLI status check (prints single line summary):
 locutus sweep --raw
 # => "Pruned 0 dead agents, 0 stale listeners."
+```
+
+### Playbook 16: Distributed Locking with Monotonic Fencing Tokens
+*Goal: Prevent zombie writes after lease expiration by guarding storage updates with monotonic fencing tokens.*
+```bash
+# 1. Acquire lock with monotonic fencing token counter:
+lock_out=$(locutus lock db_migration 60 --fencing)
+# => "LOCKED db_migration by lead_agent (fencing: 42)"
+
+# Or obtain bare token directly for shell piping:
+fence_token=$(locutus lock db_migration 60 --fencing --raw)
+# => "42"
+
+# 2. Pass fencing token to database or storage update:
+# e.g., UPDATE records SET data = '...', last_fence = 42 WHERE last_fence < 42;
+
+# 3. Release lock when complete:
+locutus unlock db_migration
 ```
 
 ---

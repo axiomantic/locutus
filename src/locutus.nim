@@ -744,11 +744,19 @@ proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): 
   let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
   return runLuaScript(cfg.redisUrl, statusLua, statusSha, [cfg.prefix, name, state.toLowerAscii, activity, $effectiveTtl])
 
-proc doLock*(cfg: LocutusConfig, lockName: string, ttlSec: int = 30): (string, int) =
+proc doLock*(cfg: LocutusConfig, lockName: string, ttlSec: int = 30, withFencing: bool = false, rawOutput: bool = false): (string, int) =
   let owner = getActiveAgentName(cfg, "")
-  let res = runLuaScript(cfg.redisUrl, lockLua, lockSha, [cfg.prefix, lockName, owner, $ttlSec])
-  if res == "1":
-    return ("LOCKED " & lockName & " by " & owner, 0)
+  let fencingArg = if withFencing: "1" else: "0"
+  let res = runLuaScript(cfg.redisUrl, lockLua, lockSha, [cfg.prefix, lockName, owner, $ttlSec, fencingArg])
+  if res != "0" and not res.startsWith("ERR:"):
+    if withFencing:
+      let token = res
+      if rawOutput:
+        return (token, 0)
+      else:
+        return ("LOCKED " & lockName & " by " & owner & " (fencing: " & token & ")", 0)
+    else:
+      return ("LOCKED " & lockName & " by " & owner, 0)
   else:
     return ("Error: Lock '" & lockName & "' is already held.", 1)
 
@@ -1536,7 +1544,7 @@ proc main() =
     echo "  locutus leader <acquire|renew|resign|status> <role> [args...]"
     echo "  locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
-    echo "  locutus lock <lock_name> [ttl_sec]"
+    echo "  locutus lock <lock_name> [ttl_sec] [--fencing] [--raw]"
     echo "  locutus unlock <lock_name>"
     echo "  locutus pub <channel> <message>"
     echo "  locutus sub <channel> [timeout_sec]"
@@ -2390,14 +2398,21 @@ proc main() =
   of "lock":
     if args.len < 2:
       stderr.writeLine("Error: Missing lock name.")
-      stderr.writeLine("Usage: locutus lock <lock_name> [ttl_sec]")
+      stderr.writeLine("Usage: locutus lock <lock_name> [ttl_sec] [--fencing] [--raw]")
       quit(1)
     let lockName = args[1]
     var ttl = 30
-    if args.len > 2:
-      try: ttl = parseInt(args[2])
-      except ValueError: discard
-    let (msg, code) = doLock(cfg, lockName, ttl)
+    var withFencing = false
+    var rawOutput = false
+    var i = 2
+    while i < args.len:
+      let a = args[i]
+      if a == "--fencing" or a == "-f": withFencing = true
+      elif a == "--raw": rawOutput = true
+      elif not a.startsWith("-"):
+        try: ttl = parseInt(a) except ValueError: discard
+      inc i
+    let (msg, code) = doLock(cfg, lockName, ttl, withFencing, rawOutput)
     if code != 0:
       stderr.writeLine(msg)
       quit(code)

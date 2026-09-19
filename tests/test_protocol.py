@@ -878,6 +878,37 @@ class TestRedisA2AProtocol(unittest.TestCase):
         run_redis("HDEL", f"{PREFIX}agents", alive_agent)
         run_redis("DEL", f"{PREFIX}heartbeat:{alive_agent}")
 
+    def test_29_lock_fencing_token_lua_protocol(self):
+        """Test lock.lua monotonic fencing token generation."""
+        lock_name = f"fenced_lock_{int(time.time() * 1000)}"
+
+        # 1. Alice acquires with fencing token requested
+        tok1 = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "alice", "10", "1")
+        self.assertEqual(tok1, "1")
+
+        # 2. Alice unlocks
+        res_un1 = run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "alice")
+        self.assertEqual(res_un1, "1")
+
+        # 3. Bob acquires with fencing token -> MUST be monotonic (2)
+        tok2 = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "bob", "10", "1")
+        self.assertEqual(tok2, "2")
+
+        # 4. Charlie attempts to acquire -> rejected (0)
+        tok_fail = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "charlie", "10", "1")
+        self.assertEqual(tok_fail, "0")
+
+        # 5. Bob unlocks
+        run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "bob")
+
+        # 6. Charlie acquires -> token 3
+        tok3 = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "charlie", "10", "1")
+        self.assertEqual(tok3, "3")
+
+        # Cleanup
+        run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "charlie")
+        run_redis("DEL", f"{PREFIX}lock:fencing:{lock_name}")
+
 
 if __name__ == "__main__":
     unittest.main()

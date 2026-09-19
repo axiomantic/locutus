@@ -1914,6 +1914,38 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_raw.returncode, 0)
         self.assertIn("Pruned", res_raw.stdout)
 
+    def test_54_lock_fencing_tokens(self):
+        """Test distributed lock acquisition with monotonic fencing tokens ('locutus lock --fencing')."""
+        lock_name = f"file:db_migration_{int(time.time() * 1000)}"
+        a1 = "agent_fence_1"
+        a2 = "agent_fence_2"
+        self.run_locutus(["open", a1, "dev"])
+        self.run_locutus(["open", a2, "dev"])
+
+        # 1. Agent 1 acquires lock with --fencing: output mentions fencing token 1
+        res_acq1 = self.run_locutus(["lock", lock_name, "10", "--fencing"], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        self.assertEqual(res_acq1.returncode, 0)
+        self.assertIn("LOCKED", res_acq1.stdout)
+        self.assertIn("fencing: 1", res_acq1.stdout)
+
+        # 2. Agent 2 tries to acquire -> fails (code 1)
+        res_acq_fail = self.run_locutus(["lock", lock_name, "10", "--fencing"], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+        self.assertEqual(res_acq_fail.returncode, 1)
+
+        # 3. Agent 1 unlocks
+        res_un1 = self.run_locutus(["unlock", lock_name], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        self.assertEqual(res_un1.returncode, 0)
+
+        # 4. Agent 2 acquires with --fencing and --raw: prints bare monotonic token "2"
+        res_acq2_raw = self.run_locutus(["lock", lock_name, "10", "--fencing", "--raw"], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+        self.assertEqual(res_acq2_raw.returncode, 0)
+        self.assertEqual(res_acq2_raw.stdout.strip(), "2")
+
+        # 5. Agent 2 unlocks
+        self.run_locutus(["unlock", lock_name], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+        self.run_locutus(["close", a1])
+        self.run_locutus(["close", a2])
+
 
 if __name__ == "__main__":
     unittest.main()
