@@ -79,7 +79,7 @@ if ($Uninstall) {
     }
 
     if ($removed) {
-        Write-Host "✓ Locutus (binary and AI agent skills) has been successfully uninstalled." -ForegroundColor Green
+        Write-Host "[+] Locutus (binary and AI agent skills) has been successfully uninstalled." -ForegroundColor Green
         Write-Host "Note: Configuration files in %APPDATA%\locutus were preserved."
     } else {
         Write-Host "Locutus does not appear to be installed on this system." -ForegroundColor Gray
@@ -178,7 +178,7 @@ function Install-Skills {
         Write-Host "Attempting global skill installation via skills.sh (npx)..." -ForegroundColor Yellow
         try {
             & npx -y skills add axiomantic/locutus -g -a '*' -y
-            Write-Host "✓ Locutus skill installed globally via skills.sh." -ForegroundColor Green
+            Write-Host "[+] Locutus skill installed globally via skills.sh." -ForegroundColor Green
             $skillInstalled = $true
         }
         catch {}
@@ -189,7 +189,7 @@ function Install-Skills {
         Write-Host "Attempting global skill installation via skilz..." -ForegroundColor Yellow
         try {
             & skilz -y install https://github.com/axiomantic/locutus
-            Write-Host "✓ Locutus skill installed globally via skilz." -ForegroundColor Green
+            Write-Host "[+] Locutus skill installed globally via skilz." -ForegroundColor Green
             $skillInstalled = $true
         }
         catch {}
@@ -225,7 +225,7 @@ function Install-Skills {
                     if (Test-Path $specFile) {
                         Copy-Item -Path $specFile -Destination (Join-Path $refDir "wire_spec.md") -Force
                     }
-                    Write-Host "  ✓ Installed Locutus skill to: $targetSkill" -ForegroundColor Green
+                    Write-Host "  [+] Installed Locutus skill to: $targetSkill" -ForegroundColor Green
                     $skillInstalled = $true
                 }
             }
@@ -237,7 +237,7 @@ function Install-Skills {
     }
 
     if ($skillInstalled) {
-        Write-Host "✓ AI Agent Skills configured successfully." -ForegroundColor Green
+        Write-Host "[+] AI Agent Skills configured successfully." -ForegroundColor Green
     } else {
         Write-Host "Notice: No coding assistant directories detected yet." -ForegroundColor Gray
         Write-Host "Install the skill into your assistant at any time using:"
@@ -250,7 +250,7 @@ function Install-Skills {
 if (-not $BuildFromSource -and (Get-Command scoop -ErrorAction SilentlyContinue)) {
     Write-Host "Detected Scoop package manager. Installing via Scoop..." -ForegroundColor Green
     if (scoop install "https://raw.githubusercontent.com/$Repo/main/packaging/scoop/locutus.json") {
-        Write-Host "✓ Locutus successfully installed via Scoop." -ForegroundColor Green
+        Write-Host "[+] Locutus successfully installed via Scoop." -ForegroundColor Green
         Install-Skills
         exit 0
     }
@@ -303,12 +303,12 @@ if ($userPath -split ";" -notcontains $InstallDir) {
     $env:Path = "$env:Path;$InstallDir"
 }
 
-Write-Host "✓ Locutus successfully installed to: $exePath" -ForegroundColor Green
+Write-Host "[+] Locutus successfully installed to: $exePath" -ForegroundColor Green
 
 # 7. Verification
 try {
     & $exePath --help | Out-Null
-    Write-Host "✓ Locutus executable verified and ready to use!" -ForegroundColor Green
+    Write-Host "[+] Locutus executable verified and ready to use!" -ForegroundColor Green
     Write-Host "Run 'locutus --help' to get started."
 }
 catch {
