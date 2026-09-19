@@ -1,16 +1,16 @@
-# A2A Wire Protocol & Schema Specification
+# Locutus Wire Protocol & Schema Specification
 
-This document provides the formal reference specification for messages transmitted across the Redis Agent-to-Agent (A2A) bus.
+This document provides the formal reference specification for messages transmitted across the Redis Locutus inter-assistant bus.
 
 ---
 
 ## 1. Envelope Schema (JSON)
 
-Every message stored in an agent inbox (`${A2A_REDIS_PREFIX}inbox:<recipient>`) must be a valid JSON object matching this schema:
+Every message stored in an agent inbox (`${LOCUTUS_REDIS_PREFIX}inbox:<recipient>`) must be a valid JSON object matching this schema:
 
 ```json
 {
-  "id": "msg_1710789000_alice_9f8a",
+  "id": "msg_1789777056_alice_83728",
   "from": "alice",
   "to": "bob",
   "type": "task",
@@ -18,7 +18,7 @@ Every message stored in an agent inbox (`${A2A_REDIS_PREFIX}inbox:<recipient>`) 
   "tags": ["locutus", "ticket-104"],
   "subject": "Review auth parser changes",
   "body": "Please inspect src/auth.ts and verify if token expiry handles leap years.",
-  "timestamp": "2026-09-18T23:35:00Z"
+  "timestamp": "2026-09-19T00:17:36Z"
 }
 ```
 
@@ -28,10 +28,10 @@ Every message stored in an agent inbox (`${A2A_REDIS_PREFIX}inbox:<recipient>`) 
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | **Yes** | Unique message identifier. Recommended format: `msg_<unix_ts>_<sender>_<random>`. |
 | `from` | `string` | **Yes** | Ephemeral identity name of the sending agent. |
-| `to` | `string` | **Yes** | Direct recipient name (e.g. `bob`), multicast tag (e.g. `locutus,qa`), or global broadcast (`*`). |
+| `to` | `string` | **Yes** | Direct recipient name (e.g. `bob`), multicast tag (e.g. `@locutus,qa`), or global broadcast (`*`). |
 | `type` | `string` | **Yes** | One of: `"task"`, `"query"`, `"reply"`, `"status"`. |
 | `reply_to` | `string` \| `null` | **Yes** | ID of the previous message being replied to, or `null` if initiating a conversation. |
-| `tags` | `array[string]` | **Yes** | Routing, ticket, or domain tags. |
+| `tags` | `array[string]` | **Yes** | Routing, project, or ticket tags. |
 | `subject` | `string` | **Yes** | Brief human-readable summary of the payload. |
 | `body` | `string` | **Yes** | Work instructions, question, or response payload. Keep under 10KB. |
 | `timestamp` | `string` | **Yes** | ISO-8601 UTC timestamp string (e.g. `YYYY-MM-DDTHH:MM:SSZ`). |
@@ -62,22 +62,39 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-class A2AMessage(BaseModel):
+
+class LocutusMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(..., min_length=3)
-    from_agent: str = Field(..., alias="from", min_length=1)
-    to_agent: str = Field(..., alias="to", min_length=1)
-    type: Literal["task", "query", "reply", "status"]
-    reply_to: Optional[str] = None
-    tags: List[str] = Field(default_factory=list)
-    subject: str = Field(..., min_length=1)
-    body: str = Field(..., min_length=1)
-    timestamp: str
+    id: str = Field(..., min_length=3, description="Unique message ID")
+    from_agent: str = Field(..., alias="from", min_length=1, description="Sender agent name")
+    to_agent: str = Field(..., alias="to", min_length=1, description="Recipient name, @tag, or *")
+    type: Literal["task", "query", "reply", "status"] = Field(..., description="Message envelope type")
+    reply_to: Optional[str] = Field(default=None, description="Original message ID for reply threading")
+    tags: List[str] = Field(default_factory=list, description="Associated routing or ticket tags")
+    subject: str = Field(..., min_length=1, description="Message subject line")
+    body: str = Field(..., min_length=1, description="Task, query, or reply payload content")
+    timestamp: str = Field(..., description="ISO-8601 timestamp string")
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def validate_tags(cls, v):
+        if isinstance(v, dict):
+            return list(v.keys())
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(",") if t.strip()]
+        return v or []
 
     @field_validator("timestamp")
     @classmethod
     def validate_iso_timestamp(cls, v: str) -> str:
-        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        try:
+            datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except Exception as e:
+            raise ValueError(f"Field 'timestamp' must be a valid ISO-8601 format: {e}")
         return v
+
+
+# Backwards compatibility alias
+A2AMessage = LocutusMessage
 ```

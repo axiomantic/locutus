@@ -80,14 +80,19 @@ def call_ollama(messages):
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
+
+def redis_cmd(*args):
+    return subprocess.run(["redis-cli", "-u", REDIS_URL] + list(args), capture_output=True, text=True).stdout.strip()
+
 def main():
     print(f"============================================================")
     print(f" Starting Locutus Multi-Agent Ping-Pong Test ({MODEL_NAME})")
     print(f"============================================================")
 
     # 1. Reset Redis state for alice and bob
-    subprocess.run([
-        "redis-cli", "DEL",
+    redis_cmd(
+        "DEL",
         "locutus:inbox:alice",
         "locutus:inbox:bob",
         "locutus:heartbeat:alice",
@@ -96,27 +101,27 @@ def main():
         "locutus:agent:bob",
         "locutus:tag:calc",
         "locutus:tag:lead"
-    ], check=False)
+    )
 
     scripts_dir = os.path.abspath("scripts")
 
     # 2. Step 1: Alice registers and sends task to Bob
     print("\n--- Phase 1: Alice Registers and Dispatches Task ---")
     run_bash(
-        f'redis-cli EVAL "$(cat "{scripts_dir}/register.lua")" 0 "locutus:" "alice" "locutus,lead" 150',
+        f'redis-cli -u "{REDIS_URL}" EVAL "$(cat "{scripts_dir}/register.lua")" 0 "locutus:" "alice" "locutus,lead" 150',
         role="ALICE"
     )
 
     task_id = f"task_{int(time.time())}_alice_{os.getpid()}"
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     task_cmd = (
-        f'redis-cli EVAL "$(cat "{scripts_dir}/send_o2o.lua")" 0 '
+        f'redis-cli -u "{REDIS_URL}" EVAL "$(cat "{scripts_dir}/send_o2o.lua")" 0 '
         f'"locutus:" "bob" "task" "alice" "Compute Product" "Please compute 15 * 15" "locutus" "" "{task_id}" "{ts}"'
     )
     run_bash(task_cmd, role="ALICE")
 
     # Verify task waiting in Bob's inbox
-    bob_len = subprocess.run(["redis-cli", "LLEN", "locutus:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    bob_len = redis_cmd("LLEN", "locutus:inbox:bob")
     assert int(bob_len) == 1, f"Expected Bob inbox to have 1 task, got {bob_len}"
     print(f"✓ Task {task_id} successfully queued in Bob's inbox.")
 
@@ -185,11 +190,11 @@ PROTOCOL SPECIFICATION:
 
     # 4. Phase 3: Alice receives and validates reply
     print("\n--- Phase 3: Alice Verifies Bob's Reply ---")
-    alice_len = subprocess.run(["redis-cli", "LLEN", "locutus:inbox:alice"], capture_output=True, text=True).stdout.strip()
+    alice_len = redis_cmd("LLEN", "locutus:inbox:alice")
     print(f"Alice inbox length: {alice_len}")
     assert int(alice_len) > 0, "Alice inbox is empty! Bob did not reply."
 
-    raw_reply = subprocess.run(["redis-cli", "RPOP", "locutus:inbox:alice"], capture_output=True, text=True).stdout.strip()
+    raw_reply = redis_cmd("RPOP", "locutus:inbox:alice")
     print(f"\nRaw Reply from Bob:\n{raw_reply}")
 
     try:
@@ -216,7 +221,7 @@ PROTOCOL SPECIFICATION:
     print(f"✓ Correct calculation returned: '{reply.body}'")
 
     # Verify Bob's registration and heartbeat in Redis
-    bob_hb = subprocess.run(["redis-cli", "GET", "locutus:heartbeat:bob"], capture_output=True, text=True).stdout.strip()
+    bob_hb = redis_cmd("GET", "locutus:heartbeat:bob")
     assert bob_hb == "1", f"Expected Bob heartbeat to be '1', got '{bob_hb}'"
     print("✓ Bob heartbeat is active in Redis ('1')")
 

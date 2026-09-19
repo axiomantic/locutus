@@ -158,8 +158,9 @@ class TestRedisA2AProtocol(unittest.TestCase):
                 "from": "lead",
                 "to": "david",
                 "type": "task",
-                "seq": i,
-                "body": f"Execute step {i}"
+                "subject": f"Task {i}",
+                "body": f"Execute step {i}",
+                "timestamp": "2026-09-18T23:35:00Z"
             })
             run_eval(LUA_SEND_O2O, 0, PREFIX, "david", task_msg, "604800")
 
@@ -448,6 +449,47 @@ class TestRedisA2AProtocol(unittest.TestCase):
         alice_mcast = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
         self.assertEqual(alice_mcast.subject, "Build Passed")
         self.assertEqual(alice_mcast.body, "All tests green.")
+
+    def test_13_register_tag_cleanup_on_reregistration(self):
+        """Test that re-registering an agent with new tags cleans up its previous tag indexing."""
+        # Alice registers initially with 'math,gpu'
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "math,gpu", "120")
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:math"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:gpu"))
+
+        # Alice re-registers with 'backend,cpu'
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "backend,cpu", "120")
+        # New tags indexed
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:backend"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:cpu"))
+        # Old tags MUST be cleaned up!
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:math"))
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:gpu"))
+
+    def test_14_tag_unregistered_agent_rejection(self):
+        """Test that tag.lua rejects modifying tags for an agent that is not registered."""
+        # 'ghost_agent' was never registered
+        cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL, "EVAL", LUA_TAG, "0", PREFIX, "ghost_agent", "add", "calc"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertIn("not registered", res.stderr + res.stdout)
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:ghost_agent"), "0")
+
+    def test_15_multicast_dead_agent_hash_cleanup(self):
+        """Test that dead agent pruning in multicast.lua deletes agent:<name> hash to prevent memory leak."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "qa", "120")
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:bob"), "1")
+
+        # Simulate bob dying (heartbeat expires)
+        run_redis("DEL", f"{PREFIX}heartbeat:bob")
+
+        # Multicast triggers dead agent pruning
+        msg = json.dumps({"id": "m1", "from": "lead", "to": "@qa", "type": "task", "subject": "Test", "body": "Go", "timestamp": "2026-09-18T00:00:00Z"})
+        run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg, "604800")
+
+        # Verify bob is pruned from active_agents, tag:qa, AND agent:bob hash is deleted!
+        self.assertNotIn("bob", run_redis("SMEMBERS", f"{PREFIX}active_agents"))
+        self.assertNotIn("bob", run_redis("SMEMBERS", f"{PREFIX}tag:qa"))
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:bob"), "0")
 
 
 if __name__ == "__main__":

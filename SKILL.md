@@ -285,21 +285,17 @@ redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTU
 ```
 
 ### Replying to a Message
-Always reply unicast to the sender's name (`from`), setting `reply_to` to the original message's `id`:
+Always reply unicast to the original sender (`from`), setting `reply_to` to the incoming message's `id`.
 
+#### Option 1 (Recommended): Structured Parameters
 ```bash
-REPLY_JSON='{
-  "id": "msg_'$(date +%s)'_'${MY_NAME}'_'$RANDOM'",
-  "from": "'${MY_NAME}'",
-  "to": "'${ORIGINAL_FROM}'",
-  "type": "reply",
-  "reply_to": "'${ORIGINAL_MSG_ID}'",
-  "tags": ["'${LOCUTUS_PROJECT}'"],
-  "subject": "Re: '${ORIGINAL_SUBJECT}'",
-  "body": "The tests passed successfully. No regressions found.",
-  "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
-}'
+TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTUS_SCRIPTS_DIR/send_o2o.lua")" 0 \
+  "$LOCUTUS_REDIS_PREFIX" "$ORIGINAL_FROM" "reply" "$MY_NAME" "Re: ${ORIGINAL_SUBJECT}" "The tests passed successfully. No regressions found." "$LOCUTUS_PROJECT" "$ORIGINAL_MSG_ID" "" "$TS"
+```
 
+#### Option 2: Pre-Constructed JSON String
+```bash
 redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTUS_SCRIPTS_DIR/send_o2o.lua")" 0 "$LOCUTUS_REDIS_PREFIX" "$ORIGINAL_FROM" "$REPLY_JSON" 604800
 ```
 
@@ -317,13 +313,14 @@ redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTU
 
 ---
 
-## 8. Graceful Exit / Retirement
+## 8. Graceful Exit / Retirement (`unregister`)
 
-When the operator ends the session or retires your agent:
+When the operator ends the session, retires your agent, or issues `/locutus unregister` (or `/locutus close`):
 
 ```bash
 redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTUS_SCRIPTS_DIR/unregister.lua")" 0 "$LOCUTUS_REDIS_PREFIX" "$MY_NAME"
 ```
+This atomically removes your agent from the active roster, deletes your heartbeat, and unindexes all your tags while preserving your inbox queue in case of future reconnection.
 
 ---
 

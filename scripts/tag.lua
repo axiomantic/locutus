@@ -10,6 +10,10 @@ local name = ARGV[2]
 local action = ARGV[3] or "add"
 local tags_arg = ARGV[4] or ""
 
+if redis.call('SISMEMBER', prefix .. 'active_agents', name) == 0 then
+    return redis.error_reply("ERR agent '" .. name .. "' is not registered")
+end
+
 local current_csv = redis.call('HGET', prefix .. 'agent:' .. name, 'tags') or ""
 local tag_set = {}
 

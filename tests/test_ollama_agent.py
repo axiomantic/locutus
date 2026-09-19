@@ -87,19 +87,24 @@ def call_ollama(messages):
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
+
+def redis_cmd(*args):
+    return subprocess.run(["redis-cli", "-u", REDIS_URL] + list(args), capture_output=True, text=True).stdout.strip()
+
 def main():
     print(f"Starting Locutus Ollama Agent Test using model '{MODEL_NAME}'...")
 
     # Flush test recipient inbox and keys
-    subprocess.run([
-        "redis-cli", "DEL",
+    redis_cmd(
+        "DEL",
         "locutus:inbox:bob",
         "locutus:heartbeat:alice",
         "locutus:agent:alice",
         "locutus:tag:calc",
         "locutus:tag:locutus",
         "locutus:active_agents"
-    ], check=False)
+    )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -147,17 +152,17 @@ def main():
 
     # Verify Redis state & strict message content validation
     print("\n--- Verifying Redis State & Message Content ---")
-    hb = subprocess.run(["redis-cli", "GET", "locutus:heartbeat:alice"], capture_output=True, text=True).stdout.strip()
+    hb = redis_cmd("GET", "locutus:heartbeat:alice")
     print(f"Alice heartbeat: {hb}")
     assert hb == "1", f"Expected Alice heartbeat to be '1', got '{hb}'"
     print("✓ Alice heartbeat is active ('1')")
 
-    inbox_len = subprocess.run(["redis-cli", "LLEN", "locutus:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    inbox_len = redis_cmd("LLEN", "locutus:inbox:bob")
     print(f"Bob inbox length: {inbox_len}")
     assert inbox_len and int(inbox_len) > 0, "Bob inbox is empty! No message delivered."
     print("✓ Bob inbox has pending message(s)")
 
-    raw_msg = subprocess.run(["redis-cli", "RPOP", "locutus:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    raw_msg = redis_cmd("RPOP", "locutus:inbox:bob")
     print(f"\nRaw Message Received:\n{raw_msg}")
 
     try:
