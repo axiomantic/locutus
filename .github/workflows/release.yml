@@ -43,7 +43,19 @@ jobs:
       - name: Install cross-compilation toolchains & QEMU
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-arm64-cross qemu-user-static
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-arm64-cross qemu-user-static curl
+          mkdir -p /tmp/arm64-ssl
+          PKG=$(curl -sL https://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/ | grep -o 'href="libssl3[^"]*arm64\.deb"' | tr -d '"' | sed 's/href=//' | grep 'noble' | head -n 1 || true)
+          if [ -z "$PKG" ]; then
+            PKG=$(curl -sL https://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/ | grep -o 'href="libssl3[^"]*arm64\.deb"' | tr -d '"' | sed 's/href=//' | head -n 1)
+          fi
+          echo "Installing arm64 OpenSSL library: ${PKG}"
+          curl -sLo /tmp/arm64-ssl/libssl.deb "https://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/${PKG}"
+          dpkg-deb -x /tmp/arm64-ssl/libssl.deb /tmp/arm64-ssl/extracted
+          sudo cp -d -r /tmp/arm64-ssl/extracted/usr/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/ 2>/dev/null || true
+          sudo cp -d -r /tmp/arm64-ssl/extracted/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/ 2>/dev/null || true
+          sudo ln -sf libcrypto.so.3 /usr/aarch64-linux-gnu/lib/libcrypto.so 2>/dev/null || true
+
 
       - name: Compile Linux x86_64 binary
         run: |
@@ -131,11 +143,15 @@ jobs:
           mkdir -p /tmp/clean-tar-arm64
           tar -xzf dist/locutus-linux-arm64.tar.gz -C /tmp/clean-tar-arm64
           qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus --help | grep -F "Nim Native"
+          KEY3=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus get-secret)
+          test -n "$KEY3"
 
           echo "=== [4/4] Verifying Linux arm64 .deb extraction under QEMU ==="
           mkdir -p /tmp/clean-deb-arm64
           dpkg-deb -x dist/locutus_${VERSION}_arm64.deb /tmp/clean-deb-arm64
           qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus --help | grep -F "Nim Native"
+          KEY4=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus get-secret)
+          test -n "$KEY4"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
