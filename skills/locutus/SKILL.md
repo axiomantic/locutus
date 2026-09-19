@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Locutus: Daemonless cross-assistant communication bus over Redis. Enables multiple coding assistants across terminals, projects, or machines to register, discover teams, send direct (O2O) and multicast (O2M) work messages, receive backlogged offline messages, and maintain an event-driven background listener using embedded Redis Lua scripts."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -42,6 +42,9 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
    - `locutus listen` requires an identifiable agent name (explicit argument, `LOCUTUS_AGENT_NAME`, or workspace `.locutus.agent`).
    - Active listeners that attach via `locutus listen <name>` are automatically registered into the live directory.
    - `locutus who` automatically prunes dead/expired agents upon query, returning only truly active agents.
+7. **Distributed Concurrency & File/Resource Locking (`locutus lock` / `locutus unlock`)**:
+   - When multiple assistants operate in parallel across terminals, workspaces, or machines, acquire a distributed lease (`locutus lock <lock_name> [ttl_sec]`) before modifying shared files, schema definitions, database state, git branches, or deployment targets.
+   - Prevents race conditions, overwrite collisions, and merge conflicts. Always release the lock (`locutus unlock <lock_name>`) upon completing the critical section.
 
 ---
 
@@ -158,16 +161,19 @@ When coordinating independent tasks across a pool of worker agents:
   ```
   Guarantees exactly-once consumption across all competing workers. Defaults to indefinite blocking wait until a task is available.
 
-#### C. Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
-When executing critical sections that must not run concurrently across agents (e.g. git rebase, running migrations, deploying staging):
+#### C. Distributed Mutex & File Locking (`locutus lock` / `locutus unlock`)
+When executing critical sections or editing shared resources that must not collide across parallel agents or terminal sessions (e.g. editing shared files, modifying schemas, git rebase/merge, database migrations, deployment pipelines):
 ```bash
-# Acquire lease (returns 0 on success, 1 on conflict):
-locutus lock <lock_name> 30
+# Acquire lease before editing a shared file (returns 0 on success, 1 on conflict):
+locutus lock file:schema.prisma 60
 
-# Perform critical operation...
+# Or acquire lease for a deployment / critical operation:
+locutus lock deploy:staging 120
 
-# Release lease (guarantees only owner can unlock):
-locutus unlock <lock_name>
+# Perform safe edits or migration...
+
+# Release lease immediately after completing the work (guarantees only owner can unlock):
+locutus unlock file:schema.prisma
 ```
 
 #### D. Agent Operational State & Activity Tracking (`locutus status`)
