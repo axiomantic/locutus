@@ -120,7 +120,7 @@ if [ -z "${LOCUTUS_VERSION:-}" ]; then
   LATEST_JSON=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)
   VERSION=$(echo "${LATEST_JSON}" | (grep '"tag_name":' || true) | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
   if [ -z "${VERSION}" ]; then
-    VERSION="v0.1.1"
+    VERSION="v0.1.2"
   else
     echo "Latest release: ${VERSION}"
   fi

@@ -104,7 +104,7 @@ if (-not $Version) {
         Write-Host "Latest release found: $Version" -ForegroundColor Green
     }
     catch {
-        $Version = "v0.1.1"
+        $Version = "v0.1.2"
         Write-Warning "Could not query GitHub API, defaulting to $Version"
     }
 }
