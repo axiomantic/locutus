@@ -215,31 +215,36 @@ Locutus maps communication directly onto standard Redis data structures:
 
 Every agent receives tasks through a single atomic inbox: `${PREFIX}inbox:<agent_name>`.
 
-```text
-                        ┌──────────────────────────────┐
-                        │      Sending Assistant       │
-                        └──────────────┬───────────────┘
-                                       │
-                        ┌──────────────┴──────────────┐
-                        ▼                             ▼
-                 Direct Task (O2O)             Multicast (O2M)
-                 locutus send                  locutus broadcast
-                        │                             │
-                        │                     SINTER Tag Intersection
-                        │                     (Project-Scoped AND Filter)
-                        │                             │
-                        ▼                             ▼
-               ┌─────────────────┐           ┌─────────────────┐
-               │  inbox:<worker> │           │   inbox:<qa>    │
-               └────────┬────────┘           └────────┬────────┘
-                        │                             │
-                        ▼                             ▼
-                 [AIR-GAP FIREWALL]            [AIR-GAP FIREWALL]
-                 HMAC Signature Check          HMAC Signature Check
-                        │                             │
-                        ▼                             ▼
-                  Valid Payload                 Valid Payload
-                 Delivered to LLM              Delivered to LLM
+```mermaid
+flowchart TD
+    Sender["Sending Assistant<br/><i>(Claude Code, Antigravity, etc.)</i>"]
+
+    Sender -->|Direct Task / O2O<br/><code>locutus send</code>| Send["Redis List<br/><code>locutus:inbox:worker</code>"]
+    Sender -->|Multicast / O2M<br/><code>locutus broadcast</code>| Bcast["Redis SINTER Tag Filter<br/><i>(Project-Scoped AND Filter)</i>"]
+
+    Bcast --> InboxQA["Redis List<br/><code>locutus:inbox:qa</code>"]
+    Bcast --> InboxBackend["Redis List<br/><code>locutus:inbox:backend</code>"]
+
+    Send --> ListenWorker["Host Process: <code>locutus listen</code>"]
+    InboxQA --> ListenQA["Host Process: <code>locutus listen</code>"]
+    InboxBackend --> ListenBE["Host Process: <code>locutus listen</code>"]
+
+    subgraph FW1["Air-Gap Prompt Firewall"]
+        ListenWorker --> HMAC1{"HMAC-SHA256<br/>Signature Check"}
+        HMAC1 -->|Valid| Deliver1["✅ Valid Payload<br/><i>Delivered to LLM Context</i>"]
+        HMAC1 -->|Tampered / Forged| Drop1["❌ Dropped to Stderr<br/><i>Prompt Injection Blocked</i>"]
+    end
+
+    subgraph FW2["Air-Gap Prompt Firewall"]
+        ListenQA --> HMAC2{"HMAC-SHA256<br/>Signature Check"}
+        HMAC2 -->|Valid| Deliver2["✅ Valid Payload<br/><i>Delivered to LLM Context</i>"]
+        HMAC2 -->|Tampered / Forged| Drop2["❌ Dropped to Stderr<br/><i>Prompt Injection Blocked</i>"]
+    end
+
+    classDef pass fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px;
+    classDef drop fill:#ffebee,stroke:#c62828,stroke-width:1.5px;
+    class Deliver1,Deliver2 pass;
+    class Drop1,Drop2 drop;
 ```
 
 ---
@@ -406,20 +411,23 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 
 Locutus provides deterministic, multi-tiered cascading configuration resolution:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ 1. Explicit CLI Flags (--redis-url, --project, etc.)    │
-├─────────────────────────────────────────────────────────┤
-│ 2. Process Environment Variables (LOCUTUS_*, REDIS_URL) │
-├─────────────────────────────────────────────────────────┤
-│ 3. Workspace / Project Config (.locutus.toml, .env)     │
-├─────────────────────────────────────────────────────────┤
-│ 4. Per-User Config (~/.config/locutus/config.toml)      │
-├─────────────────────────────────────────────────────────┤
-│ 5. Global / System Config (/etc/locutus/config.toml)    │
-├─────────────────────────────────────────────────────────┤
-│ 6. Built-in Defaults                                    │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Tier1["1. Explicit CLI Flags<br/><code>--redis-url, --project, --profile, etc.</code>"]
+    Tier2["2. Process Environment Variables<br/><code>LOCUTUS_REDIS_URL, LOCUTUS_PROJECT, etc.</code>"]
+    Tier3["3. Workspace / Project Config<br/><code>.locutus.toml, locutus.toml (git root)</code>"]
+    Tier4["4. Per-User Config<br/><code>~/.config/locutus/config.toml</code>"]
+    Tier5["5. Global / System Config<br/><code>/etc/locutus/config.toml</code>"]
+    Tier6["6. Built-in Hermetic Defaults<br/><code>redis://127.0.0.1:6379, locutus:</code>"]
+
+    Tier1 -->|Overrides| Tier2
+    Tier2 -->|Overrides| Tier3
+    Tier3 -->|Overrides| Tier4
+    Tier4 -->|Overrides| Tier5
+    Tier5 -->|Overrides| Tier6
+
+    classDef default fill:#f9fafb,stroke:#9ca3af,stroke-width:1.5px;
+    class Tier1,Tier2,Tier3,Tier4,Tier5,Tier6 default;
 ```
 
 ### Configuration Files
@@ -470,10 +478,21 @@ encrypt = true
 
 Locutus protects coding assistants from prompt injection, forged messages, and unauthorized execution:
 
-```
-Redis Inbox Payload ──► [Host: locutus listen] ──► HMAC-SHA256 Check ──► Delivered to LLM Stdout
-                                                        │
-                                                        └── (Forged/Tampered) ──► Dropped to Stderr
+```mermaid
+flowchart LR
+    RedisIn["Redis Inbox Payload<br/><code>locutus:inbox:&lt;agent&gt;</code>"] --> Listen["Host Verification<br/><code>locutus listen</code>"]
+    Secret[("Local Secret<br/><code>~/.config/locutus/secret</code><br/><i>0600 Permissions</i>")] -.-> HMAC
+    Listen --> HMAC{"HMAC-SHA256<br/>Verification"}
+    HMAC -->|Signature Mismatch<br/>or Untrusted| Drop["❌ Dropped to Stderr<br/><i>Never enters assistant context</i>"]
+    HMAC -->|Valid Signature| Decrypt{"E2EE Enabled?<br/><code>LOCUTUS_ENCRYPT</code>"}
+    Decrypt -->|Yes| AES["In-Memory OpenSSL EVP<br/>AES-256-CBC Decryption"]
+    Decrypt -->|No| Stdout["✅ Emitted to Stdout<br/><i>Assistant Context Window</i>"]
+    AES --> Stdout
+
+    classDef valid fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px;
+    classDef invalid fill:#ffebee,stroke:#c62828,stroke-width:1.5px;
+    class Stdout valid;
+    class Drop invalid;
 ```
 
 1. **Host-Level Verification**: Messages are cryptographically validated by `locutus listen` on your local host machine before reaching standard output.

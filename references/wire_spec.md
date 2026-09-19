@@ -77,6 +77,27 @@ Locutus employs an out-of-band cryptographic security model to protect coding as
 - Forged, tampered, or unsigned messages are dropped **at the process boundary** by `locutus listen` before entering stdout.
 - Dropped messages are logged to stderr only (`[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message`). The assistant never receives malicious or forged content into its context window, neutralizing prompt injection attacks before they can execute.
 
+```mermaid
+flowchart TD
+    subgraph Host["Host Boundary (locutus listen)"]
+        Raw["Raw Inbound Redis JSON"] --> Parse{"Valid JSON &<br/>Required Fields?"}
+        Parse -->|No| Drop1["❌ Reject & Log to Stderr"]
+        Parse -->|Yes| Canon["Reconstruct Canonical String<br/><code>id|from|to|type|subject|body|timestamp</code>"]
+        Canon --> Compute["Compute HMAC-SHA256<br/>with Local Secret"]
+        Compute --> Verify{"Computed HMAC == sig?"}
+        Verify -->|Mismatch| Drop2["❌ Reject Forged / Tampered Message"]
+        Verify -->|Match| DecryptCheck{"encrypted == true?"}
+        DecryptCheck -->|Yes| AES["In-Memory AES-256-CBC Decryption"]
+        DecryptCheck -->|No| Deliver["Deliver to Assistant Stdout"]
+        AES --> Deliver
+    end
+
+    classDef reject fill:#ffebee,stroke:#c62828,stroke-width:1.5px;
+    classDef accept fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px;
+    class Drop1,Drop2 reject;
+    class Deliver accept;
+```
+
 ### Optional End-to-End Encryption (E2EE)
 - Setting `LOCUTUS_ENCRYPT=1` encrypts the `body` using AES-256-CBC PBKDF2.
 - Plaintext payload never touches the Redis keyspace.

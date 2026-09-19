@@ -361,7 +361,20 @@ proc doDirectory*(cfg: LocutusConfig, filterTag: string = ""): string =
 proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
   cleanupOldTmpFiles()
   randomize()
-  let name = if optName.len > 0: optName else: cfg.project & "-worker-" & $rand(1000..9999)
+  var name = optName
+  if name.len == 0:
+    for attempt in 1..25:
+      let candidate = cfg.project & "-worker-" & $rand(1000..9999)
+      let (outStr, code) = execRedis(cfg.redisUrl, ["EXISTS", cfg.prefix & "heartbeat:" & candidate])
+      if code == 0 and outStr.strip() == "0":
+        name = candidate
+        break
+    if name.len == 0:
+      name = cfg.project & "-worker-" & $rand(10000..99999)
+  else:
+    let (outStr, code) = execRedis(cfg.redisUrl, ["EXISTS", cfg.prefix & "heartbeat:" & name])
+    if code == 0 and outStr.strip() == "1":
+      echo "[NOTICE] Re-attaching to existing active agent '" & name & "'"
   let tags = if optTags.len > 0:
     if optTags.startsWith(cfg.project): optTags else: cfg.project & "," & optTags
   else:
