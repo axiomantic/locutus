@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  build-release:
-    name: Build Release Artifacts
+  build-linux:
+    name: Build & Verify Linux Packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           if [[ "$VERSION" == "$GITHUB_REF" ]]; then
-            VERSION="dev"
+            VERSION="1.0.0-dev"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building Locutus version ${VERSION}"
@@ -40,32 +40,26 @@ jobs:
           echo "$HOME/.asdf/shims" >> $GITHUB_PATH
           echo "$HOME/.asdf/bin" >> $GITHUB_PATH
 
-      - name: Install cross-compilation toolchains
+      - name: Install cross-compilation toolchains & QEMU
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc-aarch64-linux-gnu mingw-w64
+          sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
 
       - name: Compile Linux x86_64 binary
         run: |
+          mkdir -p dist/linux-amd64
           nim c -d:release --opt:speed -o:dist/linux-amd64/locutus src/locutus.nim
           strip dist/linux-amd64/locutus
           tar -czf dist/locutus-linux-amd64.tar.gz -C dist/linux-amd64 locutus
 
       - name: Compile Linux aarch64 binary
         run: |
+          mkdir -p dist/linux-arm64
           nim c -d:release --opt:speed --cpu:arm64 --os:linux \
             --gcc.exe:aarch64-linux-gnu-gcc --gcc.linkerexe:aarch64-linux-gnu-gcc \
             -o:dist/linux-arm64/locutus src/locutus.nim
           aarch64-linux-gnu-strip dist/linux-arm64/locutus
           tar -czf dist/locutus-linux-arm64.tar.gz -C dist/linux-arm64 locutus
-
-      - name: Compile Windows x86_64 binary
-        run: |
-          nim c -d:release --opt:speed --cpu:amd64 --os:windows \
-            --gcc.exe:x86_64-w64-mingw32-gcc --gcc.linkerexe:x86_64-w64-mingw32-gcc \
-            -o:dist/windows-amd64/locutus.exe src/locutus.nim
-          x86_64-w64-mingw32-strip dist/windows-amd64/locutus.exe
-          cd dist/windows-amd64 && zip -9 ../locutus-windows-amd64.zip locutus.exe && cd ../..
 
       - name: Build Debian packages (.deb)
         env:
@@ -78,16 +72,17 @@ jobs:
           cp README.md deb-amd64/usr/share/doc/locutus/
           chmod 755 deb-amd64/usr/bin/locutus
           cat > deb-amd64/DEBIAN/control <<EOF
-          Package: locutus
-          Version: ${VERSION}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: Axiomantic <info@axiomantic.org>
-          Description: High-performance inter-assistant communication bus over Redis
-           Zero-glue cross-assistant communication bus over Redis with HMAC-SHA256
-           authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-          EOF
+Package: locutus
+Version: ${VERSION}
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Axiomantic <info@axiomantic.org>
+Description: Message exchange and routing for software agents over Redis
+ Standalone CLI client for inter-agent communication using Redis data
+ structures without an intermediate background daemon. Includes HMAC-SHA256
+ authentication, dead-agent pruning, and optional AES-256-CBC encryption.
+EOF
           dpkg-deb --build deb-amd64 dist/locutus_${VERSION}_amd64.deb
 
           # Build arm64 .deb
@@ -97,30 +92,66 @@ jobs:
           cp README.md deb-arm64/usr/share/doc/locutus/
           chmod 755 deb-arm64/usr/bin/locutus
           cat > deb-arm64/DEBIAN/control <<EOF
-          Package: locutus
-          Version: ${VERSION}
-          Section: utils
-          Priority: optional
-          Architecture: arm64
-          Maintainer: Axiomantic <info@axiomantic.org>
-          Description: High-performance inter-assistant communication bus over Redis
-           Zero-glue cross-assistant communication bus over Redis with HMAC-SHA256
-           authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-          EOF
+Package: locutus
+Version: ${VERSION}
+Section: utils
+Priority: optional
+Architecture: arm64
+Maintainer: Axiomantic <info@axiomantic.org>
+Description: Message exchange and routing for software agents over Redis
+ Standalone CLI client for inter-agent communication using Redis data
+ structures without an intermediate background daemon. Includes HMAC-SHA256
+ authentication, dead-agent pruning, and optional AES-256-CBC encryption.
+EOF
           dpkg-deb --build deb-arm64 dist/locutus_${VERSION}_arm64.deb
 
-      - name: Upload Linux & Windows artifacts
+      - name: Verify Linux packages in clean environment
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          echo "=== [1/4] Verifying Linux amd64 tarball ==="
+          mkdir -p /tmp/clean-tar-amd64
+          tar -xzf dist/locutus-linux-amd64.tar.gz -C /tmp/clean-tar-amd64
+          /tmp/clean-tar-amd64/locutus --help | grep -F "Nim Native"
+          KEY1=$(/tmp/clean-tar-amd64/locutus get-secret)
+          test -n "$KEY1"
+
+          echo "=== [2/4] Verifying Linux amd64 .deb package installation & uninstallation ==="
+          sudo dpkg -i dist/locutus_${VERSION}_amd64.deb
+          (cd /tmp && locutus --help | grep -F "Nim Native")
+          KEY2=$(cd /tmp && locutus get-secret)
+          test -n "$KEY2"
+          sudo dpkg -r locutus
+          if which locutus 2>/dev/null; then
+            echo "Error: locutus should have been uninstalled"
+            exit 1
+          fi
+
+          echo "=== [3/4] Verifying Linux arm64 tarball under QEMU ==="
+          mkdir -p /tmp/clean-tar-arm64
+          tar -xzf dist/locutus-linux-arm64.tar.gz -C /tmp/clean-tar-arm64
+          /tmp/clean-tar-arm64/locutus --help | grep -F "Nim Native"
+          KEY3=$(/tmp/clean-tar-arm64/locutus get-secret)
+          test -n "$KEY3"
+
+          echo "=== [4/4] Verifying Linux arm64 .deb extraction under QEMU ==="
+          mkdir -p /tmp/clean-deb-arm64
+          dpkg-deb -x dist/locutus_${VERSION}_arm64.deb /tmp/clean-deb-arm64
+          /tmp/clean-deb-arm64/usr/bin/locutus --help | grep -F "Nim Native"
+          KEY4=$(/tmp/clean-deb-arm64/usr/bin/locutus get-secret)
+          test -n "$KEY4"
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-windows-assets
+          name: linux-assets
           path: |
             dist/locutus-linux-amd64.tar.gz
             dist/locutus-linux-arm64.tar.gz
-            dist/locutus-windows-amd64.zip
             dist/*.deb
 
   build-macos:
-    name: Build macOS Release Artifacts
+    name: Build & Verify macOS Packages
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +187,22 @@ jobs:
           strip dist/darwin-amd64/locutus
           tar -czf dist/locutus-darwin-amd64.tar.gz -C dist/darwin-amd64 locutus
 
+      - name: Verify macOS packages in clean environment
+        run: |
+          echo "=== [1/2] Verifying macOS arm64 tarball ==="
+          mkdir -p /tmp/clean-darwin-arm64
+          tar -xzf dist/locutus-darwin-arm64.tar.gz -C /tmp/clean-darwin-arm64
+          /tmp/clean-darwin-arm64/locutus --help | grep -F "Nim Native"
+          KEY1=$(/tmp/clean-darwin-arm64/locutus get-secret)
+          test -n "$KEY1"
+
+          echo "=== [2/2] Verifying macOS amd64 tarball via Rosetta 2 ==="
+          mkdir -p /tmp/clean-darwin-amd64
+          tar -xzf dist/locutus-darwin-amd64.tar.gz -C /tmp/clean-darwin-amd64
+          arch -x86_64 /tmp/clean-darwin-amd64/locutus --help | grep -F "Nim Native"
+          KEY2=$(arch -x86_64 /tmp/clean-darwin-amd64/locutus get-secret)
+          test -n "$KEY2"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -164,9 +211,63 @@ jobs:
             dist/locutus-darwin-arm64.tar.gz
             dist/locutus-darwin-amd64.tar.gz
 
+  build-windows:
+    name: Build & Verify Windows Package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Nim compiler
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.0'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up official Nimble & DLLs
+        uses: nim-lang/setup-nimble-action@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile native Windows binary
+        shell: bash
+        run: |
+          mkdir -p dist/windows-amd64
+          nim c -d:release --opt:speed -o:dist/windows-amd64/locutus.exe src/locutus.nim
+          cd dist/windows-amd64 && zip -9 ../locutus-windows-amd64.zip locutus.exe && cd ../..
+
+      - name: Verify Windows zip package in clean environment
+        shell: powershell
+        run: |
+          Write-Host "=== [1/2] Verifying Windows zip in clean directory ==="
+          Expand-Archive -Path "dist/locutus-windows-amd64.zip" -DestinationPath "C:\clean-locutus-test" -Force
+          $helpOutput = & "C:\clean-locutus-test\locutus.exe" --help
+          Write-Host $helpOutput
+          if (-not ($helpOutput -match "Nim Native")) {
+            throw "locutus.exe --help failed verification"
+          }
+          $secretOutput = & "C:\clean-locutus-test\locutus.exe" get-secret
+          Write-Host "Secret: $secretOutput"
+          if ([string]::IsNullOrWhiteSpace($secretOutput)) {
+            throw "locutus.exe get-secret failed verification"
+          }
+
+          Write-Host "=== [2/2] Validating Scoop manifest schema ==="
+          $scoopManifest = Get-Content -Raw "packaging/scoop/locutus.json" | ConvertFrom-Json
+          if ($scoopManifest.architecture."64bit".bin -ne "locutus.exe") {
+            throw "Invalid Scoop manifest binary target"
+          }
+          Write-Host "Scoop manifest syntax verified successfully."
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: |
+            dist/locutus-windows-amd64.zip
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-release, build-macos]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

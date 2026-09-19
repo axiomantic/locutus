@@ -217,6 +217,8 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
   # Check if redis-cli is present
   if findExe("redis-cli").len > 0:
     var p = startProcess("redis-cli", args = fullArgs, options = {poUsePath, poStdErrToStdOut})
+    if p.inputStream != nil:
+      p.inputStream.close()
     let outStr = p.outputStream.readAll()
     let exitCode = p.waitForExit()
     p.close()
@@ -228,6 +230,8 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
     for a in fullArgs:
       dockerArgs.add(a)
     var p = startProcess("docker", args = dockerArgs, options = {poUsePath, poStdErrToStdOut})
+    if p.inputStream != nil:
+      p.inputStream.close()
     let outStr = p.outputStream.readAll()
     let exitCode = p.waitForExit()
     p.close()

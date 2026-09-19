@@ -1,5 +1,5 @@
 class Locutus < Formula
-  desc "High-performance inter-assistant communication bus over Redis"
+  desc "Message exchange and routing for software agents over Redis without a background daemon"
   homepage "https://github.com/axiomantic/locutus"
   version "1.0.0"
   license "MIT"

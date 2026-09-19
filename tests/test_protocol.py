@@ -31,8 +31,18 @@ SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scr
 
 def load_lua(filename: str) -> str:
     path = os.path.join(SCRIPTS_DIR, filename)
-    with open(path, "r") as f:
-        return f.read()
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    # Strip comments and collapse into single-line to avoid newline/CRLF argument splitting on Windows
+    lines = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("--"):
+            continue
+        if "--" in line:
+            line = line.split("--")[0].strip()
+        lines.append(line)
+    return " ".join(lines)
 
 LUA_REGISTER = load_lua("register.lua")
 LUA_SEND_O2O = load_lua("send_o2o.lua")
@@ -44,12 +54,12 @@ LUA_TAG = load_lua("tag.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()
 
 def run_eval(script, numkeys, *args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()
 
 

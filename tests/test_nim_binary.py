@@ -32,6 +32,8 @@ class TestLocutusNimBinary(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
             env=cmd_env,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
         )
         return res
 
@@ -109,6 +111,8 @@ class TestLocutusNimBinary(unittest.TestCase):
         subprocess.run(
             ["redis-cli", "-u", REDIS_URL, "LPUSH", f"{TEST_PREFIX}inbox:{agent}", forged_payload],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
             check=True
         )
 
@@ -136,6 +140,8 @@ class TestLocutusNimBinary(unittest.TestCase):
             ["redis-cli", "-u", REDIS_URL, "LRANGE", f"{TEST_PREFIX}inbox:{agent}", "0", "0"],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
             check=True
         ).stdout
         self.assertNotIn("E2EE Payload Content", redis_out)
@@ -240,6 +246,9 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         subprocess.run(
             ["redis-cli", "-u", REDIS_URL, "LPUSH", f"{TEST_PREFIX}inbox:{agent}", corrupt_payload],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
             check=True
         )
 

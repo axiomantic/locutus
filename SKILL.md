@@ -1,11 +1,11 @@
 ---
 name: locutus
-description: "Locutus: Zero-glue cross-assistant communication bus over Redis. Enables multiple coding assistants across terminals, projects, or machines to register, discover teams, send direct (O2O) and multicast (O2M) work messages, receive backlogged offline messages, and maintain an event-driven background listener using embedded Redis Lua scripts."
+description: "Locutus: Daemonless cross-assistant communication bus over Redis. Enables multiple coding assistants across terminals, projects, or machines to register, discover teams, send direct (O2O) and multicast (O2M) work messages, receive backlogged offline messages, and maintain an event-driven background listener using embedded Redis Lua scripts."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
 
-Locutus is a zero-glue, high-performance inter-assistant communication protocol and CLI engine over Redis. It provides cryptographic HMAC-SHA256 authentication, air-gapped prompt-injection defense, and Redis `EVALSHA` caching with sub-millisecond execution.
+Locutus is a daemonless, high-performance inter-assistant communication protocol and CLI engine over Redis. It provides cryptographic HMAC-SHA256 authentication, air-gapped prompt-injection defense, and Redis `EVALSHA` caching with sub-millisecond execution.
 
 ---
 

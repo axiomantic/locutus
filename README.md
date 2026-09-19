@@ -19,23 +19,51 @@
 
 ## What is Locutus?
 
-**Locutus** connects multiple AI coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, Ollama) across different terminals, projects, or servers using pure Redis primitives and an ultra-fast compiled binary.
+**Locutus** connects multiple coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, Ollama) across terminals, workspaces, or machines using Redis data structures and a standalone CLI tool.
 
-### What Does "Zero-Glue" Mean?
+### Daemonless Architecture: Why No Broker Daemon?
 
-In multi-agent architectures, "glue" refers to the intermediate integration middleware that operators are typically forced to deploy and maintain: HTTP/WebSocket proxy daemons, background broker microservices, polling sidecars, and custom adapter SDKs.
+Traditional multi-agent frameworks require running dedicated background server processes (such as custom HTTP/WebSocket servers, broker services, or polling sidecars). These add operational overhead:
+- Server daemons require supervisor processes (systemd, Docker) to monitor and restart on failure.
+- Daemons require configuring open network ports, host bindings, and connection handshakes.
+- Daemons consume background CPU and RAM continuously, even when no agents are active.
 
-**Locutus is strictly Zero-Glue:**
-1. **Zero Background Daemons**: No Locutus broker daemon or background server process runs on your machine. Assistants communicate directly with the key-value store.
-2. **Zero Middleware Code**: Assistants execute single atomic CLI calls (`locutus send`, `locutus listen`) with built-in discovery, HMAC signing, prompt-firewall filtering, and optional AES-256 decryption.
-3. **Zero State Invalidation Glue**: Atomic Redis Lua scripts executed with `EVALSHA` caching provide ACID transactions directly inside Redis memory.
-4. **Zero Runtime Dependencies**: The distributed binary is a standalone executable (Mach-O, ELF, PE `.exe`). Installing via Homebrew, APT, Scoop, or shell script does **not** require installing Nim or any runtime frameworks.
+**Locutus requires no intermediate daemon:**
+There is no Locutus daemon process running on the host. Locutus is a standalone compiled CLI tool that uses Redis directly as the message broker and state store. Agents communicate by executing standard CLI commands (`locutus send`, `locutus listen`) against any local or remote Redis instance.
+
+### System Architecture: Redis Data Structure Mapping
+
+Locutus implements message exchange and coordination by mapping communication functions directly onto native Redis data structures:
+
+1. **Message Queues (Redis Lists / `LPUSH` & `BRPOP`)**:
+   - Each agent's inbox is stored as a Redis list (`{prefix}:inbox:<agent>`).
+   - Senders push authenticated JSON messages to the head of the list with `LPUSH`.
+   - Receivers wait for incoming work using blocking pop (`BRPOP`). Redis handles the blocking wait internally, allowing agents to sleep with zero CPU polling and zero token consumption until a message arrives.
+
+2. **Agent Directory (Redis Sets / `SADD`, `SREM`, `SMEMBERS`)**:
+   - Active agents and functional tag groups (e.g., `backend`, `frontend`, `qa`) are stored in Redis sets (`{prefix}:active_agents` and `{prefix}:tag:<tag>`).
+   - Discovery commands (`locutus who`) read directly from these sets in $\mathcal{O}(1)$ time without keyspace scanning.
+
+3. **Multicast Routing (Redis `SINTER`)**:
+   - Multicast broadcasts (`locutus broadcast --tags "backend,qa"`) compute target recipients on the Redis server using set intersection (`SINTER`).
+   - Fanout occurs entirely within Redis, avoiding client-side candidate roster transfers.
+
+4. **Liveness & Expiration (Redis TTLs / `EXPIRE`)**:
+   - **Heartbeats**: Active listeners maintain presence via an ephemeral key (`{prefix}:heartbeat:<agent>`) with a 150-second TTL. If an agent process exits or crashes, its heartbeat key expires automatically, and subsequent routing passes prune the inactive agent from the directory.
+   - **Inboxes**: Each message delivery updates a 7-day sliding expiration on `{prefix}:inbox:<agent>`, preventing abandoned queues from consuming memory indefinitely.
+
+5. **Atomic Transactions (Embedded Lua / `EVALSHA`)**:
+   - State transitions requiring multiple operations (such as roster updates, dead-agent pruning, and multi-queue fanout) run inside Redis as atomic Lua scripts using cached script hashes (`EVALSHA`).
+
+6. **Cluster Compatibility (Hash Tags / `{...}`)**:
+   - In Redis Cluster environments, key names include curly bracket hash tags (e.g., `{locutus:project}:inbox:<agent>`).
+   - Redis uses only the bracketed text to determine shard placement, ensuring all project keys reside on the same hash slot and preventing `CROSSSLOT` errors during multi-key commands (`SINTER`, `SMEMBERS`).
 
 ### Why Locutus?
 
 | Traditional Agent Frameworks | Locutus Architecture |
 | :--- | :--- |
-| ❌ Heavy Python/Node background server daemons | ⚡ **Zero background processes**: Pure atomic Redis lists + sets |
+| ❌ Heavy Python/Node background server daemons | ⚡ **Daemonless**: Zero background processes; direct Redis client calls |
 | ❌ Fragile WebSocket / HTTP bridges requiring open ports | ⚡ **Standard Redis**: Works over local or hosted Redis (AWS, Upstash, Redis Cluster) |
 | ❌ 500ms+ startup latency & high RAM overhead | ⚡ **Sub-millisecond latency**: 289 KB standalone native binary (1ms cold start) |
 | ❌ Vulnerable to prompt injection from untrusted messages | ⚡ **Air-Gap Prompt Firewall**: Drops unauthenticated payloads at process boundary |

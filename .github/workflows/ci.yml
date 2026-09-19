@@ -70,7 +70,7 @@ jobs:
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
         run: |
-          python -m unittest discover tests
+          python -u -m unittest discover -v tests
 
   test-macos:
     name: Tests (macOS / asdf-nim)
@@ -125,7 +125,7 @@ jobs:
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
         run: |
-          python -m unittest discover tests
+          python -u -m unittest discover -v tests
 
   test-windows:
     name: Tests (Windows / setup-nimble-action)
@@ -187,4 +187,4 @@ jobs:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
           PYTHONUTF8: "1"
         run: |
-          python -m unittest discover tests
+          python -u -m unittest discover -v tests
