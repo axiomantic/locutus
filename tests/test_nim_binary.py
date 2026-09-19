@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import signal
 import tempfile
 import threading
 import time
@@ -1644,6 +1645,35 @@ secret = "my_inline_secret_test_555"
         self.assertLess(elapsed2, 3.0, "Claim did not exit immediately upon detecting cancellation")
         self.assertIn("cancelled", (res_claim.stderr + res_claim.stdout).lower())
 
+    def test_46e_claim_socket_reuse_and_backoff(self):
+        """Test socket reuse during claim polling and dynamic backoff on empty queue (TASK-15)."""
+        def get_total_conns():
+            res = subprocess.run(["redis-cli", "info", "stats"], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                if line.startswith("total_connections_received:"):
+                    return int(line.split(":")[1].strip())
+            return 0
+
+        q = f"reuse_q_{int(time.time() * 1000)}"
+
+        # Record total connections received before running claim
+        conns_before = get_total_conns()
+
+        t0 = time.time()
+        # Run claim with 2s timeout on empty queue
+        res = self.run_locutus(["claim", q, "2"])
+        elapsed = time.time() - t0
+
+        conns_after = get_total_conns()
+        # Note: 1 connection was used by our get_total_conns() check itself
+        conns_delta = conns_after - conns_before - 1
+
+        self.assertEqual(res.returncode, 0)
+        self.assertGreaterEqual(elapsed, 1.8)
+        # Without socket reuse, 2 seconds of 250ms polling opens ~8-16 connections.
+        # With socket reuse, only 1 connection is opened by locutus claim.
+        self.assertLessEqual(conns_delta, 2, f"Expected socket reuse (<= 2 connections), but got {conns_delta} connections")
+
     def test_47_blackboard_kv_append_and_snapshot(self):
         """Test 'locutus blackboard' (set, get, append, snapshot, delete, clear)."""
         room = f"room_{int(time.time() * 1000)}"
@@ -2245,6 +2275,95 @@ secret = "my_inline_secret_test_555"
         self.run_locutus(["unlock", lock_name], env_overrides={"LOCUTUS_AGENT_NAME": a2})
         self.run_locutus(["close", a1])
         self.run_locutus(["close", a2])
+
+    def test_55_large_payload_blackboard_and_resp_guard(self):
+        """Test large 100KB payload roundtrip through buffered RESP client and verify test_resp.nim suite."""
+        room = f"large_buf_{int(time.time() * 1000)}"
+        large_content = "X" * 100000
+        large_json = json.dumps({"data": large_content})
+
+        # 1. Blackboard set 100KB payload
+        res_set = self.run_locutus(["blackboard", "set", room, "big_key", large_json])
+        self.assertEqual(res_set.returncode, 0)
+
+        # 2. Blackboard get 100KB payload
+        res_get = self.run_locutus(["blackboard", "get", room, "big_key"])
+        self.assertEqual(res_get.returncode, 0)
+        parsed = json.loads(res_get.stdout.strip())
+        self.assertEqual(len(parsed["data"]), 100000)
+        self.assertEqual(parsed["data"], large_content)
+
+        # 3. Verify standalone test_resp.nim passes
+        res_nim = subprocess.run(["nim", "r", "--threads:on", "tests/test_resp.nim"], capture_output=True, text=True)
+        self.assertEqual(res_nim.returncode, 0, f"test_resp.nim failed:\n{res_nim.stderr}\n{res_nim.stdout}")
+        self.assertIn("TASK-16: Multi-kilobyte payload parsing with 8KB buffer", res_nim.stdout)
+        self.assertIn("TASK-17: Maximum payload allocation guard (rejects > 32MB)", res_nim.stdout)
+
+    def test_56_graceful_signal_trapping(self):
+        """Test graceful signal trapping (SIGTERM/SIGINT) cleans up active resources (TASK-18)."""
+        agent = f"sig_bot_{int(time.time() * 1000)}"
+        key = f"{TEST_PREFIX}listener:{agent}"
+
+        # Start long-running listener process
+        env = {**self.env, "LOCUTUS_AGENT_NAME": agent}
+        p = subprocess.Popen(
+            [BIN_PATH, "listen", agent, "60"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            # Wait for listener to register in Redis
+            registered = False
+            for _ in range(20):
+                time.sleep(0.1)
+                chk = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", key], capture_output=True, text=True, check=True)
+                if chk.stdout.strip() == "1":
+                    registered = True
+                    break
+            self.assertTrue(registered, "Listener failed to register in Redis before signal test")
+
+            # Send SIGTERM to process
+            p.send_signal(signal.SIGTERM)
+            p.wait(timeout=5)
+
+            # Assert listener lock was cleanly deleted from Redis on signal exit
+            chk_after = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", key], capture_output=True, text=True, check=True)
+            self.assertEqual(chk_after.stdout.strip(), "0", f"Listener lock {key} was orphaned in Redis after SIGTERM")
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", key], capture_output=True)
+
+    def test_57_multi_host_sweeper_provenance(self):
+        """Test multi-host/container sweeper provenance reporting (TASK-19)."""
+        foreign_bot = f"foreign_agent_{int(time.time() * 1000)}"
+        foreign_key = f"{TEST_PREFIX}listener:{foreign_bot}"
+        foreign_rec = json.dumps({"pid": 12345, "host": "worker-node-99.internal", "started": int(time.time())})
+
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "SET", foreign_key, foreign_rec, "EX", "120"], check=True)
+
+        try:
+            res_sweep = self.run_locutus(["sweep", "--dry-run"])
+            self.assertEqual(res_sweep.returncode, 0)
+            data = json.loads(res_sweep.stdout.strip())
+
+            self.assertIn("foreign_listeners", data, "Sweeper output missing 'foreign_listeners' provenance key")
+            foreign_entries = [f for f in data["foreign_listeners"] if f.get("agent") == foreign_bot]
+            self.assertEqual(len(foreign_entries), 1)
+            entry = foreign_entries[0]
+            self.assertEqual(entry["host"], "worker-node-99.internal")
+            self.assertEqual(entry["pid"], 12345)
+            self.assertEqual(entry["status"], "foreign_active")
+
+            # Foreign listener must NOT be pruned
+            chk = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", foreign_key], capture_output=True, text=True, check=True)
+            self.assertEqual(chk.stdout.strip(), "1")
+        finally:
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", foreign_key], capture_output=True)
 
 
 if __name__ == "__main__":

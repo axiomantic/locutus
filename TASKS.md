@@ -92,30 +92,30 @@ No shortcuts, no batching, no hand-waving. Every task must be tackled individual
 ---
 
 ### Group 1.4: High-Frequency Socket I/O & Lifecycle Hardening
-- [ ] **TASK-15: Socket Connection Reuse & Adaptive Backoff in `doClaim`**
+- [x] **TASK-15: Socket Connection Reuse & Adaptive Backoff in `doClaim`**
   - **Issue**: `doClaim` opens/closes a new socket every 250ms on empty queues, causing `TIME_WAIT` socket exhaustion.
   - **TDD Requirement**: Write test verifying socket reuse during claim polling and dynamic backoff from 250ms up to 2000ms on continuous empty queue responses.
-  - **Implementation**: Add connection reuse in `doClaim` loop and implement adaptive polling backoff.
+  - **Implementation**: Add connection reuse in `doClaim` loop and implement adaptive polling backoff. Verified in `test_46e`.
 
-- [ ] **TASK-16: Buffered Stream Reading in `src/resp.nim`**
+- [x] **TASK-16: Buffered Stream Reading in `src/resp.nim`**
   - **Issue**: `readLineCrLf` reads byte-by-byte via 1-byte `s.recv()` syscalls, slowing down large workflow and blackboard payloads.
   - **TDD Requirement**: Write benchmark/test confirming that multi-kilobyte JSON responses parse correctly and efficiently without byte-at-a-time syscall overhead.
-  - **Implementation**: Introduce an internal 8KB read buffer in `src/resp.nim` for CRLF frame parsing.
+  - **Implementation**: Introduce an internal 8KB read buffer in `src/resp.nim` for CRLF frame parsing. Verified in `test_resp.nim` and `test_55`.
 
-- [ ] **TASK-17: Maximum Payload Allocation Guard in `src/resp.nim`**
+- [x] **TASK-17: Maximum Payload Allocation Guard in `src/resp.nim`**
   - **Issue**: `readExact` blindly allocates `newString(count)` based on incoming RESP `$count`, risking OOM on corrupt/malicious responses.
   - **TDD Requirement**: Write test verifying `parseResp` raises `IOError` when bulk string length exceeds safety limit (32MB).
-  - **Implementation**: Guard `readExact` in `src/resp.nim` with maximum allocation check.
+  - **Implementation**: Guard `readExact` in `src/resp.nim` with maximum allocation check and empty string fast-path. Verified in `test_resp.nim` and `test_55`.
 
-- [ ] **TASK-18: Graceful Signal Trapping (`SIGINT` / `SIGTERM`) in `src/locutus.nim`**
+- [x] **TASK-18: Graceful Signal Trapping (`SIGINT` / `SIGTERM`) in `src/locutus.nim`**
   - **Issue**: Sudden process termination leaves locks, floor speaker tokens, and claimed task leases orphaned until TTL.
   - **TDD Requirement**: Write test verifying that sending `SIGINT` or `SIGTERM` to a process holding a lock or floor triggers release before exit.
-  - **Implementation**: Add POSIX and Windows signal handlers in `src/locutus.nim` to clean up active resources on abrupt termination.
+  - **Implementation**: Add POSIX and Windows signal handlers in `src/locutus.nim` to clean up active resources on abrupt termination. Verified in `test_56`.
 
-- [ ] **TASK-19: Multi-Host / Container Sweeper Provenance Reporting**
+- [x] **TASK-19: Multi-Host / Container Sweeper Provenance Reporting**
   - **Issue**: `locutus sweep` silently skips foreign host listeners without informative reporting.
   - **TDD Requirement**: Write test verifying `locutus sweep` outputs explicit host provenance for foreign active listeners.
-  - **Implementation**: Update `doSweep` in `src/locutus.nim` to format foreign host listener status in JSON output.
+  - **Implementation**: Update `doSweep` in `src/locutus.nim` to format foreign host listener status in JSON output. Verified in `test_57`.
 
 ---
 

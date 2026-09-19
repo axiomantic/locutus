@@ -30,6 +30,56 @@ proc getHostNameStr*(): string =
     discard
   return getEnv("HOSTNAME", getEnv("COMPUTERNAME", "localhost"))
 
+# Graceful Signal Trapping and Resource Cleanup (TASK-18)
+type
+  ActiveCleanup = object
+    url: string
+    key: string
+    command: seq[string]
+
+var activeCleanups: seq[ActiveCleanup] = @[]
+var isCleaningUp = false
+
+proc registerCleanup*(url, key: string, command: seq[string]) =
+  activeCleanups.add(ActiveCleanup(url: url, key: key, command: command))
+
+proc unregisterCleanup*(key: string) =
+  for i in countdown(activeCleanups.len - 1, 0):
+    if activeCleanups[i].key == key:
+      activeCleanups.delete(i)
+
+proc runSignalCleanups*() =
+  if isCleaningUp: return
+  isCleaningUp = true
+  for c in activeCleanups:
+    try:
+      discard execRedisAuto(c.url, c.command)
+    except Exception:
+      discard
+
+when defined(posix):
+  proc handleSignal(sig: cint) {.noconv.} =
+    runSignalCleanups()
+    quit(128 + int(sig))
+
+  proc installSignalHandlers*() =
+    var sa: Sigaction
+    sa.sa_handler = handleSignal
+    discard sigemptyset(sa.sa_mask)
+    sa.sa_flags = 0
+    discard sigaction(SIGINT, sa)
+    discard sigaction(SIGTERM, sa)
+    setControlCHook(proc() {.noconv.} =
+      runSignalCleanups()
+      quit(130)
+    )
+else:
+  proc installSignalHandlers*() =
+    setControlCHook(proc() {.noconv.} =
+      runSignalCleanups()
+      quit(130)
+    )
+
 # OpenSSL C-bindings for native cryptographic operations
 type
   EVP_CIPHER_CTX = pointer
@@ -642,7 +692,9 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   listenerNode["host"] = %myHost
   listenerNode["started"] = %(getTime().toUnix())
   let listenerJson = $listenerNode
-  discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
+  let listenerKey = cfg.prefix & "listener:" & name
+  discard execRedis(cfg.redisUrl, ["SET", listenerKey, listenerJson, "EX", $hbTtl])
+  registerCleanup(cfg.redisUrl, listenerKey, @["DEL", listenerKey])
 
   let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: cfg.listenTimeout
   let startTime = getTime().toUnix()
@@ -733,12 +785,13 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
       echo $parsed
       return
   finally:
-    let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
+    unregisterCleanup(listenerKey)
+    let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", listenerKey])
     if code == 0 and currentVal.strip().len > 0 and currentVal.strip() != "(nil)":
       try:
         let node = parseJson(currentVal.strip())
         if node.getOrDefault("pid").getInt(0) == myPid and node.getOrDefault("host").getStr("") == myHost:
-          discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+          discard execRedis(cfg.redisUrl, ["DEL", listenerKey])
       except Exception:
         discard
 
@@ -924,22 +977,44 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
   let workerName = getActiveAgentName(cfg, "")
   let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
   let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: (if cfg.listenTimeout > 0: cfg.listenTimeout else: 60)
-  let startTime = getTime().toUnix()
-  var remaining = effectiveTimeout
+  let startTime = epochTime()
+  var remainingMs = effectiveTimeout * 1000
 
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
 
-  if workerName.len > 0:
-    discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+  let client = newRedisClient(cfg.redisUrl)
+  defer: client.close()
 
-  while isForever or remaining > 0 or effectiveTimeout == 0:
+  if workerName.len > 0:
+    try:
+      discard client.sendCommand(["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+      discard client.sendCommand(["SADD", cfg.prefix & "active_agents", workerName])
+    except CatchableError:
+      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+
+  var backoffMs = 250
+
+  while isForever or remainingMs > 0 or effectiveTimeout == 0:
     if runId.len > 0 and isRunCancelled(cfg, runId):
       stderr.writeLine("Run " & runId & " was cancelled. Worker exiting.")
       return
 
-    let res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
-    if res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
+    var res = ""
+    var exitCode = 0
+    try:
+      (res, exitCode) = client.runLua(claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+    except CatchableError:
+      client.close()
+      try:
+        client.connect()
+        (res, exitCode) = client.runLua(claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+      except CatchableError:
+        res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+        exitCode = 0
+
+    if exitCode == 0 and res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
+      backoffMs = 250
       var parsed: JsonNode
       try:
         parsed = parseJson(res.strip())
@@ -987,15 +1062,21 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
       return
 
     if workerName.len > 0:
-      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+      try:
+        discard client.sendCommand(["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+        discard client.sendCommand(["SADD", cfg.prefix & "active_agents", workerName])
+      except CatchableError:
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
 
-    let elapsed = int(getTime().toUnix() - startTime)
-    remaining = max(0, effectiveTimeout - elapsed)
-    if remaining == 0:
+    let elapsed = epochTime() - startTime
+    remainingMs = max(0, int((float(effectiveTimeout) - elapsed) * 1000))
+    if remainingMs <= 0:
       return
 
-    sleep(min(250, remaining * 1000))
+    let sleepTime = min(backoffMs, remainingMs)
+    sleep(sleepTime)
+    backoffMs = min(2000, backoffMs * 2)
 
 proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int =
   let resStr = runLuaScript(cfg.redisUrl, ackLua, ackSha, [cfg.prefix, queueName, taskId])
@@ -1480,6 +1561,7 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
 
   var prunedAgents: seq[string] = @[]
   var prunedListeners: seq[string] = @[]
+  var foreignListeners: seq[JsonNode] = @[]
   let currentHost = getHostNameStr()
 
   try:
@@ -1497,10 +1579,18 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
             let lockData = parseJson(dataStr)
             let host = lockData.getOrDefault("host").getStr()
             let pid = lockData.getOrDefault("pid").getInt()
-            if host == currentHost and pid > 0 and not isPidAlive(pid):
-              prunedListeners.add(agent)
-              if not dryRun:
-                discard execRedis(cfg.redisUrl, @["DEL", lKey])
+            if host == currentHost:
+              if pid > 0 and not isPidAlive(pid):
+                prunedListeners.add(agent)
+                if not dryRun:
+                  discard execRedis(cfg.redisUrl, @["DEL", lKey])
+            else:
+              foreignListeners.add(%*{
+                "agent": agent,
+                "host": host,
+                "pid": pid,
+                "status": "foreign_active"
+              })
           except CatchableError:
             discard
   except CatchableError as e:
@@ -1508,11 +1598,15 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
     quit(1)
 
   if rawOutput:
-    echo "Pruned " & $prunedAgents.len & " dead agents, " & $prunedListeners.len & " stale listeners."
+    var msg = "Pruned " & $prunedAgents.len & " dead agents, " & $prunedListeners.len & " stale listeners."
+    if foreignListeners.len > 0:
+      msg.add(" Skipped " & $foreignListeners.len & " foreign host listeners.")
+    echo msg
   else:
     var outObj = %*{
       "pruned_agents": %prunedAgents,
       "pruned_listeners": %prunedListeners,
+      "foreign_listeners": %foreignListeners,
       "dry_run": %dryRun
     }
     echo $outObj
@@ -1732,6 +1826,7 @@ proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
 
 # Main Entrypoint / CLI Router
 proc main() =
+  installSignalHandlers()
   let rawArgs = commandLineParams()
   var cli: CliOverrides
   var positionalArgs: seq[string] = @[]
