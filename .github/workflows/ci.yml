@@ -25,6 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install redis-tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y redis-tools
+          redis-cli ping
+
       - name: Setup asdf
         uses: asdf-vm/actions/setup@v3
         with:
@@ -133,7 +139,7 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip" -OutFile "redis.zip"
           Expand-Archive -Path "redis.zip" -DestinationPath "C:\redis"
-          echo "C:\redis" >> $Env:GITHUB_PATH
+          "C:\redis" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Start-Process -FilePath "C:\redis\redis-server.exe"
           Start-Sleep -Seconds 2
           & "C:\redis\redis-cli.exe" ping

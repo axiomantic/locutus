@@ -9,10 +9,10 @@ import subprocess
 import time
 import statistics
 
-candidate_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
-if not os.path.isfile(candidate_bin) and os.path.isfile(candidate_bin + ".exe"):
-    candidate_bin += ".exe"
-BIN_PATH = candidate_bin
+if os.name == "nt":
+    BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus.exe"))
+else:
+    BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
 REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
 PREFIX = "locutus_bench:"
 PROJECT = "bench"

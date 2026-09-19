@@ -31,6 +31,11 @@ def redis_cmd(*args):
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
+def run_script_cmd(cmd_list, **kwargs):
+    if os.name == "nt" and cmd_list and cmd_list[0].endswith(".sh"):
+        cmd_list = ["bash"] + cmd_list
+    return subprocess.run(cmd_list, **kwargs)
+
 
 class TestLocutusSecurity(unittest.TestCase):
 
@@ -62,7 +67,7 @@ class TestLocutusSecurity(unittest.TestCase):
 
         # Invoke security helper to ensure secret exists
         cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "get-secret"]
-        res = subprocess.run(cmd, capture_output=True, text=True, env=env, check=True)
+        res = run_script_cmd(cmd, capture_output=True, text=True, env=env, check=True)
         secret = res.stdout.strip()
 
         self.assertEqual(len(secret), 64)
@@ -86,24 +91,24 @@ class TestLocutusSecurity(unittest.TestCase):
 
         # Compute valid HMAC via security helper
         cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "sign", msg_id, from_agent, to_agent, msg_type, subject, body, ts]
-        sig = subprocess.run(cmd, capture_output=True, text=True, env=env, check=True).stdout.strip()
+        sig = run_script_cmd(cmd, capture_output=True, text=True, env=env, check=True).stdout.strip()
         self.assertTrue(len(sig) >= 32)
 
         # Verification with identical fields must succeed
         verify_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, subject, body, ts]
-        self.assertEqual(subprocess.run(verify_cmd, capture_output=True, text=True, env=env).returncode, 0)
+        self.assertEqual(run_script_cmd(verify_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
         # Verification with tampered subject must fail
         tampered_subj_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, "MALICIOUS SUBJECT", body, ts]
-        self.assertNotEqual(subprocess.run(tampered_subj_cmd, capture_output=True, text=True, env=env).returncode, 0)
+        self.assertNotEqual(run_script_cmd(tampered_subj_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
         # Verification with tampered body must fail
         tampered_body_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, subject, "MALICIOUS INJECTION", ts]
-        self.assertNotEqual(subprocess.run(tampered_body_cmd, capture_output=True, text=True, env=env).returncode, 0)
+        self.assertNotEqual(run_script_cmd(tampered_body_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
         # Verification with forged sender must fail
         tampered_from_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, "evil_impersonator", to_agent, msg_type, subject, body, ts]
-        self.assertNotEqual(subprocess.run(tampered_from_cmd, capture_output=True, text=True, env=env).returncode, 0)
+        self.assertNotEqual(run_script_cmd(tampered_from_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
     def test_03_send_and_listen_authenticated_flow(self):
         """Verify that send.sh and listen.sh deliver an authenticated message through Redis with valid HMAC."""
@@ -119,11 +124,11 @@ class TestLocutusSecurity(unittest.TestCase):
             os.path.join(SCRIPTS_DIR, "send.sh"),
             "bob", "task", "Compute", "2 + 2", "testproj"
         ]
-        subprocess.run(send_cmd, capture_output=True, text=True, env=env, check=True)
+        run_script_cmd(send_cmd, capture_output=True, text=True, env=env, check=True)
 
         # 2. Bob listens and pops message via listen.sh
         listen_cmd = [os.path.join(SCRIPTS_DIR, "listen.sh"), "bob", "5"]
-        res = subprocess.run(listen_cmd, capture_output=True, text=True, env=env, check=True)
+        res = run_script_cmd(listen_cmd, capture_output=True, text=True, env=env, check=True)
         raw_output = res.stdout.strip()
 
         # Verify output is valid JSON conforming to LocutusMessage
@@ -156,7 +161,7 @@ class TestLocutusSecurity(unittest.TestCase):
         # Bob runs listen.sh with a 1-second timeout
         # listen.sh must detect the invalid signature, DROP it, and output NOTHING to stdout!
         listen_cmd = [os.path.join(SCRIPTS_DIR, "listen.sh"), "bob", "1"]
-        res = subprocess.run(listen_cmd, capture_output=True, text=True, env=env)
+        res = run_script_cmd(listen_cmd, capture_output=True, text=True, env=env)
 
         # Standard output (what reaches the assistant context) MUST BE EMPTY or nil!
         # The malicious payload must NEVER be in stdout!
@@ -182,7 +187,7 @@ class TestLocutusSecurity(unittest.TestCase):
             os.path.join(SCRIPTS_DIR, "send.sh"),
             "charlie", "task", "Secret Work", secret_text, "testproj"
         ]
-        subprocess.run(send_cmd, capture_output=True, text=True, env=env, check=True)
+        run_script_cmd(send_cmd, capture_output=True, text=True, env=env, check=True)
 
         # 2. Inspect raw message in Redis inbox: plaintext MUST NOT appear in Redis!
         raw_in_redis = redis_cmd("LINDEX", f"{PREFIX}inbox:charlie", "0")
@@ -190,7 +195,7 @@ class TestLocutusSecurity(unittest.TestCase):
 
         # 3. Charlie listens via listen.sh and receives decrypted plaintext
         listen_cmd = [os.path.join(SCRIPTS_DIR, "listen.sh"), "charlie", "5"]
-        res = subprocess.run(listen_cmd, capture_output=True, text=True, env=env, check=True)
+        res = run_script_cmd(listen_cmd, capture_output=True, text=True, env=env, check=True)
         raw_output = res.stdout.strip()
 
         msg = LocutusMessage.model_validate_json(raw_output)

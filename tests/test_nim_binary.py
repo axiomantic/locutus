@@ -6,10 +6,10 @@ from tests.schema import LocutusMessage
 
 REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
 TEST_PREFIX = "locutus_test:"
-candidate_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
-if not os.path.isfile(candidate_bin) and os.path.isfile(candidate_bin + ".exe"):
-    candidate_bin += ".exe"
-BIN_PATH = candidate_bin
+if os.name == "nt":
+    BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus.exe"))
+else:
+    BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
 
 
 class TestLocutusNimBinary(unittest.TestCase):
@@ -154,7 +154,7 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         # Send using Bash scripts/send.sh
         send_sh = os.path.join(scripts_dir, "send.sh")
-        send_cmd = [
+        send_cmd = (["bash"] if os.name == "nt" else []) + [
             send_sh,
             "--to", agent,
             "--type", "task",
@@ -192,7 +192,7 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         # Receive using Bash scripts/listen.sh
         listen_sh = os.path.join(scripts_dir, "listen.sh")
-        listen_cmd = [listen_sh, agent, "2"]
+        listen_cmd = (["bash"] if os.name == "nt" else []) + [listen_sh, agent, "2"]
         res = subprocess.run(listen_cmd, capture_output=True, text=True, env=self.env, check=True)
         self.assertEqual(res.returncode, 0)
         payload = json.loads(res.stdout.strip())
