@@ -9,6 +9,28 @@
       "bin": "locutus.exe"
     }
   },
+  "post_install": [
+    "if (Get-Command npx -ErrorAction SilentlyContinue) {",
+    "    try { npx -y skills add \"$dir\\skills\\locutus\" -g -a '*' -y } catch { }",
+    "} elseif (Get-Command skilz -ErrorAction SilentlyContinue) {",
+    "    try { skilz install -f \"$dir\\skills\\locutus\" } catch { }",
+    "}"
+  ],
+  "post_uninstall": [
+    "if (Get-Command npx -ErrorAction SilentlyContinue) {",
+    "    try { npx -y skills remove locutus -g -y } catch { }",
+    "} elseif (Get-Command skilz -ErrorAction SilentlyContinue) {",
+    "    try { skilz remove locutus } catch { }",
+    "}"
+  ],
+  "notes": [
+    "To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):",
+    "  npx skills add axiomantic/locutus -g",
+    "  # Or using skilz:",
+    "  skilz install https://github.com/axiomantic/locutus",
+    "  # Or offline from local Scoop files:",
+    "  npx skills add \"$dir\\skills\\locutus\" -g"
+  ],
   "checkver": "github",
   "autoupdate": {
     "architecture": {

@@ -236,6 +236,70 @@ class TestInstallerAndUninstaller(unittest.TestCase):
         self.assertFalse(os.path.exists(exe_path))
         self.assertFalse(os.path.exists(os.path.dirname(claude_skill)))
 
+    def test_07_scoop_manifest_spec(self):
+        """Verify Scoop manifest has valid schema, hooks, and skill installation notes."""
+        import json
+        manifest_path = os.path.join(REPO_ROOT, "packaging", "scoop", "locutus.json")
+        self.assertTrue(os.path.isfile(manifest_path))
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["architecture"]["64bit"]["bin"], "locutus.exe")
+        self.assertIn("post_install", data)
+        self.assertIn("post_uninstall", data)
+        self.assertIn("notes", data)
+
+        post_install_text = " ".join(data["post_install"])
+        self.assertIn("npx", post_install_text)
+        self.assertIn("skilz", post_install_text)
+
+        post_uninstall_text = " ".join(data["post_uninstall"])
+        self.assertIn("npx", post_uninstall_text)
+        self.assertIn("skilz", post_uninstall_text)
+
+        notes_text = " ".join(data["notes"])
+        self.assertIn("npx skills", notes_text)
+        self.assertIn("skilz", notes_text)
+        self.assertIn("$dir\\skills\\locutus", notes_text)
+
+    def test_08_homebrew_formula_spec(self):
+        """Verify Homebrew formula installs skills into pkgshare and includes caveats."""
+        formula_path = os.path.join(REPO_ROOT, "Formula", "locutus.rb")
+        self.assertTrue(os.path.isfile(formula_path))
+
+        with open(formula_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn('pkgshare.install "skills"', content)
+        self.assertIn("def caveats", content)
+        self.assertIn("npx skills add", content)
+        self.assertIn("skilz install", content)
+        self.assertIn("#{opt_pkgshare}/skills/locutus", content)
+
+    def test_09_release_workflow_spec(self):
+        """Verify GitHub release workflow packages skills across Linux, macOS, Debian, and Windows."""
+        workflow_path = os.path.join(REPO_ROOT, ".github", "workflows", "release.yml")
+        self.assertTrue(os.path.isfile(workflow_path))
+
+        with open(workflow_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Check tarball bundling
+        self.assertIn("tar -czf dist/locutus-linux-amd64.tar.gz -C dist/linux-amd64 locutus skills", content)
+        self.assertIn("tar -czf dist/locutus-darwin-arm64.tar.gz -C dist/darwin-arm64 locutus skills", content)
+
+        # Check Windows zip bundling
+        self.assertIn("Copy-Item -Recurse -Force skills dist\\windows-amd64\\skills", content)
+
+        # Check Debian skills and postinst
+        self.assertIn("usr/share/locutus/skills", content)
+        self.assertIn("cp -r skills/locutus deb-amd64/usr/share/locutus/skills/", content)
+        self.assertIn("deb-amd64/DEBIAN/postinst", content)
+        self.assertIn("npx skills add /usr/share/locutus/skills/locutus -g", content)
+        self.assertIn("skilz install -f /usr/share/locutus/skills/locutus", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+

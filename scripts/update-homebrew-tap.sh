@@ -65,6 +65,18 @@ class Locutus < Formula
     else
       bin.install "locutus"
     end
+    pkgshare.install "skills" if File.exist?("skills")
+  end
+
+  def caveats
+    <<~EOS
+      To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):
+        npx skills add axiomantic/locutus -g
+        # Or using skilz:
+        skilz install https://github.com/axiomantic/locutus
+        # Or offline from local Homebrew files:
+        npx skills add #{opt_pkgshare}/skills/locutus -g
+    EOS
   end
 
   test do

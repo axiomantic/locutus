@@ -62,7 +62,8 @@ jobs:
           mkdir -p dist/linux-amd64
           nim c -d:release --opt:speed -o:dist/linux-amd64/locutus src/locutus.nim
           strip dist/linux-amd64/locutus
-          tar -czf dist/locutus-linux-amd64.tar.gz -C dist/linux-amd64 locutus
+          cp -r skills dist/linux-amd64/
+          tar -czf dist/locutus-linux-amd64.tar.gz -C dist/linux-amd64 locutus skills
 
       - name: Compile Linux aarch64 binary
         run: |
@@ -71,17 +72,19 @@ jobs:
             --gcc.exe:aarch64-linux-gnu-gcc --gcc.linkerexe:aarch64-linux-gnu-gcc \
             -o:dist/linux-arm64/locutus src/locutus.nim
           aarch64-linux-gnu-strip dist/linux-arm64/locutus
-          tar -czf dist/locutus-linux-arm64.tar.gz -C dist/linux-arm64 locutus
+          cp -r skills dist/linux-arm64/
+          tar -czf dist/locutus-linux-arm64.tar.gz -C dist/linux-arm64 locutus skills
 
       - name: Build Debian packages (.deb)
         env:
           VERSION: ${{ steps.vars.outputs.version }}
         run: |
           # Build amd64 .deb
-          mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin deb-amd64/usr/share/doc/locutus
+          mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin deb-amd64/usr/share/doc/locutus deb-amd64/usr/share/locutus/skills
           cp dist/linux-amd64/locutus deb-amd64/usr/bin/
           cp LICENSE deb-amd64/usr/share/doc/locutus/copyright
           cp README.md deb-amd64/usr/share/doc/locutus/
+          cp -r skills/locutus deb-amd64/usr/share/locutus/skills/
           chmod 755 deb-amd64/usr/bin/locutus
           printf "%s\n" \
             "Package: locutus" \
@@ -95,13 +98,29 @@ jobs:
             " structures without an intermediate background daemon. Includes HMAC-SHA256" \
             " authentication, dead-agent pruning, and optional AES-256-CBC encryption." \
             > deb-amd64/DEBIAN/control
+          cat << 'EOF' > deb-amd64/DEBIAN/postinst
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+  echo "--------------------------------------------------------------------------------"
+  echo "Locutus installed successfully!"
+  echo "To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):"
+  echo "  npx skills add /usr/share/locutus/skills/locutus -g"
+  echo "  # Or using skilz:"
+  echo "  skilz install -f /usr/share/locutus/skills/locutus"
+  echo "--------------------------------------------------------------------------------"
+fi
+exit 0
+EOF
+          chmod 755 deb-amd64/DEBIAN/postinst
           dpkg-deb --build deb-amd64 dist/locutus_${VERSION}_amd64.deb
 
           # Build arm64 .deb
-          mkdir -p deb-arm64/DEBIAN deb-arm64/usr/bin deb-arm64/usr/share/doc/locutus
+          mkdir -p deb-arm64/DEBIAN deb-arm64/usr/bin deb-arm64/usr/share/doc/locutus deb-arm64/usr/share/locutus/skills
           cp dist/linux-arm64/locutus deb-arm64/usr/bin/
           cp LICENSE deb-arm64/usr/share/doc/locutus/copyright
           cp README.md deb-arm64/usr/share/doc/locutus/
+          cp -r skills/locutus deb-arm64/usr/share/locutus/skills/
           chmod 755 deb-arm64/usr/bin/locutus
           printf "%s\n" \
             "Package: locutus" \
@@ -115,6 +134,21 @@ jobs:
             " structures without an intermediate background daemon. Includes HMAC-SHA256" \
             " authentication, dead-agent pruning, and optional AES-256-CBC encryption." \
             > deb-arm64/DEBIAN/control
+          cat << 'EOF' > deb-arm64/DEBIAN/postinst
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+  echo "--------------------------------------------------------------------------------"
+  echo "Locutus installed successfully!"
+  echo "To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):"
+  echo "  npx skills add /usr/share/locutus/skills/locutus -g"
+  echo "  # Or using skilz:"
+  echo "  skilz install -f /usr/share/locutus/skills/locutus"
+  echo "--------------------------------------------------------------------------------"
+fi
+exit 0
+EOF
+          chmod 755 deb-arm64/DEBIAN/postinst
           dpkg-deb --build deb-arm64 dist/locutus_${VERSION}_arm64.deb
 
       - name: Verify Linux packages in clean environment
@@ -127,17 +161,20 @@ jobs:
           /tmp/clean-tar-amd64/locutus --help | grep -F "Nim Native"
           KEY1=$(/tmp/clean-tar-amd64/locutus get-secret)
           test -n "$KEY1"
+          test -f /tmp/clean-tar-amd64/skills/locutus/SKILL.md
 
           echo "=== [2/4] Verifying Linux amd64 .deb package installation & uninstallation ==="
           sudo dpkg -i dist/locutus_${VERSION}_amd64.deb
           (cd /tmp && locutus --help | grep -F "Nim Native")
           KEY2=$(cd /tmp && locutus get-secret)
           test -n "$KEY2"
+          test -f /usr/share/locutus/skills/locutus/SKILL.md
           sudo dpkg -r locutus
           if which locutus 2>/dev/null; then
             echo "Error: locutus should have been uninstalled"
             exit 1
           fi
+          test ! -f /usr/share/locutus/skills/locutus/SKILL.md
 
           echo "=== [3/4] Verifying Linux arm64 tarball under QEMU ==="
           mkdir -p /tmp/clean-tar-arm64
@@ -145,6 +182,7 @@ jobs:
           qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus --help | grep -F "Nim Native"
           KEY3=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus get-secret)
           test -n "$KEY3"
+          test -f /tmp/clean-tar-arm64/skills/locutus/SKILL.md
 
           echo "=== [4/4] Verifying Linux arm64 .deb extraction under QEMU ==="
           mkdir -p /tmp/clean-deb-arm64
@@ -152,6 +190,7 @@ jobs:
           qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus --help | grep -F "Nim Native"
           KEY4=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus get-secret)
           test -n "$KEY4"
+          test -f /tmp/clean-deb-arm64/usr/share/locutus/skills/locutus/SKILL.md
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -187,7 +226,8 @@ jobs:
           mkdir -p dist/darwin-arm64
           nim c -d:release --opt:speed --cpu:arm64 -o:dist/darwin-arm64/locutus src/locutus.nim
           strip dist/darwin-arm64/locutus
-          tar -czf dist/locutus-darwin-arm64.tar.gz -C dist/darwin-arm64 locutus
+          cp -r skills dist/darwin-arm64/
+          tar -czf dist/locutus-darwin-arm64.tar.gz -C dist/darwin-arm64 locutus skills
 
       - name: Compile macOS Intel (x86_64) binary
         run: |
@@ -197,7 +237,8 @@ jobs:
             --passL:"-target x86_64-apple-macos11" \
             -o:dist/darwin-amd64/locutus src/locutus.nim
           strip dist/darwin-amd64/locutus
-          tar -czf dist/locutus-darwin-amd64.tar.gz -C dist/darwin-amd64 locutus
+          cp -r skills dist/darwin-amd64/
+          tar -czf dist/locutus-darwin-amd64.tar.gz -C dist/darwin-amd64 locutus skills
 
       - name: Verify macOS packages in clean environment
         run: |
@@ -207,6 +248,7 @@ jobs:
           /tmp/clean-darwin-arm64/locutus --help | grep -F "Nim Native"
           KEY1=$(/tmp/clean-darwin-arm64/locutus get-secret)
           test -n "$KEY1"
+          test -f /tmp/clean-darwin-arm64/skills/locutus/SKILL.md
 
           echo "=== [2/2] Verifying macOS amd64 tarball via Rosetta 2 ==="
           mkdir -p /tmp/clean-darwin-amd64
@@ -214,6 +256,7 @@ jobs:
           arch -x86_64 /tmp/clean-darwin-amd64/locutus --help | grep -F "Nim Native"
           KEY2=$(arch -x86_64 /tmp/clean-darwin-amd64/locutus get-secret)
           test -n "$KEY2"
+          test -f /tmp/clean-darwin-amd64/skills/locutus/SKILL.md
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -245,7 +288,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist\windows-amd64
           nim c -d:release --opt:speed -o:dist\windows-amd64\locutus.exe src\locutus.nim
-          Compress-Archive -Path dist\windows-amd64\locutus.exe -DestinationPath dist\locutus-windows-amd64.zip -Force
+          Copy-Item -Recurse -Force skills dist\windows-amd64\skills
+          Compress-Archive -Path dist\windows-amd64\* -DestinationPath dist\locutus-windows-amd64.zip -Force
 
       - name: Verify Windows zip package in clean environment
         shell: powershell
@@ -262,11 +306,17 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($secretOutput)) {
             throw "locutus.exe get-secret failed verification"
           }
+          if (-not (Test-Path "C:\clean-locutus-test\skills\locutus\SKILL.md")) {
+            throw "locutus-windows-amd64.zip missing skills\locutus\SKILL.md"
+          }
 
           Write-Host "=== [2/2] Validating Scoop manifest schema ==="
           $scoopManifest = Get-Content -Raw "packaging/scoop/locutus.json" | ConvertFrom-Json
           if ($scoopManifest.architecture."64bit".bin -ne "locutus.exe") {
             throw "Invalid Scoop manifest binary target"
+          }
+          if (-not $scoopManifest.post_install) {
+            throw "Scoop manifest missing post_install hook"
           }
           Write-Host "Scoop manifest syntax verified successfully."
 

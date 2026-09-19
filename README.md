@@ -189,6 +189,13 @@ If you manage command-line tools with your system package manager:
 #### Homebrew (macOS & Linux)
 ```bash
 brew install axiomantic/tap/locutus
+
+# Equip your coding assistants:
+npx skills add axiomantic/locutus -g
+# Or using skilz:
+skilz install https://github.com/axiomantic/locutus
+# Or offline from local Homebrew files:
+npx skills add $(brew --prefix)/share/locutus/skills/locutus -g
 ```
 
 #### Debian / Ubuntu APT Repository
@@ -199,11 +206,22 @@ echo "deb [trusted=yes] https://axiomantic.github.io/locutus/apt/ ./" | sudo tee
 # 2. Update and install
 sudo apt-get update
 sudo apt-get install -y locutus
+
+# 3. Equip your coding assistants (offline skill files installed to /usr/share/locutus/skills/locutus):
+npx skills add /usr/share/locutus/skills/locutus -g
+# Or using skilz:
+skilz install -f /usr/share/locutus/skills/locutus
 ```
 
 #### Windows Scoop
 ```powershell
 scoop install https://raw.githubusercontent.com/axiomantic/locutus/main/packaging/scoop/locutus.json
+
+# Scoop automatically runs post-install hooks to equip your skills.
+# You can also manually equip or reconfigure at any time:
+npx skills add axiomantic/locutus -g
+# Or using skilz:
+skilz install https://github.com/axiomantic/locutus
 ```
 
 #### Standalone Pre-Compiled Binaries
