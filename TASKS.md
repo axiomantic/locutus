@@ -126,33 +126,33 @@ Every test must be audited against the **Green Mirage Principle**:
 Every test must be upgraded from shallow status/presence checks (Level 1–2) to full structural assertions (Level 4–5), and migrated to the `pytest-tripwire` recording/assertion pattern.
 
 ### Group 2.1: `tests/test_installer.py` (9 Tests)
-- [ ] **TASK-GM-001: `tests/test_installer.py::TestInstallerAndUninstaller::test_01_install_sh_with_mock_agents`**
+- [x] **TASK-GM-001: `tests/test_installer.py::TestInstallerAndUninstaller::test_01_install_sh_with_mock_agents`**
   - **Mirage Risk**: Checks file existence in mock dirs without validating script executable permissions, full content integrity, or negative control on broken install paths.
-  - **Tripwire Migration**: Wrap subprocess executions with `tripwire.subprocess`; assert exact commands, exit codes, and verify installed file contents byte-for-byte.
-- [ ] **TASK-GM-002: `tests/test_installer.py::TestInstallerAndUninstaller::test_02_install_sh_no_skills_flag`**
+  - **Tripwire Migration**: Wrap subprocess executions with `tripwire.subprocess`; assert exact commands, exit codes, and verify installed file contents byte-for-byte. (Verified: byte-for-byte skill content equality, 0755 mode, unwritable INSTALL_DIR negative control, tripwire sandbox assert_run & unmocked escape catch).
+- [x] **TASK-GM-002: `tests/test_installer.py::TestInstallerAndUninstaller::test_02_install_sh_no_skills_flag`**
   - **Mirage Risk**: Checks that skills were not installed, but may pass vacuously if installer script crashed early before reaching the skill installation step.
-  - **Tripwire Migration**: Assert installer runs to completion (exit 0) and assert full directory snapshot of agent config dirs remains empty.
-- [ ] **TASK-GM-003: `tests/test_installer.py::TestInstallerAndUninstaller::test_03_skilz_compatibility`**
+  - **Tripwire Migration**: Assert installer runs to completion (exit 0) and assert full directory snapshot of agent config dirs remains empty. (Verified: binary exists, 0755 mode, version check, strict empty assistant dirs snapshot, tripwire mock_run/assert_run & InteractionMismatchError negative control).
+- [x] **TASK-GM-003: `tests/test_installer.py::TestInstallerAndUninstaller::test_03_skilz_compatibility`**
   - **Mirage Risk**: Shallow regex/substring check on skilz metadata without verifying schema conformance.
-  - **Tripwire Migration**: Parse and validate full metadata schema; test negative control with invalid manifest.
-- [ ] **TASK-GM-004: `tests/test_installer.py::TestInstallerAndUninstaller::test_04_skills_sh_manifest_validation`**
+  - **Tripwire Migration**: Parse and validate full metadata schema; test negative control with invalid manifest. (Verified: eliminated silent skip, full YAML schema validation, negative controls on missing name/desc/syntax, tripwire mock_run/assert_run install & remove loop).
+- [x] **TASK-GM-004: `tests/test_installer.py::TestInstallerAndUninstaller::test_04_skills_sh_manifest_validation`**
   - **Mirage Risk**: Asserts 3 files are identical; does not test that a difference would actually trigger assertion failure (negative control).
-  - **Tripwire Migration**: Add tripwire negative control asserting failure when a line is mutated.
-- [ ] **TASK-GM-005: `tests/test_installer.py::TestInstallerAndUninstaller::test_05_npx_skills_discovery`**
+  - **Tripwire Migration**: Add tripwire negative control asserting failure when a line is mutated. (Verified: root and skills/locutus/ byte-for-byte sync, strict YAML dict parsing, keyword verification, mutation negative controls on missing/malformed YAML).
+- [x] **TASK-GM-005: `tests/test_installer.py::TestInstallerAndUninstaller::test_05_npx_skills_discovery`**
   - **Mirage Risk**: Partial match on npx command output; does not assert full JSON structure.
-  - **Tripwire Migration**: Use `tripwire.subprocess` to assert exact command args and validate complete JSON output schema.
-- [ ] **TASK-GM-006: `tests/test_installer.py::TestInstallerAndUninstaller::test_06_install_ps1_windows`**
+  - **Tripwire Migration**: Use `tripwire.subprocess` to assert exact command args and validate complete JSON output schema. (Verified: deterministic tripwire simulation, exact command args, regex discovery validation, failure returncode negative control, live fallback).
+- [x] **TASK-GM-006: `tests/test_installer.py::TestInstallerAndUninstaller::test_06_install_ps1_windows`**
   - **Mirage Risk**: Skips or checks simple string matching in PowerShell script without parsing AST or executing in simulated environment.
-  - **Tripwire Migration**: Assert complete parameter block and command signatures; verify negative controls.
-- [ ] **TASK-GM-007: `tests/test_installer.py::TestInstallerAndUninstaller::test_07_scoop_manifest_spec`**
+  - **Tripwire Migration**: Assert complete parameter block and command signatures; verify negative controls. (Verified: eliminated unconditional skip, static PowerShell param block & ErrorActionPreference validation, syntax negative controls, tripwire simulated install & uninstall execution).
+- [x] **TASK-GM-007: `tests/test_installer.py::TestInstallerAndUninstaller::test_07_scoop_manifest_spec`**
   - **Mirage Risk**: Partial field check on Scoop JSON manifest; missing required Scoop schema fields (homepage, license, hash format).
-  - **Tripwire Migration**: Validate against full official Scoop JSON schema; assert exact version matching and URL structures.
-- [ ] **TASK-GM-008: `tests/test_installer.py::TestInstallerAndUninstaller::test_08_homebrew_formula_spec`**
+  - **Tripwire Migration**: Validate against full official Scoop JSON schema; assert exact version matching and URL structures. (Verified: full Scoop schema keys, version/license sync, 64-bit bin & release url verification, autoupdate $version check, schema validator negative controls).
+- [x] **TASK-GM-008: `tests/test_installer.py::TestInstallerAndUninstaller::test_08_homebrew_formula_spec`**
   - **Mirage Risk**: Regex check for formula class; does not parse ruby syntax or verify SHA256 / URL matchers for all architectures.
-  - **Tripwire Migration**: Parse all bottle/source stanzas; assert arm64 and x86_64 blocks are fully defined and consistent.
-- [ ] **TASK-GM-009: `tests/test_installer.py::TestInstallerAndUninstaller::test_09_release_workflow_spec`**
+  - **Tripwire Migration**: Parse all bottle/source stanzas; assert arm64 and x86_64 blocks are fully defined and consistent. (Verified: Ruby Formula AST parsing, multi-OS on_macos/on_linux, arm64/amd64 tarballs, caveats, test block, negative controls, and tripwire audit simulation).
+- [x] **TASK-GM-009: `tests/test_installer.py::TestInstallerAndUninstaller::test_09_release_workflow_spec`**
   - **Mirage Risk**: Checks YAML keys via basic dict lookup; does not validate that matrix jobs depend on test completion.
-  - **Tripwire Migration**: Validate entire GitHub Actions workflow DAG structure and trigger constraints.
+  - **Tripwire Migration**: Validate entire GitHub Actions workflow DAG structure and trigger constraints. (Verified: YAML DAG parsing, publish-release dependency on build jobs, triggers/permissions constraints, cross-OS packaging, and tripwire workflow validation simulation).
 
 ---
 

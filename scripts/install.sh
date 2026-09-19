@@ -234,13 +234,26 @@ install_skills() {
   # Option C: Direct fallback to standard assistant directories
   if [ "${SKILL_INSTALLED}" -eq 0 ]; then
     echo "Configuring skills directly for detected AI coding assistants..."
-    SKILL_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/SKILL.md"
-    SPEC_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/references/wire_spec.md"
-    TMP_SKILL="$(mktemp -d)"
-    if curl -fsSL -o "${TMP_SKILL}/SKILL.md" "${SKILL_URL}" 2>/dev/null; then
-      mkdir -p "${TMP_SKILL}/references"
-      curl -fsSL -o "${TMP_SKILL}/references/wire_spec.md" "${SPEC_URL}" 2>/dev/null || true
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+    LOCAL_SKILL_DIR="${SCRIPT_DIR}/../skills/locutus"
+    CLEANUP_TMP=0
+    if [ -n "${SCRIPT_DIR}" ] && [ -f "${LOCAL_SKILL_DIR}/SKILL.md" ]; then
+      SRC_SKILL_DIR="${LOCAL_SKILL_DIR}"
+    else
+      SKILL_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/SKILL.md"
+      SPEC_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/references/wire_spec.md"
+      TMP_SKILL="$(mktemp -d)"
+      CLEANUP_TMP=1
+      if curl -fsSL -o "${TMP_SKILL}/SKILL.md" "${SKILL_URL}" 2>/dev/null; then
+        mkdir -p "${TMP_SKILL}/references"
+        curl -fsSL -o "${TMP_SKILL}/references/wire_spec.md" "${SPEC_URL}" 2>/dev/null || true
+        SRC_SKILL_DIR="${TMP_SKILL}"
+      else
+        SRC_SKILL_DIR=""
+      fi
+    fi
 
+    if [ -n "${SRC_SKILL_DIR}" ] && [ -f "${SRC_SKILL_DIR}/SKILL.md" ]; then
       for target_skill in \
         "${HOME}/.claude/skills/locutus" \
         "${HOME}/.gemini/config/skills/locutus" \
@@ -253,13 +266,15 @@ install_skills() {
         parent_agent_dir="$(dirname "$(dirname "${target_skill}")")"
         if [ -d "${parent_agent_dir}" ] || [ -d "$(dirname "${target_skill}")" ]; then
           mkdir -p "${target_skill}/references"
-          cp "${TMP_SKILL}/SKILL.md" "${target_skill}/SKILL.md"
-          [ -f "${TMP_SKILL}/references/wire_spec.md" ] && cp "${TMP_SKILL}/references/wire_spec.md" "${target_skill}/references/wire_spec.md"
+          cp "${SRC_SKILL_DIR}/SKILL.md" "${target_skill}/SKILL.md"
+          [ -f "${SRC_SKILL_DIR}/references/wire_spec.md" ] && cp "${SRC_SKILL_DIR}/references/wire_spec.md" "${target_skill}/references/wire_spec.md"
           echo "  ✓ Installed Locutus skill to: ${target_skill}"
           SKILL_INSTALLED=1
         fi
       done
-      rm -rf "${TMP_SKILL}"
+      if [ "${CLEANUP_TMP}" -eq 1 ]; then
+        rm -rf "${TMP_SKILL}"
+      fi
     fi
   fi
 

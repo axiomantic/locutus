@@ -10,5 +10,9 @@ dependencies = [
     "redis>=5.0.0",
 ]
 
+[project.entry-points."tripwire.plugins"]
+locutus = "tests.tripwire_locutus:LocutusPlugin"
+
 [tool.tripwire]
 guard = "off"
+
