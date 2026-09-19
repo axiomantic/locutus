@@ -1360,6 +1360,109 @@ secret = "my_inline_secret_test_555"
 
         self.run_locutus(["close", worker])
 
+    def test_44_scatter_gather_quorum(self):
+        """Test 'locutus scatter' with quorum aggregation and target fan-out."""
+        w1 = "scatter_w1"
+        w2 = "scatter_w2"
+        self.run_locutus(["open", w1, "scatter_team"])
+        self.run_locutus(["open", w2, "scatter_team"])
+
+        def worker_loop(w_name, vote_val):
+            res = self.run_locutus(["listen", w_name, "5"])
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout.strip())
+                reply_to = data.get("reply_to")
+                if reply_to:
+                    self.run_locutus([
+                        "--agent-name=" + w_name,
+                        "reply",
+                        "--to", data.get("from", "orchestrator"),
+                        "--reply-to", reply_to,
+                        "--subject", "Vote Response",
+                        "--body", f"vote:{vote_val}"
+                    ])
+
+        t1 = threading.Thread(target=worker_loop, args=(w1, "approve"))
+        t2 = threading.Thread(target=worker_loop, args=(w2, "approve"))
+        t1.start()
+        t2.start()
+        time.sleep(0.3)
+
+        # Scatter by tag with quorum=2
+        res_scatter = self.run_locutus([
+            "--agent-name=scatter_lead",
+            "scatter",
+            "--targets", "@scatter_team",
+            "--subject", "Release Vote",
+            "--body", "Vote for v1.0",
+            "--quorum", "2",
+            "--timeout", "5"
+        ])
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        self.assertEqual(res_scatter.returncode, 0, f"Scatter failed: {res_scatter.stderr}")
+        replies = json.loads(res_scatter.stdout.strip())
+        self.assertEqual(len(replies), 2)
+        senders = {r["from"] for r in replies}
+        self.assertEqual(senders, {w1, w2})
+        bodies = {r["body"] for r in replies}
+        self.assertEqual(bodies, {"vote:approve"})
+
+        # Clean up
+        self.run_locutus(["close", w1])
+        self.run_locutus(["close", w2])
+
+    def test_45_scatter_explicit_targets_and_raw(self):
+        """Test 'locutus scatter' with explicit named targets and --raw mode."""
+        w1 = "scatter_raw_w1"
+        w2 = "scatter_raw_w2"
+        self.run_locutus(["open", w1, "calc"])
+        self.run_locutus(["open", w2, "calc"])
+
+        def worker_loop(w_name, res_val):
+            res = self.run_locutus(["listen", w_name, "5"])
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout.strip())
+                reply_to = data.get("reply_to")
+                if reply_to:
+                    self.run_locutus([
+                        "--agent-name=" + w_name,
+                        "reply",
+                        "--to", data.get("from", "calc_lead"),
+                        "--reply-to", reply_to,
+                        "--subject", "Result",
+                        "--body", res_val
+                    ])
+
+        t1 = threading.Thread(target=worker_loop, args=(w1, "42"))
+        t2 = threading.Thread(target=worker_loop, args=(w2, "100"))
+        t1.start()
+        t2.start()
+        time.sleep(0.3)
+
+        # Scatter with explicit comma-separated target list and --raw mode
+        res_scatter = self.run_locutus([
+            "--agent-name=calc_lead",
+            "scatter",
+            "--targets", f"{w1},{w2}",
+            "--subject", "Compute",
+            "--body", "Run calculation",
+            "--quorum", "2",
+            "--timeout", "5",
+            "--raw"
+        ])
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        self.assertEqual(res_scatter.returncode, 0, f"Scatter raw failed: {res_scatter.stderr}")
+        lines = set(res_scatter.stdout.strip().splitlines())
+        self.assertEqual(lines, {"42", "100"})
+
+        # Clean up
+        self.run_locutus(["close", w1])
+        self.run_locutus(["close", w2])
+
 
 if __name__ == "__main__":
     unittest.main()

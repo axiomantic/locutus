@@ -128,6 +128,13 @@ locutus request --to worker-backend --subject "Hash" --body "sha256:data" --raw
 # Returns the decrypted response body directly to stdout
 ```
 
+#### Scatter-Gather & Quorum Consensus (`locutus scatter`)
+Need to fan out work to multiple specialists and gather results until a quorum threshold is met? `locutus scatter` multicasts a task and aggregates incoming responses until the desired quorum arrives or timeout expires:
+```bash
+# Fan out to all active agents with tag 'qa' and collect at least 2 results:
+locutus scatter --targets @qa --subject "Regression Suite" --body "Run Smoke Tests" --quorum 2 --timeout 15
+```
+
 #### Competing-Consumers Work Queues (`locutus enqueue` / `locutus work`)
 Coordinate pools of interchangeable worker assistants to process a shared backlog with guaranteed exactly-once delivery:
 ```bash
@@ -221,6 +228,16 @@ locutus status busy "Refactoring auth middleware"
 
 # Signal completion when ready:
 locutus status idle "Awaiting next task"
+```
+
+### 5. Orchestrator Scatter-Gather & Quorum Consensus
+Fan out an objective across a pool of specialists and aggregate responses until quorum is met:
+```bash
+# Fan out to all agents with tag 'reviewers', waiting for at least 2 approvals:
+replies=$(locutus scatter --targets @reviewers --subject "Review PR #42" --body "Please review diff in staging" --quorum 2 --timeout 15)
+
+# Or fan out to explicit agents and pipe bare response bodies:
+locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "run" --raw
 ```
 
 ---

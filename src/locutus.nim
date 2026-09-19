@@ -4,7 +4,7 @@
 
 import std/[
   os, osproc, strutils, json, openssl, sha1,
-  times, random, streams, options, base64, tables, nativesockets
+  times, random, streams, options, base64, tables, sets, nativesockets
 ]
 when defined(posix):
   import posix
@@ -66,6 +66,7 @@ const
   lockLua*       = staticRead("../scripts/lock.lua")
   unlockLua*     = staticRead("../scripts/unlock.lua")
   enqueueLua*    = staticRead("../scripts/enqueue.lua")
+  scatterLua*    = staticRead("../scripts/scatter.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -85,6 +86,7 @@ let
   lockSha*       = computeSha1(lockLua)
   unlockSha*     = computeSha1(unlockLua)
   enqueueSha*    = computeSha1(enqueueLua)
+  scatterSha*    = computeSha1(scatterLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -572,7 +574,8 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 
     res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, $effectiveTtl])
   else:
-    res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, $effectiveTtl])
+    let destQueue = if replyTo.startsWith("scatter:") or replyTo.startsWith("reply:"): replyTo else: toAgent
+    res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, destQueue, msgJson, $effectiveTtl])
 
   if echoResult and not rearmListen:
     echo res
@@ -938,6 +941,121 @@ proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, t
   stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
   quit(1)
 
+proc doScatter*(cfg: LocutusConfig, targets, fromAgent, subject, body: string,
+               quorum: int = -1, timeoutSec: int = 30, rawOutput: bool = false) =
+  randomize()
+  let secret = getSecret(cfg)
+  let scatterId = "sc_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
+  let replyQueue = "scatter:" & scatterId
+  let replyInboxKey = cfg.prefix & "inbox:" & replyQueue
+
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let finalBody = if cfg.encrypt: encryptAes(body, secret, cfg) else: body
+  let canonical = scatterId & "|" & fromAgent & "|" & targets & "|task|" & subject & "|" & finalBody & "|" & ts
+  let sig = computeHmacSha256(secret, canonical)
+
+  var node = newJObject()
+  node["id"] = %scatterId
+  node["from"] = %fromAgent
+  node["to"] = %targets
+  node["type"] = %"task"
+  node["reply_to"] = %replyQueue
+  node["tags"] = newJArray()
+  node["subject"] = %subject
+  node["body"] = %finalBody
+  node["timestamp"] = %ts
+  node["sig"] = %sig
+  node["encrypted"] = %cfg.encrypt
+
+  let msgJson = $node
+  let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 300
+
+  let deliveredStr = runLuaScript(cfg.redisUrl, scatterLua, scatterSha, [cfg.prefix, targets, msgJson, $effectiveTtl])
+  var delivered = 0
+  try:
+    delivered = parseInt(deliveredStr.strip())
+  except ValueError:
+    delivered = 0
+
+  let effectiveQuorum = if quorum >= 0: quorum else: max(1, delivered)
+
+  var collectedReplies: seq[JsonNode] = @[]
+  var seenSenders = initHashSet[string]()
+
+  if effectiveQuorum > 0 and delivered > 0:
+    discard execRedis(cfg.redisUrl, ["EXPIRE", replyInboxKey, $(timeoutSec + 60)])
+    let startTime = getTime().toUnix()
+    var remaining = timeoutSec
+
+    while collectedReplies.len < effectiveQuorum and remaining > 0:
+      var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", replyInboxKey, $remaining])
+      if exitCode != 0:
+        stderr.writeLine("Redis error: " & outStr.strip())
+        break
+      if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+        break
+
+      let firstNl = outStr.find('\n')
+      if firstNl < 0:
+        break
+
+      let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+      var parsed: JsonNode
+      try:
+        parsed = parseJson(payloadStr)
+      except JsonParsingError:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from scatter inbox")
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, timeoutSec - elapsed)
+        continue
+
+      let id = parsed.getOrDefault("id").getStr("")
+      let sender = parsed.getOrDefault("from").getStr("")
+      let toTarget = parsed.getOrDefault("to").getStr("")
+      let msgType = parsed.getOrDefault("type").getStr("")
+      let subj = parsed.getOrDefault("subject").getStr("")
+      let bdy = parsed.getOrDefault("body").getStr("")
+      let rts = parsed.getOrDefault("timestamp").getStr("")
+      let rsig = parsed.getOrDefault("sig").getStr("")
+      let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+      # Validate HMAC
+      let rCanonical = id & "|" & sender & "|" & toTarget & "|" & msgType & "|" & subj & "|" & bdy & "|" & rts
+      if not verifyHmac(secret, rCanonical, rsig):
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered reply (ID: " & id & ")")
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, timeoutSec - elapsed)
+        continue
+
+      if isEncrypted:
+        try:
+          let decryptedBody = decryptAes(bdy, secret, cfg)
+          parsed["body"] = %decryptedBody
+          parsed["encrypted"] = %false
+        except ValueError as e:
+          stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable reply: " & e.msg & " (ID: " & id & ")")
+          let elapsed = int(getTime().toUnix() - startTime)
+          remaining = max(0, timeoutSec - elapsed)
+          continue
+
+      if not seenSenders.contains(sender):
+        seenSenders.incl(sender)
+        collectedReplies.add(parsed)
+
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, timeoutSec - elapsed)
+
+  discard execRedis(cfg.redisUrl, ["DEL", replyInboxKey])
+
+  if rawOutput:
+    for r in collectedReplies:
+      echo r["body"].getStr("")
+  else:
+    var resArr = newJArray()
+    for r in collectedReplies:
+      resArr.add(r)
+    echo $resArr
+
 proc doPub*(cfg: LocutusConfig, channel, message: string): string =
   let fullChan = cfg.prefix & "channel:" & channel
   let (res, code) = execRedis(cfg.redisUrl, ["PUBLISH", fullChan, message])
@@ -1034,6 +1152,7 @@ proc main() =
     echo "  locutus reply --to <agent> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]"
     echo "  locutus broadcast [--tags <tags>] --subject <subj> --body <body>"
     echo "  locutus request --to <agent> --subject <subj> --body <body> [--timeout 30] [--raw]"
+    echo "  locutus scatter --targets <@tag|agents|*> --subject <subj> --body <body> [--quorum N] [--timeout 30] [--raw]"
     echo "  locutus enqueue <queue_name> --subject <subj> --body <body>"
     echo "  locutus work <queue_name> [timeout_sec]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
@@ -1331,6 +1450,52 @@ proc main() =
       quit(1)
 
     doRequest(cfg, toAgent, fromAgent, subject, body, timeout, rawOutput)
+
+  of "scatter":
+    var targets = ""
+    var subject = ""
+    var body = ""
+    var quorum = -1
+    var timeout = 30
+    var rawOutput = false
+    var fromAgent = getActiveAgentName(cfg, "")
+
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--targets="): targets = a[10..^1]
+      elif a == "--targets" and i + 1 < args.len: targets = args[i+1]; inc i
+      elif a.startsWith("--target="): targets = a[9..^1]
+      elif a == "--target" and i + 1 < args.len: targets = args[i+1]; inc i
+      elif a.startsWith("--subject="): subject = a[10..^1]
+      elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
+      elif a.startsWith("--body="): body = a[7..^1]
+      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--quorum="):
+        try: quorum = parseInt(a[9..^1]) except ValueError: discard
+      elif a == "--quorum" and i + 1 < args.len:
+        try: quorum = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif a.startsWith("--timeout="):
+        try: timeout = parseInt(a[10..^1]) except ValueError: discard
+      elif a == "--timeout" and i + 1 < args.len:
+        try: timeout = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif a == "--raw": rawOutput = true
+      elif a.startsWith("--from="): fromAgent = a[7..^1]
+      elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
+      elif not a.startsWith("-"):
+        if targets == "": targets = a
+        elif subject == "": subject = a
+        elif body == "": body = a
+      inc i
+
+    if targets.len == 0 or subject.len == 0 or body.len == 0:
+      stderr.writeLine("Error: Missing required arguments for scatter.")
+      stderr.writeLine("Usage: locutus scatter --targets <@tag|agent1,agent2|*> --subject <subj> --body <body> [--quorum N] [--timeout sec] [--raw]")
+      quit(1)
+
+    doScatter(cfg, targets, fromAgent, subject, body, quorum, timeout, rawOutput)
 
   of "enqueue":
     if args.len < 2:

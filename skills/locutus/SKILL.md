@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, scattering tasks to a pool for quorum aggregation, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -60,6 +60,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Send Reply** | `locutus reply --to <sender> --subject "Re: <subj>" --body "<body>" [--reply-to <msg_id>] [--listen/-l]` |
 | **Broadcast (O2M)** | `locutus broadcast --tags "<tags>" --subject "<subj>" --body "<body>"` |
 | **Synchronous RPC** | `locutus request --to <recipient> --subject "<subj>" --body "<body>" [--timeout 30] [--raw]` |
+| **Scatter-Gather Quorum** | `locutus scatter --targets <@tag\|agent1,agent2\|\*> --subject "<subj>" --body "<body>" [--quorum N] [--timeout sec] [--raw]` |
 | **Produce to Work Queue** | `locutus enqueue <queue_name> --subject "<subj>" --body "<body>"` |
 | **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec]` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
@@ -272,6 +273,16 @@ locutus pub build_events '{"commit": "348d001", "status": "passed"}'
   locutus reply --to orchestrator --subject "Done" --body "Merged PR" --listen
   ```
   Locutus automatically skips duplicate listeners if one is already active.
+
+### Playbook 7: Orchestrator Scatter-Gather & Quorum Consensus
+*Goal: Fan out an objective across a pool of specialists and aggregate responses until quorum is met.*
+```bash
+# Fan out to all agents with tag 'reviewers', waiting for at least 2 approvals:
+replies=$(locutus scatter --targets @reviewers --subject "Review PR #42" --body "Please review diff in staging" --quorum 2 --timeout 15)
+
+# Or fan out to explicit agents and pipe bare response bodies:
+locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "run" --raw
+```
 
 ---
 

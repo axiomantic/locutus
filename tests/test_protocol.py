@@ -55,6 +55,7 @@ LUA_STATUS = load_lua("status.lua")
 LUA_LOCK = load_lua("lock.lua")
 LUA_UNLOCK = load_lua("unlock.lua")
 LUA_ENQUEUE = load_lua("enqueue.lua")
+LUA_SCATTER = load_lua("scatter.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -605,6 +606,28 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertEqual(is_in_tag, "0")
         meta_exists = run_redis("EXISTS", f"{PREFIX}agent:{agent_dead}")
         self.assertEqual(meta_exists, "0")
+
+    def test_20_scatter_lua_protocol(self):
+        """Test scatter.lua fan-out directly via Redis EVAL."""
+        a1 = "proto_scatter_1"
+        a2 = "proto_scatter_2"
+        run_eval(LUA_REGISTER, 0, PREFIX, a1, "proto_scatter_grp", "localhost", "1234", "30")
+        run_eval(LUA_REGISTER, 0, PREFIX, a2, "proto_scatter_grp", "localhost", "1235", "30")
+
+        msg = json.dumps({"id": "msg_scatter_proto", "body": "test"})
+        # Scatter to tag @proto_scatter_grp
+        delivered = run_eval(LUA_SCATTER, 0, PREFIX, "@proto_scatter_grp", msg, "300")
+        self.assertEqual(int(delivered), 2)
+
+        # Inboxes should have received the message
+        inbox1_len = run_redis("LLEN", f"{PREFIX}inbox:{a1}")
+        inbox2_len = run_redis("LLEN", f"{PREFIX}inbox:{a2}")
+        self.assertEqual(int(inbox1_len), 1)
+        self.assertEqual(int(inbox2_len), 1)
+
+        # Clean up
+        run_eval(LUA_UNREGISTER, 0, PREFIX, a1)
+        run_eval(LUA_UNREGISTER, 0, PREFIX, a2)
 
 
 if __name__ == "__main__":
