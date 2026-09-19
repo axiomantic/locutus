@@ -45,11 +45,10 @@ TOOLS = [
 
 
 def is_llm_available() -> bool:
-    """Check if LLM testing is enabled and a provider is reachable."""
-    if os.environ.get("RUN_LLM_TESTS") != "1":
-        return False
+    """Check if an LLM provider (OpenRouter or local Ollama) is reachable."""
     if LLM_API_KEY:
         return True
+
     check_url = LLM_API_BASE
     if check_url.endswith("/api/chat"):
         check_url = check_url[:-9] + "/api/tags"

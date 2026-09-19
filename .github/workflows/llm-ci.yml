@@ -77,9 +77,9 @@ jobs:
       - name: Run LLM Integration Tests
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
-          RUN_LLM_TESTS: "1"
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ inputs.model }}
+
         run: |
           if [ -z "$LLM_API_KEY" ]; then
             echo "::error ::LLM_API_KEY secret is not present in this runner environment."

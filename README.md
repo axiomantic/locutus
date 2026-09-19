@@ -460,12 +460,13 @@ Locutus includes a 100% automated, marked `pytest` suite:
 # Run all hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
 pytest -v -m "not llm"
 
-# Run live LLM integration tests (Local Ollama)
-RUN_LLM_TESTS=1 pytest -v -m llm
+# Run live LLM integration tests (uses local Ollama by default, skips cleanly if offline)
+pytest -v -m llm
 
-# Run live LLM integration tests (OpenRouter / Cloud API)
-RUN_LLM_TESTS=1 LLM_API_KEY="sk-or-..." LLM_MODEL="deepseek/deepseek-chat:free" pytest -v -m llm
+# Run live LLM integration tests via OpenRouter / Cloud API
+LLM_API_KEY="sk-or-..." LLM_MODEL="deepseek/deepseek-chat:free" pytest -v -m llm
 ```
+
 
 Continuous Integration (GitHub Actions) runs:
 - **CI Workflow (`ci.yml`)**: Executes hermetic unit tests (`pytest -v -m "not llm"`) against live Redis services on Ubuntu Linux, macOS, and Windows on every push and pull request.
