@@ -70,6 +70,7 @@ const
   claimLua*      = staticRead("../scripts/claim.lua")
   ackLua*        = staticRead("../scripts/ack.lua")
   blackboardLua* = staticRead("../scripts/blackboard.lua")
+  floorLua*      = staticRead("../scripts/floor.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -93,6 +94,7 @@ let
   claimSha*      = computeSha1(claimLua)
   ackSha*        = computeSha1(ackLua)
   blackboardSha* = computeSha1(blackboardLua)
+  floorSha*      = computeSha1(floorLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -580,7 +582,7 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 
     res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, $effectiveTtl])
   else:
-    let destQueue = if replyTo.startsWith("scatter:") or replyTo.startsWith("reply:"): replyTo else: toAgent
+    let destQueue = if msgType == "reply" and (replyTo.startsWith("scatter:") or replyTo.startsWith("reply:")): replyTo else: toAgent
     res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, destQueue, msgJson, $effectiveTtl])
 
   if echoResult and not rearmListen:
@@ -960,6 +962,55 @@ proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", v
     return ""
   return res.strip()
 
+proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int = 0, leaseSec: int = 60) =
+  let startTime = getTime().toUnix()
+  var remaining = waitSec
+
+  var res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "request", room, agentName, $leaseSec])
+  if res == "ACQUIRED":
+    echo "ACQUIRED: " & agentName & " holds floor in " & room
+    return
+
+  if waitSec <= 0:
+    let holder = if res.startsWith("BUSY:"): res[5..^1] else: "unknown"
+    stderr.writeLine("Floor in " & room & " is held by " & holder)
+    quit(1)
+
+  discard runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "enqueue_waiter", room, agentName])
+
+  while remaining > 0:
+    sleep(150)
+    res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "request", room, agentName, $leaseSec])
+    if res == "ACQUIRED":
+      echo "ACQUIRED: " & agentName & " holds floor in " & room
+      return
+    let elapsed = int(getTime().toUnix() - startTime)
+    remaining = max(0, waitSec - elapsed)
+
+  let holder = if res.startsWith("BUSY:"): res[5..^1] else: "unknown"
+  stderr.writeLine("Timeout waiting for floor in " & room & ". Currently held by " & holder)
+  quit(1)
+
+proc doFloorYield*(cfg: LocutusConfig, room, agentName: string, force: bool = false, leaseSec: int = 60) =
+  let forceArg = if force: "force" else: ""
+  let res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "yield", room, agentName, forceArg, $leaseSec])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doFloorPass*(cfg: LocutusConfig, room, agentName, targetAgent: string, force: bool = false, leaseSec: int = 60) =
+  let forceArg = if force: "force" else: ""
+  let res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "pass", room, agentName, targetAgent, $leaseSec, forceArg])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doFloorStatus*(cfg: LocutusConfig, room: string) =
+  let res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "status", room])
+  echo res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1253,6 +1304,7 @@ proc main() =
     echo "  locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]"
     echo "  locutus ack <queue_name> <task_id>"
     echo "  locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]"
+    echo "  locutus floor <request|yield|pass|status> <room> [args...]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -1743,6 +1795,82 @@ proc main() =
     else:
       stderr.writeLine("Unknown blackboard action: " & action)
       stderr.writeLine("Usage: locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]")
+      quit(1)
+
+  of "floor":
+    if args.len < 3:
+      stderr.writeLine("Usage: locutus floor <request|yield|pass|status> <room> [args...]")
+      quit(1)
+    let action = args[1].toLowerAscii
+    let room = args[2]
+    var agentName = getActiveAgentName(cfg, "", fallbackDefault = false)
+
+    case action
+    of "request":
+      var waitSec = 0
+      var leaseSec = 60
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--lease="):
+          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+        elif a == "--lease" and i + 1 < args.len:
+          try: leaseSec = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif a.startsWith("--wait="):
+          try: waitSec = parseInt(a[7..^1]) except ValueError: discard
+        elif a == "--wait" and i + 1 < args.len:
+          try: waitSec = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif not a.startsWith("-"):
+          try: waitSec = parseInt(a) except ValueError: discard
+        inc i
+      if agentName.len == 0:
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+      doFloorRequest(cfg, room, agentName, waitSec, leaseSec)
+
+    of "yield":
+      var force = false
+      var leaseSec = 60
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a in ["--force", "-f"]: force = true
+        elif a.startsWith("--lease="):
+          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+        inc i
+      if agentName.len == 0:
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+      doFloorYield(cfg, room, agentName, force, leaseSec)
+
+    of "pass":
+      var targetAgent = ""
+      var force = false
+      var leaseSec = 60
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--to="): targetAgent = a[5..^1]
+        elif a == "--to" and i + 1 < args.len: targetAgent = args[i+1]; inc i
+        elif a in ["--force", "-f"]: force = true
+        elif a.startsWith("--lease="):
+          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+        elif not a.startsWith("-"):
+          if targetAgent.len == 0: targetAgent = a
+        inc i
+      if targetAgent.len == 0:
+        stderr.writeLine("Error: Missing target agent for floor pass. Use --to <agent>.")
+        quit(1)
+      if agentName.len == 0:
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+      doFloorPass(cfg, room, agentName, targetAgent, force, leaseSec)
+
+    of "status", "show":
+      doFloorStatus(cfg, room)
+
+    else:
+      stderr.writeLine("Unknown floor action: " & action)
+      stderr.writeLine("Usage: locutus floor <request|yield|pass|status> <room> [args...]")
       quit(1)
 
   of "status":

@@ -168,6 +168,21 @@ locutus blackboard append room1 action_items "Audit green mirage"
 locutus blackboard snapshot room1
 ```
 
+#### Floor Control & Speaker Ring (`locutus floor`)
+Moderate turn-taking and discussions across agent roundtables without race conditions or agents talking over one another:
+```bash
+# Request the floor (with a 30s speaker lease). Blocks if occupied:
+locutus floor request design_room 30
+
+# Broadcast ideas or write to the blackboard...
+locutus blackboard append design_room notes "Proposal: Use Redis streams for audit logging"
+
+# Yield the floor to the next waiting speaker:
+locutus floor yield design_room
+# Or pass directly:
+locutus floor pass design_room specialist_agent
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -288,6 +303,21 @@ locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline 
 
 # Take room snapshot:
 locutus blackboard snapshot brainstorm
+```
+
+### 8. Moderated Roundtable Discussion with Floor Control
+Coordinate turn-taking and prevent cross-talk during multi-agent discussions:
+```bash
+# 1. Request the floor (with a 30s speaker lease). Blocks if occupied:
+locutus floor request design_room 30
+
+# 2. Write speaking points or broadcast to participants:
+locutus blackboard append design_room notes "Speaker proposal: Split monolithic config into modular schemas"
+
+# 3. Yield floor to the next waiting speaker:
+locutus floor yield design_room
+# Or pass explicitly:
+locutus floor pass design_room specialist_bob
 ```
 
 ---
@@ -510,8 +540,13 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | `locutus send --to <target> ...` | Sends direct (O2O) message with HMAC signature. | `locutus send --to worker-1 --subject "Fix Bug" --body "src/api.py"` |
 | `locutus broadcast [--tags <tags>] ...` | Multicasts to all agents matching tags within project. | `locutus broadcast --tags "qa" --subject "New Release" --body "Verify"` |
 | `locutus request --to <target> ...` | Synchronous RPC: dispatches task and blocks until reply received. | `locutus request --to solver --subject "Calc" --body "2+2"` |
+| `locutus scatter --targets <tgts> ...` | Fan out task to agents/tags and gather responses until quorum. | `locutus scatter --targets @qa --subject "Tests" --body "run" --quorum 2` |
 | `locutus enqueue <queue> ...` | Pushes task to competing-consumers worker queue. | `locutus enqueue jobs --subject "Compile" --body "gcc -O2 main.c"` |
 | `locutus work <queue> [timeout]` | Pops task from competing-consumers worker queue. | `locutus work jobs 30` |
+| `locutus claim <queue> [timeout]` | Non-destructively leases task from queue with DLQ escalation. | `locutus claim jobs 30 --lease 60` |
+| `locutus ack <queue> <task_id>` | Acknowledges task completion and releases active worker lease. | `locutus ack jobs "task_123"` |
+| `locutus blackboard <cmd> <room> ...` | Shared persistent scratchpad memory (set, get, append, snapshot). | `locutus blackboard set room1 key '{"val": 1}'` |
+| `locutus floor <cmd> <room> ...` | Turn-taking floor control for roundtables (request, yield, pass, status). | `locutus floor request room1 30` |
 | `locutus status <state> [activity]` | Updates agent state (`idle`, `busy`, `error`) and activity text. | `locutus status busy "Compiling tests"` |
 | `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease (NX EX). | `locutus lock deploy_lock 30` |
 | `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |

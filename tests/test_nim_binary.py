@@ -743,7 +743,9 @@ secret = "my_inline_secret_test_555"
 
     def test_29_synchronous_request_rpc(self):
         """Test synchronous RPC 'locutus request' roundtrip between requester and responder."""
-        server_agent = "rpc_server_agent"
+        ts = int(time.time() * 1000)
+        server_agent = f"rpc_srv_{ts}"
+        client_agent = f"rpc_cli_{ts}"
         self.run_locutus(["open", server_agent, "rpc"])
 
         def server_loop():
@@ -767,7 +769,7 @@ secret = "my_inline_secret_test_555"
 
         # Requester calls request
         res_req = self.run_locutus([
-            "--agent-name=rpc_client_agent",
+            f"--agent-name={client_agent}",
             "request",
             "--to", server_agent,
             "--subject", "Math Question",
@@ -787,7 +789,7 @@ secret = "my_inline_secret_test_555"
         time.sleep(0.3)
 
         res_raw = self.run_locutus([
-            "--agent-name=rpc_client_agent",
+            f"--agent-name={client_agent}",
             "request",
             "--to", server_agent,
             "--subject", "Math Question 2",
@@ -1563,6 +1565,64 @@ secret = "my_inline_secret_test_555"
         snap_empty = json.loads(res_snap_after.stdout.strip())
         self.assertEqual(snap_empty["kv"], {})
         self.assertEqual(snap_empty["lists"], {})
+
+    def test_48_floor_control_ring(self):
+        """Test 'locutus floor' (request, yield, pass, status, waiter queue)."""
+        room = f"floor_room_{int(time.time() * 1000)}"
+        a1 = "speaker_alice"
+        a2 = "speaker_bob"
+
+        # 1. Alice acquires the floor
+        res_req1 = self.run_locutus(["floor", "request", room, "--lease", "10"], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        self.assertEqual(res_req1.returncode, 0)
+        self.assertIn("ACQUIRED", res_req1.stdout)
+
+        # 2. Bob tries to acquire immediately without waiting -> should fail (BUSY)
+        res_req2 = self.run_locutus(["floor", "request", room], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+        self.assertEqual(res_req2.returncode, 1)
+        self.assertIn(a1, res_req2.stderr)
+
+        # 3. Check status
+        res_st = self.run_locutus(["floor", "status", room])
+        self.assertEqual(res_st.returncode, 0)
+        st = json.loads(res_st.stdout.strip())
+        self.assertEqual(st["holder"], a1)
+
+        # 4. Alice explicitly passes the floor to Bob
+        res_pass = self.run_locutus(["floor", "pass", room, "--to", a2], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        self.assertEqual(res_pass.returncode, 0)
+        self.assertIn(a2, res_pass.stdout)
+
+        # Check status again
+        res_st2 = self.run_locutus(["floor", "status", room])
+        st2 = json.loads(res_st2.stdout.strip())
+        self.assertEqual(st2["holder"], a2)
+
+        # 5. Bob yields the floor
+        res_yield = self.run_locutus(["floor", "yield", room], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+        self.assertEqual(res_yield.returncode, 0)
+        self.assertIn("YIELDED", res_yield.stdout)
+
+        # 6. Test waiter queue: Alice acquires, Bob waits in background, Alice yields, Bob gets floor
+        res_a_again = self.run_locutus(["floor", "request", room, "--lease", "5"], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        self.assertEqual(res_a_again.returncode, 0)
+
+        bob_result = []
+        def bob_waiter():
+            r = self.run_locutus(["floor", "request", room, "5", "--lease", "5"], env_overrides={"LOCUTUS_AGENT_NAME": a2})
+            bob_result.append(r)
+
+        t = threading.Thread(target=bob_waiter)
+        t.start()
+        time.sleep(0.4)
+
+        # Alice yields
+        self.run_locutus(["floor", "yield", room], env_overrides={"LOCUTUS_AGENT_NAME": a1})
+        t.join(timeout=5)
+
+        self.assertEqual(len(bob_result), 1)
+        self.assertEqual(bob_result[0].returncode, 0)
+        self.assertIn("ACQUIRED", bob_result[0].stdout)
 
 
 if __name__ == "__main__":

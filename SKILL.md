@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory across roundtable brainstorming sessions, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'roundtable memory', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -66,6 +66,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Reliable Task Claim** | `locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]` |
 | **Acknowledge Task** | `locutus ack <queue_name> <task_id>` |
 | **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|append\|snapshot\|delete\|clear> <room> [key] [val]` |
+| **Floor Control (Speaker Ring)** | `locutus floor <request\|yield\|pass\|status> <room> [args...]` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -199,6 +200,39 @@ locutus sub alerts 10
 locutus pub alerts "Build completed"
 ```
 
+#### F. Orchestrator Scatter-Gather & Quorum (`locutus scatter`)
+Fan out an objective across a tag cluster or list of agents and gather replies until quorum is reached:
+```bash
+locutus scatter --targets @reviewers --subject "Review PR #42" --body "Diff ready" --quorum 2 --timeout 15
+```
+
+#### G. Reliable Task Leases & Dead-Letter Queue (`locutus claim` / `locutus ack`)
+Non-destructively lease tasks from a queue with automatic retries and DLQ escalation on failure:
+```bash
+task=$(locutus claim batch_pipeline --lease 60)
+# Process task...
+locutus ack batch_pipeline <task_id>
+```
+
+#### H. Shared Blackboard & Room Scratchpad (`locutus blackboard`)
+Shared persistent key-value and append-log memory for agent rooms:
+```bash
+locutus blackboard set design_room arch_spec '{"runtime": "nim"}'
+locutus blackboard append design_room notes "Checked DB migrations"
+snapshot=$(locutus blackboard snapshot design_room)
+```
+
+#### I. Floor Control & Speaker Ring (`locutus floor`)
+Coordinate turn-taking and speaker turns in roundtable discussions:
+```bash
+# Request speaker lease (blocks if occupied):
+locutus floor request design_room 30
+# Yield when finished:
+locutus floor yield design_room
+# Or pass directly:
+locutus floor pass design_room specialist_agent
+```
+
 ### Step 4: Graceful Exit
 When the session ends or user asks to disconnect:
 ```bash
@@ -317,6 +351,20 @@ locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline 
 
 # Dump entire room scratchpad as clean structured JSON:
 snapshot=$(locutus blackboard snapshot brainstorm)
+```
+
+### Playbook 10: Moderated Roundtable Discussion with Floor Control
+*Goal: Coordinate turn-taking across multiple agents in a shared room without race conditions or talking over each other.*
+```bash
+# 1. Request the floor (with a 30s speaker lease). Blocks if someone else is speaking until granted or timeout:
+locutus floor request design_review 30
+
+# 2. Speak / write findings to the blackboard or broadcast to the room:
+locutus blackboard append design_review notes "Speaker proposal: Split monolithic config into modular schemas"
+
+# 3. Yield the floor to the next waiting speaker, or explicitly pass to a designated agent:
+locutus floor yield design_review
+# Or: locutus floor pass design_review architect_bob
 ```
 
 ---

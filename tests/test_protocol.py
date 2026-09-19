@@ -59,6 +59,7 @@ LUA_SCATTER = load_lua("scatter.lua")
 LUA_CLAIM = load_lua("claim.lua")
 LUA_ACK = load_lua("ack.lua")
 LUA_BLACKBOARD = load_lua("blackboard.lua")
+LUA_FLOOR = load_lua("floor.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -676,6 +677,25 @@ class TestRedisA2AProtocol(unittest.TestCase):
 
         # Clean up
         run_eval(LUA_BLACKBOARD, 0, PREFIX, "clear", room, "", "", "300")
+
+    def test_23_floor_lua_protocol(self):
+        """Test floor.lua via Redis EVAL."""
+        room = f"proto_floor_{int(time.time() * 1000)}"
+        res = run_eval(LUA_FLOOR, 0, PREFIX, "request", room, "alice", "10")
+        self.assertEqual(res, "ACQUIRED")
+
+        busy = run_eval(LUA_FLOOR, 0, PREFIX, "request", room, "bob", "10")
+        self.assertEqual(busy, "BUSY:alice")
+
+        passed = run_eval(LUA_FLOOR, 0, PREFIX, "pass", room, "alice", "bob", "10")
+        self.assertEqual(passed, "PASSED:bob")
+
+        st_json = run_eval(LUA_FLOOR, 0, PREFIX, "status", room)
+        st = json.loads(st_json)
+        self.assertEqual(st["holder"], "bob")
+
+        yielded = run_eval(LUA_FLOOR, 0, PREFIX, "yield", room, "bob")
+        self.assertEqual(yielded, "YIELDED")
 
 
 if __name__ == "__main__":

@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Floor Control & Speaker Ring (`locutus floor`)**: Turn-taking protocol for agent roundtables and collaborative meetings (`locutus floor <request|yield|pass|status> <room>`). Employs atomic FIFO waiter queues with auto-expiring speaker leases via `scripts/floor.lua` to prevent agents from interrupting or talking over one another.
 - **Shared Blackboard & Scratchpad Memory (`locutus blackboard`)**: Room-scoped shared memory providing atomic key-value storage (`set`, `get`), append lists (`append`), key deletion (`delete`, `clear`), and complete room state snapshots (`snapshot`) in Redis via `scripts/blackboard.lua`. Eliminates massive token waste from re-transmitting large file bodies and conversational state across multi-turn agent chats.
 - **Reliable Task Leases, Acking & Dead-Letter Queue (`locutus claim` / `locutus ack`)**: Non-destructive queue consumption using leases (`locutus claim <queue> [--lease 120]`) and explicit acknowledgment (`locutus ack <queue> <task_id>`). If a worker agent terminates or crashes before completion, the lease expiration triggers automatic retry or escalation to `dlq:<queue>` after 3 attempts via atomic `scripts/claim.lua`.
 - **Scatter-Gather & Quorum Consensus (`locutus scatter`)**: Native orchestrator primitive for multicasting tasks across specialist pools (`--targets <@tag|agents|*>`) and gathering replies into a unified JSON array until a configurable quorum (`--quorum N`) is reached or timeout expires. Supports `--raw` output for shell piping and atomic target resolution via `scripts/scatter.lua`.
+
+### Fixed
+- **Request O2O Routing to Target Agent**: Fixed regression in `doSend` destination queue routing where messages with `replyTo` keys (such as `locutus request`) routed directly to the ephemeral reply channel instead of `toAgent`. DestQueue routing now strictly checks that `msgType == "reply"` before routing to a reply channel.
 
 ## [0.1.2] - 2026-09-19
 
