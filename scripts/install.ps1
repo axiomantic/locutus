@@ -211,21 +211,20 @@ function Install-Skills {
         $localSpec = "skills\locutus\references\wire_spec.md"
         $tempSkillDir = $null
 
-        if (Test-Path $localSkill) {
-            $skillFile = (Resolve-Path $localSkill).Path
-            $specFile = if (Test-Path $localSpec) { (Resolve-Path $localSpec).Path } else { $null }
-        } else {
-            $skillUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/SKILL.md"
-            $specUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/references/wire_spec.md"
-            $tempSkillDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
-            New-Item -ItemType Directory -Path $tempSkillDir -Force | Out-Null
-            $skillFile = Join-Path $tempSkillDir "SKILL.md"
-            $specFile = Join-Path $tempSkillDir "wire_spec.md"
-            try {
-                Invoke-WebRequest -Uri $skillUrl -OutFile $skillFile -UseBasicParsing
+        try {
+            if (Test-Path $localSkill) {
+                $skillFile = (Resolve-Path $localSkill).Path
+                $specFile = if (Test-Path $localSpec) { (Resolve-Path $localSpec).Path } else { $null }
+            } else {
+                $skillUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/SKILL.md"
+                $specUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/references/wire_spec.md"
+                $tempSkillDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+                New-Item -ItemType Directory -Path $tempSkillDir -Force | Out-Null
+                $skillFile = Join-Path $tempSkillDir "SKILL.md"
+                $specFile = Join-Path $tempSkillDir "wire_spec.md"
+                Invoke-WebRequest -Uri $skillUrl -OutFile $skillFile -UseBasicParsing -ErrorAction SilentlyContinue
                 Invoke-WebRequest -Uri $specUrl -OutFile $specFile -UseBasicParsing -ErrorAction SilentlyContinue
-            } catch {}
-        }
+            }
 
             $candidateDirs = @(
                 "$env:USERPROFILE\.claude\skills\locutus",
@@ -240,7 +239,7 @@ function Install-Skills {
                     $refDir = Join-Path $targetSkill "references"
                     New-Item -ItemType Directory -Path $refDir -Force | Out-Null
                     Copy-Item -Path $skillFile -Destination (Join-Path $targetSkill "SKILL.md") -Force
-                    if (Test-Path $specFile) {
+                    if ($specFile -and (Test-Path $specFile)) {
                         Copy-Item -Path $specFile -Destination (Join-Path $refDir "wire_spec.md") -Force
                     }
                     Write-Host "  [+] Installed Locutus skill to: $targetSkill" -ForegroundColor Green
