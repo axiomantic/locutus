@@ -226,6 +226,7 @@ jobs:
           mkdir -p dist/darwin-arm64
           nim c -d:release --opt:speed --cpu:arm64 -o:dist/darwin-arm64/locutus src/locutus.nim
           strip dist/darwin-arm64/locutus
+          codesign -s - -f dist/darwin-arm64/locutus
           cp -r skills dist/darwin-arm64/
           tar -czf dist/locutus-darwin-arm64.tar.gz -C dist/darwin-arm64 locutus skills
 
@@ -237,6 +238,7 @@ jobs:
             --passL:"-target x86_64-apple-macos11" \
             -o:dist/darwin-amd64/locutus src/locutus.nim
           strip dist/darwin-amd64/locutus
+          codesign -s - -f dist/darwin-amd64/locutus
           cp -r skills dist/darwin-amd64/
           tar -czf dist/locutus-darwin-amd64.tar.gz -C dist/darwin-amd64 locutus skills
 
