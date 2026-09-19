@@ -118,23 +118,24 @@ proc encryptAes*(plaintext, secret: string): string =
   let randomId = $rand(100000..999999)
   let inPath = tmpDir / ("enc_in_" & randomId & ".tmp")
   let outPath = tmpDir / ("enc_out_" & randomId & ".tmp")
-  writeFile(inPath, plaintext)
-  secureFilePermissions(inPath)
+  try:
+    writeFile(inPath, plaintext)
+    secureFilePermissions(inPath)
 
-  let passArg = getPassArg()
-  let opensslBin = getOpenSslExe()
-  var p = startProcess(opensslBin, args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
-  let outStr = p.outputStream.readAll()
-  let exitCode = p.waitForExit()
-  p.close()
-  if fileExists(inPath): removeFile(inPath)
+    let passArg = getPassArg()
+    let opensslBin = getOpenSslExe()
+    var p = startProcess(opensslBin, args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+    let outStr = p.outputStream.readAll()
+    let exitCode = p.waitForExit()
+    p.close()
 
-  if exitCode != 0 or not fileExists(outPath):
+    if exitCode != 0 or not fileExists(outPath):
+      raise newException(ValueError, "Encryption failed: " & outStr.strip())
+
+    result = readFile(outPath).strip()
+  finally:
+    if fileExists(inPath): removeFile(inPath)
     if fileExists(outPath): removeFile(outPath)
-    raise newException(ValueError, "Encryption failed: " & outStr.strip())
-
-  result = readFile(outPath).strip()
-  if fileExists(outPath): removeFile(outPath)
 
 proc decryptAes*(ciphertext, secret: string): string =
   let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
@@ -142,23 +143,24 @@ proc decryptAes*(ciphertext, secret: string): string =
   let randomId = $rand(100000..999999)
   let inPath = tmpDir / ("dec_in_" & randomId & ".tmp")
   let outPath = tmpDir / ("dec_out_" & randomId & ".tmp")
-  writeFile(inPath, ciphertext)
-  secureFilePermissions(inPath)
+  try:
+    writeFile(inPath, ciphertext)
+    secureFilePermissions(inPath)
 
-  let passArg = getPassArg()
-  let opensslBin = getOpenSslExe()
-  var p = startProcess(opensslBin, args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
-  let outStr = p.outputStream.readAll()
-  let exitCode = p.waitForExit()
-  p.close()
-  if fileExists(inPath): removeFile(inPath)
+    let passArg = getPassArg()
+    let opensslBin = getOpenSslExe()
+    var p = startProcess(opensslBin, args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
+    let outStr = p.outputStream.readAll()
+    let exitCode = p.waitForExit()
+    p.close()
 
-  if exitCode != 0 or not fileExists(outPath):
+    if exitCode != 0 or not fileExists(outPath):
+      raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext): " & outStr.strip())
+
+    result = readFile(outPath)
+  finally:
+    if fileExists(inPath): removeFile(inPath)
     if fileExists(outPath): removeFile(outPath)
-    raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext): " & outStr.strip())
-
-  result = readFile(outPath)
-  if fileExists(outPath): removeFile(outPath)
 
 # Configuration Resolution (implemented in src/config.nim)
 proc resolveConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
@@ -710,16 +712,28 @@ proc main() =
 
   of "tag":
     if args.len < 3:
-      echo "Usage: locutus tag <add|remove|set> <tags> [name]"
-      return
-    let action = args[1]
+      stderr.writeLine("Error: Missing arguments for tag command.")
+      stderr.writeLine("Usage: locutus tag <add|remove|set> <tags> [name]")
+      quit(1)
+    let action = args[1].toLowerAscii
+    if action notin ["add", "remove", "set"]:
+      stderr.writeLine("Error: Invalid tag action '" & args[1] & "'. Expected add, remove, or set.")
+      stderr.writeLine("Usage: locutus tag <add|remove|set> <tags> [name]")
+      quit(1)
     let tags = args[2]
     let explicitName = if args.len > 3: args[3] else: ""
     let name = getActiveAgentName(cfg, explicitName)
     echo doTag(cfg, name, action, tags)
 
   of "drain":
-    let count = if args.len > 1: parseInt(args[1]) else: 50
+    var count = 50
+    if args.len > 1:
+      try:
+        count = parseInt(args[1])
+      except ValueError:
+        stderr.writeLine("Error: Invalid count '" & args[1] & "' for drain command. Expected an integer.")
+        stderr.writeLine("Usage: locutus drain [count] [name]")
+        quit(1)
     let explicitName = if args.len > 2: args[2] else: ""
     let name = getActiveAgentName(cfg, explicitName)
     echo doDrain(cfg, name, count)

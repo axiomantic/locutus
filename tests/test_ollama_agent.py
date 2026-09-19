@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 import sys
-import time
+import unittest
 import urllib.request
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -95,101 +95,98 @@ REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", os.environ.get("REDIS_URL", "red
 def redis_cmd(*args):
     return subprocess.run(["redis-cli", "-u", REDIS_URL] + list(args), capture_output=True, text=True).stdout.strip()
 
-def main():
-    print(f"Starting Locutus Ollama Agent Test using model '{MODEL_NAME}'...")
-
-    # Flush test recipient inbox and keys
-    redis_cmd(
-        "DEL",
-        "locutus:inbox:bob",
-        "locutus:heartbeat:alice",
-        "locutus:agent:alice",
-        "locutus:tag:calc",
-        "locutus:tag:locutus",
-        "locutus:active_agents"
-    )
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "You are agent 'alice' in project 'locutus'.\n"
-                "Execute the following tasks by calling the `execute_bash` tool:\n"
-                "1. Register as 'alice' with tag 'calc' using `locutus open alice calc`.\n"
-                "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4' using `locutus send --to bob --subject \"Math Task\" --body \"Please compute 25 * 4\"`.\n"
-                "Call the execute_bash tool to perform these actions."
-            )
-        }
-    ]
-
-    max_turns = 6
-    for turn in range(max_turns):
-        print(f"\n--- Turn {turn + 1} ---")
-        resp = call_ollama(messages)
-        message = resp.get("message", {})
-        messages.append(message)
-
-        tool_calls = message.get("tool_calls", [])
-        if not tool_calls:
-            print(f"\n[AGENT FINAL RESPONSE]:\n{message.get('content')}")
-            break
-
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            name = fn.get("name")
-            args = fn.get("arguments", {})
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {"command": args}
-
-            if name == "execute_bash":
-                cmd = args.get("command", "")
-                result = run_bash(cmd)
-                messages.append({
-                    "role": "tool",
-                    "content": result
-                })
-
-    # Verify Redis state & strict message content validation
-    print("\n--- Verifying Redis State & Message Content ---")
-    hb = redis_cmd("GET", "locutus:heartbeat:alice")
-    print(f"Alice heartbeat: {hb}")
-    assert hb == "1", f"Expected Alice heartbeat to be '1', got '{hb}'"
-    print("✓ Alice heartbeat is active ('1')")
-
-    inbox_len = redis_cmd("LLEN", "locutus:inbox:bob")
-    print(f"Bob inbox length: {inbox_len}")
-    assert inbox_len and int(inbox_len) > 0, "Bob inbox is empty! No message delivered."
-    print("✓ Bob inbox has pending message(s)")
-
-    raw_msg = redis_cmd("RPOP", "locutus:inbox:bob")
-    print(f"\nRaw Message Received:\n{raw_msg}")
-
+def is_ollama_available() -> bool:
+    if os.environ.get("RUN_LLM_TESTS") != "1":
+        return False
+    check_url = OLLAMA_URL
+    if check_url.endswith("/api/chat"):
+        check_url = check_url[:-9] + "/api/tags"
     try:
+        req = urllib.request.Request(check_url, method="GET")
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+class TestLocutusOllamaAgent(unittest.TestCase):
+    @unittest.skipUnless(is_ollama_available(), "Requires local Ollama service and RUN_LLM_TESTS=1")
+    def test_ollama_agent_e2e(self):
+        # Flush test recipient inbox and keys
+        redis_cmd(
+            "DEL",
+            "locutus:inbox:bob",
+            "locutus:heartbeat:alice",
+            "locutus:agent:alice",
+            "locutus:tag:calc",
+            "locutus:tag:locutus",
+            "locutus:active_agents"
+        )
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "You are agent 'alice' in project 'locutus'.\n"
+                    "Execute the following tasks by calling the `execute_bash` tool:\n"
+                    "1. Register as 'alice' with tag 'calc' using `locutus open alice calc`.\n"
+                    "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4' using `locutus send --to bob --subject \"Math Task\" --body \"Please compute 25 * 4\"`.\n"
+                    "Call the execute_bash tool to perform these actions."
+                )
+            }
+        ]
+
+        max_turns = 6
+        for turn in range(max_turns):
+            print(f"\n--- Turn {turn + 1} ---")
+            resp = call_ollama(messages)
+            message = resp.get("message", {})
+            messages.append(message)
+
+            tool_calls = message.get("tool_calls", [])
+            if not tool_calls:
+                print(f"\n[AGENT FINAL RESPONSE]:\n{message.get('content')}")
+                break
+
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                name = fn.get("name")
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {"command": args}
+
+                if name == "execute_bash":
+                    cmd = args.get("command", "")
+                    result = run_bash(cmd)
+                    messages.append({
+                        "role": "tool",
+                        "content": result
+                    })
+
+        # Verify Redis state & strict message content validation
+        print("\n--- Verifying Redis State & Message Content ---")
+        hb = redis_cmd("GET", "locutus:heartbeat:alice")
+        self.assertEqual(hb, "1", f"Expected Alice heartbeat to be '1', got '{hb}'")
+
+        inbox_len = redis_cmd("LLEN", "locutus:inbox:bob")
+        self.assertTrue(bool(inbox_len and int(inbox_len) > 0), "Bob inbox is empty! No message delivered.")
+
+        raw_msg = redis_cmd("RPOP", "locutus:inbox:bob")
+        self.assertTrue(bool(raw_msg), "Failed to retrieve raw message from Bob inbox")
+
         msg = LocutusMessage.model_validate_json(raw_msg)
-        print("✓ Pydantic LocutusMessage schema validation passed (id, types, envelope, timestamp)!")
-    except Exception as e:
-        print(f"FAILURE: Message violates Pydantic LocutusMessage schema: {e}")
-        return 1
 
-    # Semantic Content Validation
-    assert msg.from_agent == "alice", f"Expected from='alice', got '{msg.from_agent}'"
-    print("✓ Sender is 'alice'")
-    assert msg.to_agent == "bob", f"Expected to='bob', got '{msg.to_agent}'"
-    print("✓ Recipient is 'bob'")
-    assert msg.type == "task", f"Expected type='task', got '{msg.type}'"
-    print("✓ Protocol type is 'task'")
-    assert "Math Task" in msg.subject or "math" in msg.subject.lower(), f"Subject unexpected: '{msg.subject}'"
-    print(f"✓ Subject matches: '{msg.subject}'")
-    assert "25" in msg.body and "4" in msg.body, f"Body unexpected: '{msg.body}'"
-    print(f"✓ Body contains expected task calculation: '{msg.body}'")
-    print(f"✓ Envelope metadata valid (id='{msg.id}', timestamp='{msg.timestamp}')")
-
-    print("\nALL CONTENT AND ENVELOPE CHECKS PASSED VIA PYDANTIC!")
-    return 0
+        # Semantic Content Validation
+        self.assertEqual(msg.from_agent, "alice")
+        self.assertEqual(msg.to_agent, "bob")
+        self.assertEqual(msg.type, "task")
+        self.assertTrue("Math Task" in msg.subject or "math" in msg.subject.lower(), f"Subject unexpected: '{msg.subject}'")
+        self.assertTrue("25" in msg.body and "4" in msg.body, f"Body unexpected: '{msg.body}'")
+        self.assertTrue(bool(msg.id))
+        self.assertTrue(bool(msg.timestamp))
 
 if __name__ == "__main__":
-    sys.exit(main())
+    unittest.main()

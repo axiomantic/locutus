@@ -31,8 +31,7 @@
 - [Uninstallation](#uninstallation)
 - [CLI Reference](#cli-reference)
 - [Configuration Architecture & Profiles](#configuration-architecture--profiles)
-- [Security & Prompt Firewall](#security)
-- [Message and Assistant Lifecycles](#message-and-assistant-lifecycles)
+- [Security & Prompt Firewall](#security--prompt-injection-firewall)
 - [Redis Cluster Support](#redis-cluster-support-hash-tags)
 - [Assistant Integration](#assistant-integration-skill--slash-commands)
 - [Performance & Benchmarks](#performance--benchmarks)
@@ -90,10 +89,28 @@ locutus broadcast --tags "qa" --subject "Deploy Staging" --body "Verify build v1
 ```
 *Terminal A receives the direct task; both Terminal A and Terminal B receive the multicast broadcast instantly.*
 
-### 3. Or Use it Inside Your AI Assistant
+### 3. Multi-Assistant Chat Coordination (Orchestrator & Workers)
 
-Once installed, ask **Claude Code**, **Antigravity**, or **OpenCode**:
-> *"Connect to Locutus as worker-1 with tags 'backend,qa' and check for any queued tasks."*
+You can coordinate multiple coding assistants across different terminal windows or editors using natural language:
+
+**Terminal 1 — The Orchestrator (Lead Assistant):**
+> *"You are the coordinator for this project. Connect to Locutus as lead. Check who is online with `/locutus who`, broadcast the test plan to the 'qa' group, and assign API work to 'backend'."*
+- The lead registers (`locutus open lead "orchestrator"`), inspects the active roster (`locutus who`), and broadcasts work:
+  ```bash
+  locutus broadcast --tags "qa" --subject "Test Plan" --body "Validate auth endpoints on staging"
+  locutus broadcast --tags "backend" --subject "API Task" --body "Implement POST /api/v1/login"
+  ```
+
+**Terminal 2 — Backend Worker Assistant (e.g. Claude Code or Cursor):**
+> *"Connect to Locutus as worker-backend with tag 'backend'. Listen for tasks, implement them, and send replies back to lead."*
+- The worker registers (`locutus open worker-backend "backend"`), blocks on `locutus listen 90` (consuming **0 CPU** and **0 tokens** while waiting), receives the task, implements the code, and replies:
+  ```bash
+  locutus send --to lead --type reply --subject "Re: API Task" --body "Login endpoint implemented in src/auth.py. Tests green."
+  ```
+
+**Terminal 3 — QA Worker Assistant (e.g. Antigravity or Windsurf):**
+> *"Connect to Locutus as worker-qa with tag 'qa'. Listen for incoming test requests."*
+- The QA worker automatically receives the broadcast sent to `@qa` and begins running validation tests in parallel.
 
 ---
 
@@ -218,14 +235,12 @@ If you manage command-line tools with your system package manager:
 ```bash
 brew install axiomantic/tap/locutus
 
-# Recommended (automatic updates when Homebrew upgrades locutus):
-ln -sf "$(brew --prefix)/share/locutus/skills/locutus" ~/.claude/skills/locutus
-
-# Or install via skills.sh (copies local skill to assistant):
+# Equip your coding assistants:
+npx skills add axiomantic/locutus -g
+# Or using skilz:
+skilz install https://github.com/axiomantic/locutus
+# Or offline from local Homebrew files:
 npx skills add $(brew --prefix)/share/locutus/skills/locutus -g
-
-# Or install via skilz:
-skilz install -f $(brew --prefix)/share/locutus/skills/locutus
 ```
 
 #### Debian / Ubuntu APT Repository
@@ -238,13 +253,8 @@ sudo apt-get update
 sudo apt-get install -y locutus
 
 # 3. Equip your coding assistants:
-# Recommended (automatic updates when APT upgrades locutus):
-ln -sf /usr/share/locutus/skills/locutus ~/.claude/skills/locutus
-
-# Or install via skills.sh (copies local skill to assistant):
 npx skills add /usr/share/locutus/skills/locutus -g
-
-# Or install via skilz:
+# Or using skilz:
 skilz install -f /usr/share/locutus/skills/locutus
 ```
 
@@ -389,41 +399,20 @@ encrypt = true
 ---
 
 
-## Security
+## Security & Prompt Injection Firewall
 
-Locutus protects coding assistants from prompt injection, forged messages, and unauthorized commands:
+Locutus protects coding assistants from prompt injection, forged messages, and unauthorized execution:
 
-```text
-Incoming Redis Data ──► [Host: locutus listen]
-                                 │
-                    Verify HMAC-SHA256 Signature
-                   (Key: ~/.config/locutus/secret)
-                                 │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-            [VALID SIGNATURE]          [FORGED / TAMPERED]
-                    │                           │
-          Deliver JSON to stdout         Drop to stderr only
-                    │                           │
-                    ▼                           ▼
-           Assistant LLM Context         Context Protected!
-           Processes Safe Task           (Attacker Blocked)
+```
+Redis Inbox Payload ──► [Host: locutus listen] ──► HMAC-SHA256 Check ──► Delivered to LLM Stdout
+                                                        │
+                                                        └── (Forged/Tampered) ──► Dropped to Stderr
 ```
 
-1. **Host-Level Verification**: Messages are checked by `locutus listen` on your computer before reaching standard output.
-2. **Untrusted Messages Dropped**: Forged or unauthenticated messages are rejected immediately. They never enter the assistant's context window.
+1. **Host-Level Verification**: Messages are cryptographically validated by `locutus listen` on your local host machine before reaching standard output.
+2. **Untrusted Payloads Dropped**: Forged or unauthenticated messages are rejected immediately. They never enter the assistant's context window.
 3. **Local Secret**: The secret key (`~/.config/locutus/secret`, `0600` permissions) stays on your machine. It never enters prompts, Git commits, or Redis keys.
-4. **Optional Encryption**: Set `LOCUTUS_ENCRYPT=1` to encrypt message bodies with AES-256-CBC, ensuring plain text is never stored in Redis.
-
----
-
-## Message and Assistant Lifecycles
-
-Locutus cleans up keys automatically so Redis memory does not grow unbounded:
-
-- **Inboxes**: Inboxes expire after **7 days** of inactivity. Every new message resets the 7-day timer.
-- **Heartbeats**: Active listeners refresh a **150-second heartbeat**. If an assistant exits or crashes, its heartbeat expires.
-- **Automatic Cleanup**: When messages or queries are routed, assistants with expired heartbeats are automatically removed from the roster and tag groups.
+4. **Optional End-to-End Encryption (E2EE)**: Set `LOCUTUS_ENCRYPT=1` to encrypt message bodies with AES-256-CBC PBKDF2, ensuring plain text is never stored in Redis.
 
 ---
 

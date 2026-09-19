@@ -105,9 +105,6 @@ jobs:
             "  echo \"--------------------------------------------------------------------------------\"" \
             "  echo \"Locutus installed successfully!\"" \
             "  echo \"To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):\"" \
-            "  echo \"  # Recommended (automatic updates when apt upgrades locutus):\"" \
-            "  echo \"  ln -sf /usr/share/locutus/skills/locutus ~/.claude/skills/locutus\"" \
-            "  echo \"  # Or using skills.sh (npx):\"" \
             "  echo \"  npx skills add /usr/share/locutus/skills/locutus -g\"" \
             "  echo \"  # Or using skilz:\"" \
             "  echo \"  skilz install -f /usr/share/locutus/skills/locutus\"" \
@@ -144,9 +141,6 @@ jobs:
             "  echo \"--------------------------------------------------------------------------------\"" \
             "  echo \"Locutus installed successfully!\"" \
             "  echo \"To equip your AI coding assistants (Claude Code, Antigravity, OpenCode, Cursor):\"" \
-            "  echo \"  # Recommended (automatic updates when apt upgrades locutus):\"" \
-            "  echo \"  ln -sf /usr/share/locutus/skills/locutus ~/.claude/skills/locutus\"" \
-            "  echo \"  # Or using skills.sh (npx):\"" \
             "  echo \"  npx skills add /usr/share/locutus/skills/locutus -g\"" \
             "  echo \"  # Or using skilz:\"" \
             "  echo \"  skilz install -f /usr/share/locutus/skills/locutus\"" \

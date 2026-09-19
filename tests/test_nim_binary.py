@@ -426,7 +426,50 @@ class TestLocutusNimBinary(unittest.TestCase):
         ])
         self.assertNotEqual(res.returncode, 0)
 
+    def test_20_tag_argument_validation(self):
+        """Verify that 'locutus tag' validates required arguments and actions with non-zero exit."""
+        # Missing arguments
+        res_missing = self.run_locutus(["tag"])
+        self.assertNotEqual(res_missing.returncode, 0)
+        self.assertIn("Missing arguments for tag command", res_missing.stderr)
+
+        # Invalid action
+        res_invalid = self.run_locutus(["tag", "badaction", "mytag"])
+        self.assertNotEqual(res_invalid.returncode, 0)
+        self.assertIn("Invalid tag action", res_invalid.stderr)
+
+    def test_21_drain_argument_validation(self):
+        """Verify that 'locutus drain' rejects non-integer counts with non-zero exit."""
+        res = self.run_locutus(["drain", "not_a_number"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Invalid count", res.stderr)
+
+    def test_22_crypto_tmp_cleanup_guarantee(self):
+        """Verify that encrypt/decrypt operations leave zero temporary files in ~/.config/locutus/tmp/."""
+        agent = "agent_crypto_cleanup_test"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Send encrypted message
+        res_send = self.run_locutus(
+            ["send", "--to", agent, "--subject", "Cleanup Test", "--body", "Confidential Data 123"],
+            env_overrides={"LOCUTUS_ENCRYPT": "1"}
+        )
+        self.assertEqual(res_send.returncode, 0)
+
+        # Listen and decrypt
+        res_listen = self.run_locutus(["listen", agent, "2"], env_overrides={"LOCUTUS_ENCRYPT": "1"})
+        self.assertEqual(res_listen.returncode, 0)
+
+        # Inspect tmp directory: no .tmp files should exist
+        tmp_dir = os.path.expanduser("~/.config/locutus/tmp")
+        if os.path.isdir(tmp_dir):
+            tmp_files = [f for f in os.listdir(tmp_dir) if f.endswith(".tmp")]
+            self.assertEqual(tmp_files, [], f"Leaked tmp files found in {tmp_dir}: {tmp_files}")
+
+        self.run_locutus(["close", agent])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
