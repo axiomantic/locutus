@@ -945,6 +945,13 @@ secret = "my_inline_secret_test_555"
         finally:
             shutil.rmtree(clean_dir, ignore_errors=True)
 
+    def test_35_version_flags(self):
+        """Test locutus --version, -v, and version subcommand output exact semantic version."""
+        for flag in [["--version"], ["-v"], ["version"]]:
+            res = self.run_locutus(flag)
+            self.assertEqual(res.returncode, 0)
+            self.assertEqual(res.stdout.strip(), "locutus 0.1.0")
+
 
 if __name__ == "__main__":
     unittest.main()

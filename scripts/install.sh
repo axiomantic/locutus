@@ -120,7 +120,7 @@ if [ -z "${LOCUTUS_VERSION:-}" ]; then
   LATEST_JSON=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)
   VERSION=$(echo "${LATEST_JSON}" | (grep '"tag_name":' || true) | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
   if [ -z "${VERSION}" ]; then
-    VERSION="v1.0.0"
+    VERSION="v0.1.0"
   else
     echo "Latest release: ${VERSION}"
   fi
@@ -167,8 +167,12 @@ build_from_source() {
   fi
   if [ -f "src/locutus.nim" ]; then
     echo "Compiling native Locutus binary from local source tree..."
+    rm -f "${DEST_DIR}/locutus"
     nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
     chmod +x "${DEST_DIR}/locutus"
+    if [ "${OS}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+      codesign -s - -f "${DEST_DIR}/locutus" 2>/dev/null || true
+    fi
     echo "✓ Locutus compiled and installed to ${DEST_DIR}/locutus"
     return 0
   fi
@@ -188,8 +192,12 @@ build_from_source() {
 
   cd "${SRC_DIR}"
   echo "Compiling native Locutus binary with release optimizations..."
+  rm -f "${DEST_DIR}/locutus"
   nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
   chmod +x "${DEST_DIR}/locutus"
+  if [ "${OS}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+    codesign -s - -f "${DEST_DIR}/locutus" 2>/dev/null || true
+  fi
 
   echo "✓ Locutus compiled and installed to ${DEST_DIR}/locutus"
 }
@@ -334,8 +342,12 @@ if [ "${OS}" != "unknown" ] && [ "${ARCH}" != "unknown" ]; then
 
     tar -xzf "${TMP_DIR}/${TARBALL}" -C "${TMP_DIR}"
     if [ -f "${TMP_DIR}/locutus" ]; then
+      rm -f "${DEST_DIR}/locutus"
       cp "${TMP_DIR}/locutus" "${DEST_DIR}/locutus"
       chmod +x "${DEST_DIR}/locutus"
+      if [ "${OS}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+        codesign -s - -f "${DEST_DIR}/locutus" 2>/dev/null || true
+      fi
       echo "✓ Locutus installed to ${DEST_DIR}/locutus"
 
       # PATH Check

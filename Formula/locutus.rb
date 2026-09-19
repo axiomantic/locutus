@@ -1,7 +1,7 @@
 class Locutus < Formula
   desc "Message exchange and routing for software agents over Redis without a background daemon"
   homepage "https://github.com/axiomantic/locutus"
-  version "1.0.0"
+  version "0.1.0"
   license "MIT"
 
   on_macos do

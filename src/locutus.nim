@@ -44,6 +44,7 @@ const
   lockLua*       = staticRead("../scripts/lock.lua")
   unlockLua*     = staticRead("../scripts/unlock.lua")
   enqueueLua*    = staticRead("../scripts/enqueue.lua")
+  LocutusVersion* = "0.1.0"
 
 # Cryptographic Helpers
 proc computeSha1*(text: string): string =
@@ -893,9 +894,14 @@ proc main() =
   let cfg = resolveConfig(cli)
   var args = positionalArgs
 
+  if "-v" in rawArgs or "--version" in rawArgs or (args.len > 0 and args[0].toLowerAscii == "version"):
+    echo "locutus " & LocutusVersion
+    return
+
   if args.len == 0 or args[0] in ["-h", "--help", "help"]:
-    echo "Locutus - High Performance Inter-Assistant Redis Bus (Nim Native)"
+    echo "Locutus " & LocutusVersion & " - High Performance Inter-Assistant Redis Bus (Nim Native)"
     echo "Usage:"
+    echo "  locutus version"
     echo "  locutus open [name] [tags]"
     echo "  locutus listen [name] [timeout_sec]"
     echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body>"
@@ -916,6 +922,7 @@ proc main() =
     echo "  locutus config <show|get|path|init>"
     echo ""
     echo "Global Options:"
+    echo "  --version, -v         Print version and exit"
     echo "  --profile <name>      Select configuration profile from config file"
     echo "  --config <file>       Explicit configuration file path"
     echo "  --redis-url, -u <url> Redis connection endpoint"
@@ -1048,11 +1055,15 @@ proc main() =
         toAgent = if cfg.project.len > 0: "@" & cfg.project else: "*"
 
     if (not isBroadcast and toAgent.len == 0) or subject.len == 0 or body.len == 0:
-      stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")
-      if not isBroadcast:
+      if not isBroadcast and toAgent.len == 0:
+        stderr.writeLine("Error: Missing required argument '--to <recipient>'.")
         stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body>")
       else:
-        stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
+        stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")
+        if not isBroadcast:
+          stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body>")
+        else:
+          stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
       quit(1)
 
     discard doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)

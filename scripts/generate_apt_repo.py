@@ -56,7 +56,7 @@ def extract_control_info(deb_path):
     basename = os.path.basename(deb_path)
     parts = basename.replace(".deb", "").split("_")
     pkg = parts[0] if len(parts) > 0 else "locutus"
-    ver = parts[1] if len(parts) > 1 else "1.0.0"
+    ver = parts[1] if len(parts) > 1 else "0.1.0"
     arch = parts[2] if len(parts) > 2 else "amd64"
     return f"Package: {pkg}\nVersion: {ver}\nArchitecture: {arch}\nMaintainer: Axiomantic <info@axiomantic.org>\nDescription: Locutus Inter-Assistant Redis Bus"
 
