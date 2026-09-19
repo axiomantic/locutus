@@ -531,16 +531,24 @@ proc formatConfigPaths*(): string =
   lines.add("Workspace config : " & wsStatus)
   return lines.join("\n")
 
-proc initConfigFile*(target: string = "workspace"): string =
+proc secureFilePermissions*(path: string) =
+  when not defined(windows):
+    try:
+      setFilePermissions(path, {fpUserRead, fpUserWrite})
+    except CatchableError:
+      discard
+
+proc initConfigFile*(target: string = "workspace", force: bool = false): string =
   let norm = target.toLowerAscii.strip(chars = {'-', ' '})
   let path = if norm in ["user", "global", "home", "u"]:
     getUserConfigPath()
   else:
     getCurrentDir() / ".locutus.toml"
 
-  if fileExists(path):
-    return "Error: Config file already exists at " & path
+  if fileExists(path) and not force:
+    return "Error: Config file already exists at " & path & " (use --force to overwrite)"
   
   createDir(path.splitPath.head)
   writeFile(path, starterTomlContent)
+  secureFilePermissions(path)
   return "Initialized Locutus configuration at: " & path

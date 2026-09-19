@@ -167,162 +167,162 @@ Every test must be upgraded from shallow status/presence checks (Level 1–2) to
 ---
 
 ### Group 2.3: `tests/test_nim_binary.py` (52 Tests)
-- [ ] **TASK-GM-012: `test_01_help_and_get_secret`**
+- [x] **TASK-GM-012: `test_01_help_and_get_secret`**
   - **Mirage Risk**: Checks substring `"Usage:"` and secret length > 0. A binary outputting `"Usage: error"` and 1 byte passes.
-  - **Tripwire Migration**: Assert exit code 0, all subcommands present in help text, secret is valid 64-char hex, and permissions are `0600`.
-- [ ] **TASK-GM-013: `test_02_open_and_directory`**
+  - **Tripwire Migration**: Assert exit code 0, all 30 subcommands present in help text, all 8 global options present, unknown subcommand negative control returns exit code 1 with descriptive error, secret is valid 64-char hex, isolated secret file creation, content equality, POSIX 0600 permissions, and idempotency. (Verified: 1 passed in 0.14s).
+- [x] **TASK-GM-013: `test_02_open_and_directory`**
   - **Mirage Risk**: Checks substring of agent name in `who`. Does not verify state, tags, activity, or JSON directory schema.
-  - **Tripwire Migration**: Parse `locutus who --json` full schema and assert exact fields.
-- [ ] **TASK-GM-014: `test_03_send_and_listen_authenticated`**
+  - **Tripwire Migration**: Parse `locutus who --json` full schema via `LocutusPlugin.validate_json_schema`, assert exact agent, status, tags, state, activity fields, test matching tag isolation, and negative control on non-matching tag returning empty. (Verified: 1 passed in 0.19s).
+- [x] **TASK-GM-014: `test_03_send_and_listen_authenticated`**
   - **Mirage Risk**: Asserts message received; does not assert that unauthenticated message was rejected.
-  - **Tripwire Migration**: Assert full JSON payload received; add negative control verifying forged packet rejection.
-- [ ] **TASK-GM-015: `test_04_prompt_injection_firewall_drops_forged`**
+  - **Tripwire Migration**: Assert full JSON payload received, wire envelope validation via `LocutusPlugin.validate_wire_envelope`, Pydantic validation, HMAC-SHA256 signature presence, negative control verifying forged packet rejection and firewall stderr warning, and resilience verification on subsequent valid message. (Verified: 1 passed in 1.27s).
+- [x] **TASK-GM-015: `test_04_prompt_injection_firewall_drops_forged`**
   - **Mirage Risk**: Asserts forged packet not received; does not verify that warning was logged to `stderr` with correct error code.
-  - **Tripwire Migration**: Assert exact stderr security warning string and timeout returncode.
-- [ ] **TASK-GM-016: `test_05_end_to_end_encryption`**
+  - **Tripwire Migration**: Assert exact stderr security warning string (`[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: forged_attack_99)`), timeout returncode 0 with empty stdout, negative control on wire envelope validator raising `LocutusSchemaError`, inbox drainage confirmation, and resilience test on valid payload. (Verified: 1 passed in 1.29s).
+- [x] **TASK-GM-016: `test_05_end_to_end_encryption`**
   - **Mirage Risk**: Checks that Redis payload != plaintext. Does not verify that ciphertext decrypts to exact original bytes with IV verification.
-  - **Tripwire Migration**: Assert AES ciphertext format (`aes256:iv:payload`); decrypt independently in Python and assert match.
-- [ ] **TASK-GM-017: `test_08_active_agent_persistence`**
+  - **Tripwire Migration**: Assert OpenSSL `Salted__` magic header, 8-byte salt extraction, PBKDF2-HMAC-SHA256 (10,000 iterations) key/IV derivation, independent AES-256-CBC byte-level decryption match, negative control on wrong secret decryption failure, and plaintext isolation in Redis. (Verified: 1 passed in 0.15s).
+- [x] **TASK-GM-017: `test_08_active_agent_persistence`**
   - **Mirage Risk**: Checks `.locutus.agent` file creation; does not test invalid agent names or permission restrictions.
-  - **Tripwire Migration**: Assert exact file content, mode permissions, and rejection of invalid characters.
-- [ ] **TASK-GM-018: `test_09_multicast_broadcast_with_tags_routing`**
+  - **Tripwire Migration**: Assert exact file creation in isolated temp dir, exact content equality, POSIX 0600 mode permissions, automatic agent inference for send/listen, cleanup on close, and negative control on empty dir missing agent exiting 1. (Verified: 1 passed in 0.17s).
+- [x] **TASK-GM-018: `test_09_multicast_broadcast_with_tags_routing`**
   - **Mirage Risk**: Asserts message delivered to tag; does not assert non-tagged agents did NOT receive it.
-  - **Tripwire Migration**: Verify isolation: assert tagged agent receives message and non-tagged agent inbox remains empty.
-- [ ] **TASK-GM-019: `test_10_corrupted_encrypted_payload_dropped`**
+  - **Tripwire Migration**: Verify isolation across 3 distinct agents, assert targeted tagged agent receives message while non-tagged agents stay at 0 in Redis and timeout with empty stdout, multi-tag multicast delivery to shared tags, and negative control on nonexistent tag delivering to 0 agents. (Verified: 1 passed in 3.60s).
+- [x] **TASK-GM-019: `test_10_corrupted_encrypted_payload_dropped`**
   - **Mirage Risk**: Asserts corrupted payload dropped; does not verify listener stays alive and does not crash.
-  - **Tripwire Migration**: Assert listener remains running after dropping corrupted frame and processes subsequent valid frame.
-- [ ] **TASK-GM-020: `test_11_argument_validation_for_send_and_broadcast`**
+  - **Tripwire Migration**: Inject undecryptable ciphertext with valid HMAC signature, assert warning logged to stderr, verify queue drainage in Redis, and prove process crash-resilience by immediately sending and listening for a valid encrypted payload. (Verified: 1 passed in 1.28s).
+- [x] **TASK-GM-020: `test_11_argument_validation_for_send_and_broadcast`**
   - **Mirage Risk**: Checks exit code != 0. Does not assert specific descriptive validation error messages on stderr.
-  - **Tripwire Migration**: Assert exact exit code 1 and exact argument validation error strings.
-- [ ] **TASK-GM-021: `test_12_large_e2ee_payload_byte_for_byte`**
+  - **Tripwire Migration**: Assert exact exit code 1 across missing subject/body on send, missing recipient on send, missing subject/body on broadcast, missing recipient on reply, and missing body on reply, along with exact error strings on stderr. (Verified: 1 passed in 0.14s).
+- [x] **TASK-GM-021: `test_12_large_e2ee_payload_byte_for_byte`**
   - **Mirage Risk**: Checks length of received payload; does not assert SHA-256 digest of 5MB payload byte-for-byte.
-  - **Tripwire Migration**: Compute and assert SHA-256 hash match on multi-megabyte payload.
-- [ ] **TASK-GM-022: `test_13_config_show_and_json`**
+  - **Tripwire Migration**: Transmit 1MB structured payload with entropy, verify initial inbox emptiness, assert Redis ciphertext size and absence of plaintext leakage, assert decrypted 1MB payload matches SHA-256 digest byte-for-byte, and negative control verifying 1-byte mutation fails SHA-256 validation. (Verified: 1 passed in 0.19s).
+- [x] **TASK-GM-022: `test_13_config_show_and_json`**
   - **Mirage Risk**: Checks that output is non-empty; does not validate full config schema.
-  - **Tripwire Migration**: Parse JSON output; assert all config keys and provenance types.
-- [ ] **TASK-GM-023: `test_14_config_get`**
+  - **Tripwire Migration**: Assert table format headers and rows, parse JSON output and validate schema via `LocutusPlugin.validate_json_schema`, assert all required config keys with string type provenance (value, source, detail), and negative control on unknown subaction returning exit code 1. (Verified: 1 passed in 0.08s).
+- [x] **TASK-GM-023: `test_14_config_get`**
   - **Mirage Risk**: Asserts single key return; does not assert exit code 1 on non-existent config key.
-  - **Tripwire Migration**: Test positive query match and negative control for unknown key.
-- [ ] **TASK-GM-024: `test_15_config_cli_overrides`**
+  - **Tripwire Migration**: Assert positive queries across redis_url, project, prefix, encrypt, and heartbeat_ttl; assert exit code 1 on missing key argument with usage string; assert exit code 1 on non-existent key with exact error message. (Verified: 1 passed in 0.11s).
+- [x] **TASK-GM-024: `test_15_config_cli_overrides`**
   - **Mirage Risk**: Checks one CLI flag override; does not test precedence over env vars and config files simultaneously.
-  - **Tripwire Migration**: Assert 3-way precedence cascade (CLI flag beats ENV beats file).
-- [ ] **TASK-GM-025: `test_16_config_file_and_profiles`**
+  - **Tripwire Migration**: Assert 3-way precedence cascade (Tier 1: workspace config file, Tier 2: environment variable, Tier 3: CLI flag) along with provenance sources ('workspace config', 'environment', 'cli flag') and cluster hash-tag auto-enclosure. (Verified: 1 passed in 0.12s).
+- [x] **TASK-GM-025: `test_16_config_file_and_profiles`**
   - **Mirage Risk**: Asserts config loaded; does not verify profile selection via `--profile`.
-  - **Tripwire Migration**: Assert full config profile values match loaded profile.
-- [ ] **TASK-GM-026: `test_17_config_paths_and_init`**
+  - **Tripwire Migration**: Validate default profile, staging profile, and prod profile parameters via `LocutusPlugin.validate_json_schema("config")`, verify exact active_profile tag in JSON, and negative control testing unconfigured profile fallback. (Verified: 1 passed in 0.10s).
+- [x] **TASK-GM-026: `test_17_config_paths_and_init`**
   - **Mirage Risk**: Checks init creates file; does not assert init fails if file already exists without `--force`.
-  - **Tripwire Migration**: Assert file creation, permissions, and overwrite guard failure.
-- [ ] **TASK-GM-027: `test_18_non_json_payload_dropped`**
+  - **Tripwire Migration**: Assert path hierarchy, file creation, POSIX 0600 mode permissions, negative control asserting exit code 1 when config file already exists without `--force`, and successful overwrite with `--force`. (Verified: 1 passed in 0.10s).
+- [x] **TASK-GM-027: `test_18_non_json_payload_dropped`**
   - **Mirage Risk**: Checks exit status on invalid payload; does not assert listener recovery.
-  - **Tripwire Migration**: Verify that sending garbage string does not crash listener and listener continues listening.
-- [ ] **TASK-GM-028: `test_19_unreachable_redis_error_handling`**
+  - **Tripwire Migration**: Inject multiple forms of garbage non-JSON strings into Redis inbox, assert stderr warning, assert queue drainage, and verify process crash resilience by processing subsequent valid message. (Verified: 1 passed in 1.27s).
+- [x] **TASK-GM-028: `test_19_unreachable_redis_error_handling`**
   - **Mirage Risk**: Checks exit code != 0 when Redis is down; does not assert clean error message without traceback dump.
-  - **Tripwire Migration**: Assert user-friendly error message on stderr without unhandled Nim exception trace.
-- [ ] **TASK-GM-029: `test_20_tag_argument_validation`**
+  - **Tripwire Migration**: Assert exact exit code 1 across send and who subcommands, assert user-friendly error message on stderr/stdout, and negative control asserting zero unhandled Nim exception stack traces or panics dumped. (Verified: 1 passed in 0.10s).
+- [x] **TASK-GM-029: `test_20_tag_argument_validation`**
   - **Mirage Risk**: Checks basic tag validation; does not test special characters, colons, or whitespace.
-  - **Tripwire Migration**: Test complete matrix of valid and invalid tag strings.
-- [ ] **TASK-GM-030: `test_21_drain_argument_validation`**
+  - **Tripwire Migration**: Tested complete matrix of valid and invalid tag strings, special characters, colons, and whitespace trimming. Verified exact exit code 1 and error messages for missing arguments, invalid action, missing agent identity, and unregistered agent. Inspected Redis sets and hashes directly for tag addition, removal, and replacement, with negative control verifying idempotent removal of nonexistent tags. (Verified: 1 passed in 0.27s).
+- [x] **TASK-GM-030: `test_21_drain_argument_validation`**
   - **Mirage Risk**: Checks drain command exit code; does not assert queue is actually emptied in Redis.
-  - **Tripwire Migration**: Assert queue length becomes 0 and return code is 0.
-- [ ] **TASK-GM-031: `test_22_crypto_tmp_cleanup_guarantee`**
+  - **Tripwire Migration**: Assert exact exit code 1 and error messages for non-integer count and missing agent identity. Send 3 messages, verify Redis queue length (LLEN 3), perform partial drain of 2 items (verifying LLEN becomes 1), complete drain of remaining items (verifying LLEN becomes 0), and verify draining an empty queue returns exit code 0 and keeps LLEN at 0. (Verified: 1 passed in 0.21s).
+- [x] **TASK-GM-031: `test_22_crypto_tmp_cleanup_guarantee`**
   - **Mirage Risk**: Checks `/tmp` for leftover files; does not test negative control where exception occurs during encryption.
-  - **Tripwire Migration**: Induce encryption failure and assert `/tmp` remains completely free of temporary files.
-- [ ] **TASK-GM-032: `test_23_readme_example_config_comprehensive`**
+  - **Tripwire Migration**: Verified zero temporary files in `~/.config/locutus/tmp` after normal AES-256 encryption/decryption round-trip. Tested negative control with corrupted ciphertext inducing decryption failure, asserting zero temporary files created or leaked. Tested stale file pruning via `cleanupOldTmpFiles()`, verifying that stale `.tmp` files (>1 hour old) are purged while fresh files are preserved. (Verified: 1 passed in 1.23s).
+- [x] **TASK-GM-032: `test_23_readme_example_config_comprehensive`**
   - **Mirage Risk**: Parses README snippets but does not validate syntax against parser.
-  - **Tripwire Migration**: Execute all config examples from README through `config.nim` parser.
-- [ ] **TASK-GM-033: `test_24_all_runtime_config_options_behavior`**
+  - **Tripwire Migration**: Dynamically extracted example `.locutus.toml` snippet from `README.md` to prevent doc-drift, validated JSON schema via `LocutusPlugin.validate_json_schema("config")`, verified exact values and source provenance (`workspace config`), validated `--profile staging` and `--profile prod` (including cluster hashtag enclosure), and tested negative control on unconfigured profile fallback. (Verified: 1 passed in 0.10s).
+- [x] **TASK-GM-033: `test_24_all_runtime_config_options_behavior`**
   - **Mirage Risk**: Tests config values in isolation; does not verify runtime effect of each option (e.g. heartbeat TTL).
-  - **Tripwire Migration**: Test that changing `heartbeat_ttl` in config directly alters Redis `EX` TTL.
-- [ ] **TASK-GM-034: `test_25_config_init_targets`**
+  - **Tripwire Migration**: Verified that configuration options directly alter Redis runtime operations with strict TTL bounds: heartbeat TTL (38..45s), message inbox TTL (68..75s), listen default timeout bounded between 0.9s and 3.5s, custom inline secret resolution, POSIX 0600 file permissions, and negative control testing altered heartbeat TTL (8..12s). (Verified: 1 passed in 1.31s).
+- [x] **TASK-GM-034: `test_25_config_init_targets`**
   - **Mirage Risk**: Checks file path of init; does not verify content of generated template.
-  - **Tripwire Migration**: Assert generated TOML/YAML contains valid default keys and comments.
-- [ ] **TASK-GM-035: `test_26_status_and_directory_state`**
+  - **Tripwire Migration**: Verified generated starter TOML template contains valid keys, default values, and comments for both `--project` and `--user` targets. Validated parsed schema via `LocutusPlugin.validate_json_schema("config")`. Asserted strict POSIX 0600 file permissions. Tested negative controls on duplicate initialization failing with exit code 1 and overwrite guards without `--force`, and verified successful overwrite with `--force`. (Verified: 1 passed in 0.13s).
+- [x] **TASK-GM-035: `test_26_status_and_directory_state`**
   - **Mirage Risk**: Checks status update substring in `who`; does not verify `last_seen` timestamp freshness.
-  - **Tripwire Migration**: Assert `last_seen` is within 2 seconds of current time and state matches.
-- [ ] **TASK-GM-036: `test_27_distributed_locking`**
+  - **Tripwire Migration**: Tested negative controls for missing state and missing agent identity. Tested operational state transitions between busy and idle, inspected Redis directly asserting state, activity, and `last_seen` freshness within 2.5s of current time, and validated full JSON schema of directory entries via `LocutusPlugin.validate_json_schema("directory")`. (Verified: 1 passed in 0.18s).
+- [x] **TASK-GM-036: `test_27_distributed_locking`**
   - **Mirage Risk**: Tests lock and unlock; does not assert that second process cannot unlock first process's lock.
-  - **Tripwire Migration**: Assert lock exclusion and verify unauthorized unlock fails with exit code 1.
-- [ ] **TASK-GM-037: `test_28_task_queue_enqueue_and_work`**
+  - **Tripwire Migration**: Verified mutual exclusion, Redis TTL bounds (7..10s), Redis owner assertion, unauthorized unlock rejection (exit code 1), authorized release, re-unlock negative control, and strictly monotonic fencing token increments. (Verified: 1 passed in 0.23s).
+- [x] **TASK-GM-037: `test_28_task_queue_enqueue_and_work`**
   - **Mirage Risk**: Checks task processed; does not verify message ordering when multiple tasks are enqueued.
-  - **Tripwire Migration**: Enqueue 5 tasks; assert strict FIFO consumption ordering.
-- [ ] **TASK-GM-038: `test_29_synchronous_request_rpc`**
+  - **Tripwire Migration**: Tested missing queue argument negative controls. Enqueued 5 distinct tasks, verified initial Redis queue length (LLEN 5), asserted strict FIFO consumption ordering across all 5 tasks with dual validation (wire envelope schema and Pydantic message), verified monotonic queue draining, and tested negative control on empty work timeout. (Verified: 1 passed in 1.33s).
+- [x] **TASK-GM-038: `test_29_synchronous_request_rpc`**
   - **Mirage Risk**: Checks RPC response received; does not assert correlation ID matching or ephemeral queue deletion.
-  - **Tripwire Migration**: Assert correlation `reply_to` matches and ephemeral reply queue is deleted after read.
-- [ ] **TASK-GM-039: `test_30_ephemeral_pub_sub`**
+  - **Tripwire Migration**: Fixed `--timeout` CLI flag resolution in `request` and `scatter`. Verified strict correlation matching (`reply_to == "reply:" + id`), wire envelope and Pydantic message validation, raw output mode, verified ephemeral reply queue is deleted in Redis after read (`EXISTS == 0`), and tested negative controls for missing arguments and timeout waiting for unresponsive responder. (Verified: 1 passed in 2.12s).
+- [x] **TASK-GM-039: `test_30_ephemeral_pub_sub`**
   - **Mirage Risk**: Checks message received on channel; does not verify late subscriber does not receive past messages.
-  - **Tripwire Migration**: Assert pub/sub non-persistence semantics: late subscribers receive 0 messages.
-- [ ] **TASK-GM-040: `test_31_who_flags_and_json`**
+  - **Tripwire Migration**: Tested argument validation negative controls for missing channel and message. Verified active subscriber receives published stream message in real time, verified pub/sub non-persistence semantics (late subscriber arriving after publication receives 0 past messages), and asserted clean timeout behavior on silent channels. (Verified: 1 passed in 2.57s).
+- [x] **TASK-GM-040: `test_31_who_flags_and_json`**
   - **Mirage Risk**: Checks JSON parsing; does not validate full schema structure of all agents.
-  - **Tripwire Migration**: Validate every agent object against JSON schema (name, alive, tags, state, activity).
-- [ ] **TASK-GM-041: `test_32_listen_auto_registers_in_directory`**
+  - **Tripwire Migration**: Validated full directory JSON schema (`LocutusPlugin.validate_json_schema("directory")`) and asserted presence of all fields (agent, status, tags, state, activity) with valid types for every agent, tested table formatting headers, tested tag-filtered queries, and verified negative control on non-matching tag returning empty list. (Verified: 1 passed in 0.17s).
+- [x] **TASK-GM-041: `test_32_listen_auto_registers_in_directory`**
   - **Mirage Risk**: Checks agent in directory; does not verify heartbeat renewal during extended listen.
-  - **Tripwire Migration**: Monitor Redis heartbeat TTL over time, asserting TTL is refreshed.
-- [ ] **TASK-GM-042: `test_33_multi_agent_workspace_and_env_isolation`**
+  - **Tripwire Migration**: Validated wire envelope schema via `LocutusPlugin.validate_wire_envelope`, Pydantic `LocutusMessage` schema, directory schema via `LocutusPlugin.validate_json_schema("directory")`, verified Redis active agent and heartbeat key existence, monitored background listener with 4s heartbeat TTL proving heartbeat renewal across the 2.0s poll chunk boundary, verified silent exit on timeout, cleanup on close, and unregistered agent negative controls. (Verified: 1 passed in 5.40s).
+- [x] **TASK-GM-042: `test_33_multi_agent_workspace_and_env_isolation`**
   - **Mirage Risk**: Tests 2 agents in 2 dirs; does not assert cross-workspace communication isolation.
-  - **Tripwire Migration**: Verify workspace A cannot read workspace B inbox when project namespace differs.
-- [ ] **TASK-GM-043: `test_34_listen_requires_agent_identity`**
+  - **Tripwire Migration**: Verified workspace `.locutus.agent` creation and 0600 permissions; tested negative control verifying workspace 1 cannot consume workspace 2 messages; validated wire envelopes via `LocutusPlugin.validate_wire_envelope` and Pydantic `LocutusMessage`; verified `LOCUTUS_AGENT_NAME` env override; and verified project-level namespace isolation preventing directory cross-leakage between `projAlpha` and `projBeta`. (Verified: 1 passed in 1.38s).
+- [x] **TASK-GM-043: `test_34_listen_requires_agent_identity`**
   - **Mirage Risk**: Checks exit code 1; does not assert specific error message.
-  - **Tripwire Migration**: Assert exact error message stating agent identity is missing.
-- [ ] **TASK-GM-044: `test_35_version_flags`**
+  - **Tripwire Migration**: Asserted exact exit code 1, empty stdout, and exact error message across bare invocation, timeout-only, flag-only, and combined arguments; verified positive controls via explicit argument and `LOCUTUS_AGENT_NAME` environment variable. (Verified: 1 passed in 2.32s).
+- [x] **TASK-GM-044: `test_35_version_flags`**
   - **Mirage Risk**: Substring match on version; does not verify version string matches SemVer regex.
-  - **Tripwire Migration**: Assert exact version string matches SemVer `^\d+\.\d+\.\d+$`.
-- [ ] **TASK-GM-045: `test_36_listen_default_blocks_silently`**
+  - **Tripwire Migration**: Asserted strict SemVer regex `^locutus\s+(\d+)\.(\d+)\.(\d+)...$` with major/minor/patch integers across `--version`, `-v`, and `version`; verified exact cross-file synchronization against `pyproject.toml` and empty stderr; verified negative controls on invalid flags and case mutations. (Verified: 1 passed in 0.11s).
+- [x] **TASK-GM-045: `test_36_listen_default_blocks_silently`**
   - **Mirage Risk**: Checks timeout exit 0; does not verify 0 bytes written to stdout.
-  - **Tripwire Migration**: Assert exit code 0 AND stdout length == 0.
-- [ ] **TASK-GM-046: `test_37_send_with_listen_piggyback`**
+  - **Tripwire Migration**: Validated silent indefinite blocking wait in background thread, immediate unblocking on message arrival, validated wire envelope via `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`, asserted strictly 0 bytes on stdout and stderr on timeout, and verified negative control on message destined for other agent. (Verified: 1 passed in 2.92s).
+- [x] **TASK-GM-046: `test_37_send_with_listen_piggyback`**
   - **Mirage Risk**: Checks reply received; does not verify listener transition occurred in the same process.
-  - **Tripwire Migration**: Verify single PID handles both send and listening.
-- [ ] **TASK-GM-047: `test_38_reply_command_with_listen`**
+  - **Tripwire Migration**: Monitored Redis listener lock PID, verifying it identically matches the sender process PID; validated dual messages via `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`; asserted lock deletion on exit; and verified negative control on timeout without reply yielding 0 stdout bytes. (Verified: 1 passed in 1.43s).
+- [x] **TASK-GM-047: `test_38_reply_command_with_listen`**
   - **Mirage Risk**: Checks reply sent; does not assert `type == "reply"` in delivered payload.
-  - **Tripwire Migration**: Assert delivered JSON has `type: "reply"` and matches `reply_to` ID.
-- [ ] **TASK-GM-048: `test_39_prevent_stacked_listeners_piggyback`**
+  - **Tripwire Migration**: Tested missing argument negative controls; validated delivered JSON wire envelope schema and Pydantic message asserting `type == "reply"` and exact `reply_to` ID; verified single PID transitions and Redis listener lock tracking; verified clean lock cleanup on exit; and verified `--listen-timeout` yields strictly 0 bytes on timeout. (Verified: 1 passed in 1.42s).
+- [x] **TASK-GM-048: `test_39_prevent_stacked_listeners_piggyback`**
   - **Mirage Risk**: Checks warning output; does not verify second process skipped listening without exiting 1.
-  - **Tripwire Migration**: Assert exit code 0 and duplicate listener lock was not created.
-- [ ] **TASK-GM-049: `test_40_standalone_listen_rejects_duplicate`**
+  - **Tripwire Migration**: Started listener with known PID, proved `send --listen` detects active listener, logged exact PID warning on stderr, returned exit code 0 immediately without hanging, proved Redis lock remained unmodified and owned by original PID, and validated dual message schemas via `LocutusPlugin.validate_wire_envelope`. (Verified: 1 passed in 0.30s).
+- [x] **TASK-GM-049: `test_40_standalone_listen_rejects_duplicate`**
   - **Mirage Risk**: Checks exit code 1; does not assert lock key preserved.
-  - **Tripwire Migration**: Assert original listener lock is completely unmodified.
-- [ ] **TASK-GM-050: `test_41_stale_listener_self_healing`**
+  - **Tripwire Migration**: Started background listener process with tracked PID, verified duplicate standalone listen returns exit code 1, produces strictly 0 bytes stdout, and emits exact error with active PID; asserted original listener lock in Redis is 100% byte/field preserved; and verified `--force` override succeeds. (Verified: 1 passed in 1.32s).
+- [x] **TASK-GM-050: `test_41_stale_listener_self_healing`**
   - **Mirage Risk**: Tests stale PID overwrite; does not verify living PID is NOT overwritten.
-  - **Tripwire Migration**: Negative control: verify living PID on same host is rejected.
-- [ ] **TASK-GM-051: `test_42_listener_exit_does_not_delete_foreign_lock`**
+  - **Tripwire Migration**: Verified stale listener lock with dead local PID (9999999) is detected, cleared, and self-healed; tested negative control verifying living local PID (`os.getpid()`) on same host is rejected with exit code 1 and preserved in Redis; and tested foreign host lock preservation. (Verified: 1 passed in 1.28s).
+- [x] **TASK-GM-051: `test_42_listener_exit_does_not_delete_foreign_lock`**
   - **Mirage Risk**: Checks foreign lock exists after exit; does not verify exit cleanup ran for other keys.
-  - **Tripwire Migration**: Assert foreign lock preserved and local process state cleaned.
-- [ ] **TASK-GM-052: `test_43_worker_heartbeat_renewal`**
+  - **Tripwire Migration**: Started background listener process, simulated preemption by overwriting lock with foreign PID and metadata, verified listener timed out silently with 0 bytes stdout, asserted foreign lock remained 100% intact and uncorrupted, and verified contrast negative control that normal un-preempted exit cleans up its own lock. (Verified: 1 passed in 3.39s).
+- [x] **TASK-GM-052: `test_43_worker_heartbeat_renewal`**
   - **Mirage Risk**: Checks worker active during work; does not test heartbeat expiration after worker process terminates.
-  - **Tripwire Migration**: Kill worker process and assert heartbeat expires and worker is pruned.
-- [ ] **TASK-GM-053: `test_44_scatter_gather_quorum`**
+  - **Tripwire Migration**: Monitored worker queue listener with 4s heartbeat TTL proving renewal across 2.0s poll chunk boundary; killed worker process abruptly and proved heartbeat key expires to 0 in Redis; verified dead worker pruned from directory after sweep; and validated wire envelope and Pydantic message on resumed work task. (Verified: 1 passed in 6.48s).
+- [x] **TASK-GM-053: `test_44_scatter_gather_quorum`**
   - **Mirage Risk**: Checks quorum count; does not assert every response body and sender identity.
-  - **Tripwire Migration**: Parse array of replies; assert each sender and payload matches expected reply.
-- [ ] **TASK-GM-054: `test_45_scatter_explicit_targets_and_raw`**
+  - **Tripwire Migration**: Tested missing argument and nonexistent target negative controls; validated all gathered replies with `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`; asserted distinct payload answers (`vote:approve`, `vote:reject`) mapped to exact responders; and verified ephemeral reply inbox deletion in Redis (`EXISTS == 0`). (Verified: 1 passed in 0.55s).
+- [x] **TASK-GM-054: `test_45_scatter_explicit_targets_and_raw`**
   - **Mirage Risk**: Checks raw output format; does not verify non-targeted agents received 0 messages.
-  - **Tripwire Migration**: Verify target isolation: assert non-targeted agent received no scatter task.
-- [ ] **TASK-GM-055: `test_46_reliable_queue_claim_ack_and_dlq`**
+  - **Tripwire Migration**: Tested explicit comma-separated target scatter in `--raw` mode, validated individual worker wire envelopes and Pydantic schema on compute tasks, asserted raw stdout lines `{"42", "100"}`, and verified negative control asserting non-targeted innocent agent received strictly 0 messages (`LLEN == 0` and `listen` returned 0 bytes). (Verified: 1 passed in 1.66s).
+- [x] **TASK-GM-055: `test_46_reliable_queue_claim_ack_and_dlq`**
   - **Mirage Risk**: Checks task moves to DLQ; does not assert attempt counter in Redis hash.
-  - **Tripwire Migration**: Verify attempt counter increments on each claim and DLQ contains full payload.
-- [ ] **TASK-GM-056: `test_47_blackboard_kv_append_and_snapshot`**
+  - **Tripwire Migration**: Tested missing argument negative controls on claim and ack; validated wire envelopes with `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`; asserted Redis active lease keys, attempt counter in `attempts` hash across 3 attempts (1 -> 2 -> 3); asserted DLQ routing on 4th attempt with attempt hash cleanup (`HEXISTS == 0`); and verified DLQ payload contains full original wire envelope. (Verified: 1 passed in 4.98s).
+- [x] **TASK-GM-056: `test_47_blackboard_kv_append_and_snapshot`**
   - **Mirage Risk**: Checks snapshot output; does not assert OCC revision token rejection on concurrent edit.
-  - **Tripwire Migration**: Test OCC revision conflict rejection and verify full snapshot JSON schema.
-- [ ] **TASK-GM-057: `test_48_floor_control_ring`**
+  - **Tripwire Migration**: Tested missing argument and unknown action negative controls; validated direct Redis hash `HGET`, `TTL`, set index `SISMEMBER`, and list `LRANGE`; validated snapshot schema via `LocutusPlugin.validate_json_schema("blackboard")` across full, partial (post-del), and cleared states; and verified Redis Cluster `{room}` hash tag slot affinity with `LocutusPlugin.check_cluster_affinity`. (Verified: 1 passed in 0.28s).
+- [x] **TASK-GM-057: `test_48_floor_control_ring`**
   - **Mirage Risk**: Tests yield and request; does not assert waiter timeout dequeue behavior under load.
-  - **Tripwire Migration**: Test timeout dequeue and assert speaker ring handoff sequence.
-- [ ] **TASK-GM-058: `test_49_cancellation_tokens`**
+  - **Tripwire Migration**: Tested missing argument, unauthorized yield, and unauthorized pass negative controls; asserted initial/held status schemas; verified FIFO multi-waiter ring handoff sequence across background threads with direct Redis `LRANGE` inspections; proved timeout dequeue cleanly purges timed-out waiters from Redis under load; and verified `{room}` cluster slot affinity. (Verified: 1 passed in 2.04s).
+- [x] **TASK-GM-058: `test_49_cancellation_tokens`**
   - **Mirage Risk**: Checks cancellation flag; does not verify cancellation broadcast channels.
-  - **Tripwire Migration**: Subscribe to `channel:cancellations` and assert broadcast event received.
-- [ ] **TASK-GM-059: `test_50_blind_voting_ballot`**
+  - **Tripwire Migration**: Tested missing argument negative controls; subscribed to Redis broadcast channels `channel:cancellations` and `channel:cancel:<run_id>` proving real-time event delivery; asserted HMAC signature verification and tamper detection; checked raw/exit-code variations; and verified clean deletion from Redis upon clear. (Verified: 1 passed in 0.79s).
+- [x] **TASK-GM-059: `test_50_blind_voting_ballot`**
   - **Mirage Risk**: Checks tally output; does not verify individual votes are invisible before tally.
-  - **Tripwire Migration**: Assert vote secrecy: query Redis before tally and assert choices cannot be inspected.
-- [ ] **TASK-GM-060: `test_51_leader_election`**
+  - **Tripwire Migration**: Tested missing argument, ineligible voter, invalid choice, and post-close vote negative controls; verified vote secrecy during voting (asserting `ballot status` does NOT contain votes, tally, or winner) and post-tally privacy; verified HMAC signature verification discarding unauthenticated forged votes; and confirmed `{ballot_id}` cluster slot affinity. (Verified: 1 passed in 0.31s).
+- [x] **TASK-GM-060: `test_51_leader_election`**
   - **Mirage Risk**: Checks leader acquired; does not test automatic failover after leader process is killed.
-  - **Tripwire Migration**: Kill leader process; assert follower acquires leadership upon lease expiry.
-- [ ] **TASK-GM-061: `test_52_workflow_dag_engine`**
+  - **Tripwire Migration**: Tested missing argument and non-leader renew negative controls; proved automatic failover (primary crashes, lease expires in Redis, backup follower acquires leadership); verified HMAC signature validation and eviction/preemption of forged leader keys; and confirmed `{role}` cluster slot affinity. (Verified: 1 passed in 2.51s).
+- [x] **TASK-GM-061: `test_52_workflow_dag_engine`**
   - **Mirage Risk**: Checks linear workflow; does not verify parallel diamond DAG step unlocking (`lint -> [test, build] -> deploy`).
-  - **Tripwire Migration**: Test diamond DAG: assert `test` and `build` become ready simultaneously upon `lint` completion.
-- [ ] **TASK-GM-062: `test_53_cluster_sweep`**
+  - **Tripwire Migration**: Tested missing argument, dependency cycle detection, and dangling step negative controls; proved diamond DAG parallel step unlocking (asserting `test` and `build` become ready simultaneously upon `lint` resolution); verified dependent unlock (`deploy` unlocked only after both `test` and `build` complete); verified schema via `LocutusPlugin.validate_json_schema("workflow")`; and confirmed `{flow_id}` cluster slot affinity. (Verified: 1 passed in 0.30s).
+- [x] **TASK-GM-062: `test_53_cluster_sweep`**
   - **Mirage Risk**: Checks sweep output; does not verify dead agent tag reverse index cleanup.
-  - **Tripwire Migration**: Verify `tag:<tag>` set membership is cleaned up on sweep.
-- [ ] **TASK-GM-063: `test_54_lock_fencing_tokens`**
+  - **Tripwire Migration**: Injected multi-tagged dead agent (`tag:worker`, `tag:qa`), stale local PID listener, and foreign cluster listener; verified dry-run non-mutation; proved sweep prunes dead agent from `active_agents`, deletes metadata, and purges from reverse index tag sets (`SISMEMBER == 0`); asserted stale listener deleted while foreign listener is preserved; and validated schema via `LocutusPlugin.validate_json_schema("sweep")`. (Verified: 1 passed in 0.32s).
+- [x] **TASK-GM-063: `test_54_lock_fencing_tokens`**
   - **Mirage Risk**: Checks token increments; does not verify token monotonicity across multiple locks and clients.
-  - **Tripwire Migration**: Acquire lock across 3 iterations; assert tokens are strictly monotonic integers (N, N+1, N+2).
+  - **Tripwire Migration**: Tested missing argument, held lock conflict, unauthorized unlock, and re-unlock negative controls; verified direct Redis lock key owner, TTL, and fencing counter; proved strict monotonicity across 3 iterations (tokens 1, 2, 3) across multiple distinct agents; and verified cluster slot affinity on `{lock_name}`. (Verified: 1 passed in 0.36s).
 
 ---
 

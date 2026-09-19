@@ -191,8 +191,14 @@ class LocutusPlugin(BasePlugin):
             if not isinstance(data, list):
                 raise LocutusSchemaError(f"'who --json' must return a list of agents, got {type(data).__name__}")
             for item in data:
-                for req in ["name", "alive", "tags", "state", "activity", "last_seen"]:
+                if not isinstance(item, dict):
+                    raise LocutusSchemaError(f"Agent entry must be an object, got {type(item).__name__}")
+                for req in ["agent", "status", "tags", "state", "activity"]:
                     if req not in item:
+                        if req == "agent" and "name" in item:
+                            continue
+                        if req == "status" and "alive" in item:
+                            continue
                         raise LocutusSchemaError(f"Agent object missing field '{req}': {item}")
         elif subcommand == "sweep":
             if not isinstance(data, dict):
@@ -209,15 +215,22 @@ class LocutusPlugin(BasePlugin):
         elif subcommand == "blackboard":
             if not isinstance(data, dict):
                 raise LocutusSchemaError(f"'blackboard snapshot' must return a dict, got {type(data).__name__}")
-            for req in ["room", "revision", "entries"]:
+            for req in ["room", "kv", "lists"]:
                 if req not in data:
                     raise LocutusSchemaError(f"Blackboard snapshot missing field '{req}': {data}")
+            if not isinstance(data["kv"], dict):
+                raise LocutusSchemaError(f"Blackboard snapshot 'kv' must be a dict, got {type(data['kv']).__name__}")
+            if not isinstance(data["lists"], dict):
+                raise LocutusSchemaError(f"Blackboard snapshot 'lists' must be a dict, got {type(data['lists']).__name__}")
         elif subcommand == "workflow":
             if not isinstance(data, dict):
                 raise LocutusSchemaError(f"'workflow status' must return a dict, got {type(data).__name__}")
-            for req in ["id", "state", "steps"]:
-                if req not in data:
-                    raise LocutusSchemaError(f"Workflow status missing field '{req}': {data}")
+            if "flow_id" not in data and "id" not in data:
+                raise LocutusSchemaError(f"Workflow status missing 'flow_id' or 'id': {data}")
+            if "status" not in data and "state" not in data:
+                raise LocutusSchemaError(f"Workflow status missing 'status' or 'state': {data}")
+            if "steps" not in data:
+                raise LocutusSchemaError(f"Workflow status missing 'steps': {data}")
 
         return data
 

@@ -8,6 +8,7 @@ dependencies = [
     "pytest>=8.0.0",
     "pytest-tripwire>=0.21.1",
     "redis>=5.0.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.entry-points."tripwire.plugins"]

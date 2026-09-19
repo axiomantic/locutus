@@ -1850,23 +1850,27 @@ proc main() =
       cli.redisUrl = a[3..^1]
     elif a.startsWith("--prefix="):
       cli.prefix = a[9..^1]
-    elif a == "--prefix" and i + 1 < rawArgs.len:
+    elif a == "--prefix" and i + 1 < rawArgs.len and not rawArgs[i+1].startsWith("-"):
       cli.prefix = rawArgs[i+1]; inc i
     elif a.startsWith("--project="):
       cli.project = a[10..^1]
-    elif a == "--project" and i + 1 < rawArgs.len:
-      cli.project = rawArgs[i+1]; inc i
+    elif a == "--project":
+      let isConfigInit = ("config" in rawArgs) and ("init" in rawArgs)
+      if not isConfigInit and i + 1 < rawArgs.len and not rawArgs[i+1].startsWith("-"):
+        cli.project = rawArgs[i+1]; inc i
+      else:
+        positionalArgs.add(a)
     elif a.startsWith("--agent-name="):
       cli.agentName = a[13..^1]
-    elif a == "--agent-name" and i + 1 < rawArgs.len:
+    elif a == "--agent-name" and i + 1 < rawArgs.len and not rawArgs[i+1].startsWith("-"):
       cli.agentName = rawArgs[i+1]; inc i
     elif a.startsWith("--secret="):
       cli.secret = a[9..^1]
-    elif a == "--secret" and i + 1 < rawArgs.len:
+    elif a == "--secret" and i + 1 < rawArgs.len and not rawArgs[i+1].startsWith("-"):
       cli.secret = rawArgs[i+1]; inc i
     elif a.startsWith("--secret-file="):
       cli.secretFile = a[14..^1]
-    elif a == "--secret-file" and i + 1 < rawArgs.len:
+    elif a == "--secret-file" and i + 1 < rawArgs.len and not rawArgs[i+1].startsWith("-"):
       cli.secretFile = rawArgs[i+1]; inc i
     elif a == "--encrypt":
       cli.encrypt = some(true)
@@ -1975,8 +1979,25 @@ proc main() =
     of "path", "paths":
       echo formatConfigPaths()
     of "init":
-      let target = if args.len > 2: args[2] else: "workspace"
-      echo initConfigFile(target)
+      var target = "workspace"
+      var force = false
+      var i = 2
+      while i < args.len:
+        let a = args[i]
+        if a in ["-f", "--force"]:
+          force = true
+        elif a.toLowerAscii in ["--user", "-u", "user"]:
+          target = "user"
+        elif a.toLowerAscii in ["--project", "-p", "project", "--workspace", "-w", "workspace"]:
+          target = "workspace"
+        elif not a.startsWith("-"):
+          target = a
+        inc i
+      let res = initConfigFile(target, force)
+      if res.startsWith("Error:"):
+        stderr.writeLine(res)
+        quit(1)
+      echo res
     else:
       stderr.writeLine("Unknown config action: " & action)
       stderr.writeLine("Usage: locutus config <show|get|path|init>")
@@ -2176,7 +2197,7 @@ proc main() =
     var fromAgent = getActiveAgentName(cfg, "")
     var subject = ""
     var body = ""
-    var timeout = 30
+    var timeout = if cfg.listenTimeout > 0: cfg.listenTimeout else: 30
     var rawOutput = false
 
     var i = 1
@@ -2217,7 +2238,7 @@ proc main() =
     var subject = ""
     var body = ""
     var quorum = -1
-    var timeout = 30
+    var timeout = if cfg.listenTimeout > 0: cfg.listenTimeout else: 30
     var rawOutput = false
     var fromAgent = getActiveAgentName(cfg, "")
 
