@@ -244,8 +244,73 @@ locutus send --to worker-1 --subject "Run Tests" --body "pytest tests/auth"
 | `locutus drain [count]` | Atomically drains up to N offline messages (FIFO). | `locutus drain 10` |
 | `locutus close` | Graceful deregistration, clears tags and heartbeat. | `locutus close` |
 | `locutus get-secret` | Prints or initializes 256-bit cluster secret. | `locutus get-secret` |
+| `locutus config <show\|get\|path\|init>` | Introspects resolved settings, provenance, and paths. | `locutus config show` or `locutus config get redis_url` |
 
 ---
+
+## Configuration Architecture & Profiles
+
+Locutus provides deterministic, multi-tiered cascading configuration resolution:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 1. Explicit CLI Flags (--redis-url, --project, etc.)    │
+├─────────────────────────────────────────────────────────┤
+│ 2. Process Environment Variables (LOCUTUS_*, REDIS_URL) │
+├─────────────────────────────────────────────────────────┤
+│ 3. Workspace / Project Config (.locutus.toml, .env)     │
+├─────────────────────────────────────────────────────────┤
+│ 4. Per-User Config (~/.config/locutus/config.toml)      │
+├─────────────────────────────────────────────────────────┤
+│ 5. Global / System Config (/etc/locutus/config.toml)    │
+├─────────────────────────────────────────────────────────┤
+│ 6. Built-in Defaults                                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Configuration Files
+
+- **Workspace**: `.locutus.toml` or `locutus.toml` in the project root (walks upwards to `.git`).
+- **User**: `~/.config/locutus/config.toml` (Linux/macOS) or `%APPDATA%\locutus\config.toml` (Windows).
+- **System**: `/etc/locutus/config.toml` (Linux), `/Library/Application Support/locutus/config.toml` (macOS), or `%ProgramData%\locutus\config.toml` (Windows).
+
+### Example `.locutus.toml`
+
+```toml
+redis_url = "redis://127.0.0.1:6379"
+prefix = "locutus:"
+project = "my-project"
+encrypt = false
+cluster = false
+heartbeat_ttl = 150
+message_ttl = 604800
+listen_timeout = 90
+
+# Shared secret file (avoids committing secrets into git)
+secret_file = "~/.config/locutus/secret"
+
+# Named profiles: locutus --profile staging <subcommand>
+[profiles.staging]
+redis_url = "rediss://staging.internal:6380"
+prefix = "stg:locutus:"
+encrypt = true
+
+[profiles.prod]
+redis_url = "rediss://prod-cluster.internal:6379"
+cluster = true
+encrypt = true
+```
+
+### Configuration CLI Commands
+
+- `locutus config show`: Displays the resolved configuration alongside the **source provenance** of each value (CLI flag, env var, workspace config, user config, or default).
+- `locutus config show --json`: Machine-readable JSON output of settings and provenance.
+- `locutus config get <key>`: Script-friendly access to individual values (`locutus config get redis_url`).
+- `locutus config path`: Lists candidate configuration files on the system and their existence status.
+- `locutus config init [--user | --project]`: Scaffolds a starter `.locutus.toml` file.
+
+---
+
 
 ## Cryptographic Security Model
 
