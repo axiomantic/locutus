@@ -1624,6 +1624,14 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(bob_result[0].returncode, 0)
         self.assertIn("ACQUIRED", bob_result[0].stdout)
 
+        # 7. Test waiter timeout dequeue: Charlie waits 1s while Bob holds floor, times out, and is removed from waiters
+        res_charlie_timeout = self.run_locutus(["floor", "request", room, "1", "--lease", "5"], env_overrides={"LOCUTUS_AGENT_NAME": "charlie"})
+        self.assertEqual(res_charlie_timeout.returncode, 1)
+        # Verify Charlie is NOT left in waiters queue
+        st_chk = self.run_locutus(["floor", "status", room])
+        st_data = json.loads(st_chk.stdout.strip())
+        self.assertNotIn("charlie", st_data["waiters"])
+
     def test_49_cancellation_tokens(self):
         """Test global run cancellation tokens ('locutus cancel')."""
         run_id = f"run_{int(time.time() * 1000)}"

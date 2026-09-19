@@ -1005,6 +1005,9 @@ proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int =
     let elapsed = int(getTime().toUnix() - startTime)
     remaining = max(0, waitSec - elapsed)
 
+  # Dequeue from waiters list on timeout to prevent stale waiter hijacking subsequent yields
+  discard execRedis(cfg.redisUrl, ["LREM", cfg.prefix & "floor:" & room & ":waiters", "0", agentName])
+
   let holder = if res.startsWith("BUSY:"): res[5..^1] else: "unknown"
   stderr.writeLine("Timeout waiting for floor in " & room & ". Currently held by " & holder)
   quit(1)

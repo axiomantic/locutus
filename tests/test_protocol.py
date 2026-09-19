@@ -698,6 +698,7 @@ class TestRedisA2AProtocol(unittest.TestCase):
         st_json = run_eval(LUA_FLOOR, 0, PREFIX, "status", room)
         st = json.loads(st_json)
         self.assertEqual(st["holder"], "bob")
+        self.assertEqual(st["waiters"], [])
 
         yielded = run_eval(LUA_FLOOR, 0, PREFIX, "yield", room, "bob")
         self.assertEqual(yielded, "YIELDED")
@@ -836,6 +837,16 @@ class TestRedisA2AProtocol(unittest.TestCase):
         r4 = json.loads(r4_json)
         self.assertEqual(r4["status"], "completed")
 
+        # 7. Test failure preservation: if workflow fails, resolve does not reset status to running
+        flow_fail_id = f"flow_fail_{int(time.time() * 1000)}"
+        run_eval(LUA_WORKFLOW, 0, PREFIX, "define", flow_fail_id, "s1,s2", "")
+        # Fail s1
+        run_eval(LUA_WORKFLOW, 0, PREFIX, "fail", flow_fail_id, "s1", "out of memory")
+        # Resolve s2
+        res_after_fail = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_fail_id, "s2")
+        data_af = json.loads(res_after_fail)
+        self.assertEqual(data_af["status"], "failed")
+
     def test_28_sweep_lua_protocol(self):
         """Test sweep.lua auditing and pruning expired heartbeats."""
         dead_agent = f"dead_bot_{int(time.time() * 1000)}"
@@ -843,9 +854,11 @@ class TestRedisA2AProtocol(unittest.TestCase):
 
         # 1. Register both agents
         run_redis("SADD", f"{PREFIX}active_agents", dead_agent)
-        run_redis("HSET", f"{PREFIX}agents", dead_agent, "{}")
+        run_redis("HSET", f"{PREFIX}agent:{dead_agent}", "tags", "sweeptest,backend")
+        run_redis("SADD", f"{PREFIX}tag:sweeptest", dead_agent)
         run_redis("SADD", f"{PREFIX}active_agents", alive_agent)
-        run_redis("HSET", f"{PREFIX}agents", alive_agent, "{}")
+        run_redis("HSET", f"{PREFIX}agent:{alive_agent}", "tags", "sweeptest")
+        run_redis("SADD", f"{PREFIX}tag:sweeptest", alive_agent)
         # Give alive_agent a heartbeat key with 60s TTL
         run_redis("SET", f"{PREFIX}heartbeat:{alive_agent}", "1", "EX", "60")
         # dead_agent has NO heartbeat key
@@ -860,22 +873,24 @@ class TestRedisA2AProtocol(unittest.TestCase):
         is_member = run_redis("SISMEMBER", f"{PREFIX}active_agents", dead_agent)
         self.assertEqual(is_member.strip(), "1")
 
-        # 3. Prune run: should prune dead_agent from active_agents and agents hash
+        # 3. Prune run: should prune dead_agent from active_agents, agent hash, and tag set
         prune_res = run_eval(LUA_SWEEP, 0, PREFIX, "prune", "0")
         prune_data = json.loads(prune_res)
         self.assertIn(dead_agent, prune_data["dead_agents"])
 
-        # Confirm dead_agent is removed
-        is_member_after = run_redis("SISMEMBER", f"{PREFIX}active_agents", dead_agent)
-        self.assertEqual(is_member_after.strip(), "0")
+        # Confirm dead_agent is removed from active_agents, agent hash deleted, and removed from tag set
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}active_agents", dead_agent).strip(), "0")
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:{dead_agent}").strip(), "0")
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}tag:sweeptest", dead_agent).strip(), "0")
 
         # Confirm alive_agent is untouched
-        is_alive_member = run_redis("SISMEMBER", f"{PREFIX}active_agents", alive_agent)
-        self.assertEqual(is_alive_member.strip(), "1")
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}active_agents", alive_agent).strip(), "1")
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}tag:sweeptest", alive_agent).strip(), "1")
 
         # Cleanup
         run_redis("SREM", f"{PREFIX}active_agents", alive_agent)
-        run_redis("HDEL", f"{PREFIX}agents", alive_agent)
+        run_redis("DEL", f"{PREFIX}agent:{alive_agent}")
+        run_redis("DEL", f"{PREFIX}tag:sweeptest")
         run_redis("DEL", f"{PREFIX}heartbeat:{alive_agent}")
 
     def test_29_lock_fencing_token_lua_protocol(self):

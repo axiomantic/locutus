@@ -81,7 +81,9 @@ elseif action == "status" then
         ttl = ttl,
         waiters = waiters
     }
-    return cjson.encode(result)
+    local encoded = cjson.encode(result)
+    encoded = string.gsub(encoded, '"waiters":{}', '"waiters":[]')
+    return encoded
 end
 
 return nil

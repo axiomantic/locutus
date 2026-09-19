@@ -28,9 +28,12 @@ for _, agent in ipairs(active_agents) do
         table.insert(dead_agents, agent)
         if not dry_run then
             redis.call("SREM", prefix .. "active_agents", agent)
-            redis.call("HDEL", prefix .. "agents", agent)
-            redis.call("HDEL", prefix .. "agent_tags", agent)
-            redis.call("HDEL", prefix .. "agent_projects", agent)
+            local agent_tags = redis.call("HGET", prefix .. "agent:" .. agent, "tags") or ""
+            for t in string.gmatch(agent_tags, "([^,]+)") do
+                local tr = string.match(t, "^%s*(.-)%s*$")
+                if tr ~= "" then redis.call("SREM", prefix .. "tag:" .. tr, agent) end
+            end
+            redis.call("DEL", prefix .. "agent:" .. agent)
         end
     end
 end

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scatter-Gather & Quorum Consensus (`locutus scatter`)**: Native orchestrator primitive for multicasting tasks across specialist pools (`--targets <@tag|agents|*>`) and gathering replies into a unified JSON array until a configurable quorum (`--quorum N`) is reached or timeout expires. Supports `--raw` output for shell piping and atomic target resolution via `scripts/scatter.lua`.
 
 ### Fixed
+- **Sweeper Dead Agent Metadata & Tag Pruning**: In `scripts/sweep.lua`, corrected key references to extract agent tags from `agent:<name>` and delete reverse indexes from `tag:<tag>` sets alongside deleting the `agent:<name>` hash when pruning dead agents.
+- **Floor Waiter Timeout Queue Dequeue**: In `src/locutus.nim` `doFloorRequest`, added automatic `LREM` cleanup to dequeue agents from `floor:<room>:waiters` when `--wait` timeout expires, preventing abandoned requests from hijacking subsequent speaker yields.
+- **Workflow State Machine Failure Preservation**: In `scripts/workflow.lua`, ensured step resolution (`resolve`) only transitions pipeline status to `"running"` if `flow.status` is not already `"failed"`, preventing subsequent step resolutions from masking earlier step failures in DAG pipelines.
+- **Floor Control JSON Serialization**: In `scripts/floor.lua`, corrected empty `waiters` list serialization from JSON `{}` (empty map) to `[]` (empty array) for strict API schema conformance.
 - **Request O2O Routing to Target Agent**: Fixed regression in `doSend` destination queue routing where messages with `replyTo` keys (such as `locutus request`) routed directly to the ephemeral reply channel instead of `toAgent`. DestQueue routing now strictly checks that `msgType == "reply"` before routing to a reply channel.
 
 ## [0.1.2] - 2026-09-19

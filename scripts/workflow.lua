@@ -221,10 +221,12 @@ elseif action == "resolve" then
         end
     end
 
-    if all_done then
-        flow.status = "completed"
-    else
-        flow.status = "running"
+    if flow.status ~= "failed" then
+        if all_done then
+            flow.status = "completed"
+        else
+            flow.status = "running"
+        end
     end
 
     local ttl = redis.call("TTL", flow_key)
