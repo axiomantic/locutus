@@ -79,3 +79,14 @@
 - [x] Synced `SKILL.md`, `scripts/`, `commands/`, and `references/` into `~/.gemini/config/skills/locutus/`.
 - [x] Maintained `TODO.md` in workspace.
 - [x] Git committed all changes cleanly.
+
+### 11. Deep Code Review & Hardening Fixes
+- [x] Fixed `scripts/register.lua`: Automatically clean up old tag memberships on re-registration.
+- [x] Fixed `scripts/multicast.lua`: Delete orphaned `locutus:agent:<name>` hash during dead-agent pruning.
+- [x] Fixed `scripts/tag.lua`: Enforce active registration check before allowing tag modifications.
+- [x] Fixed `commands/locutus.md` & `.claude/commands/locutus.md`: Updated all legacy references to `LOCUTUS_*` and added `/locutus unregister` subcommand.
+- [x] Fixed `references/wire_spec.md`: Synchronized protocol title, prefix, and Pydantic schema model.
+- [x] Fixed `SKILL.md`: Updated Section 6 reply instructions to use quote-safe structured parameters.
+- [x] Fixed `tests/test_ollama_agent.py` & `tests/test_multi_agent_pingpong.py`: Passed `-u REDIS_URL` across all verification commands.
+- [x] Expanded unit tests to 15/15 in `tests/test_protocol.py` verifying all edge cases.
+
