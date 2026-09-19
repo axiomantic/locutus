@@ -1157,6 +1157,137 @@ secret = "my_inline_secret_test_555"
         self.run_locutus(["close", carol])
         self.run_locutus(["close", dave])
 
+    def test_39_prevent_stacked_listeners_piggyback(self):
+        """Verify that 'send --listen' detects an existing active listener and does not stack duplicate listeners."""
+        alice = "alice_stack_guard"
+        bob = "bob_stack_guard"
+        self.run_locutus(["open", alice, "dev"])
+        self.run_locutus(["open", bob, "dev"])
+
+        bob_received = []
+        bob_err = []
+
+        def original_listener():
+            try:
+                res = self.run_locutus(["listen", bob])
+                if res.returncode == 0 and res.stdout.strip():
+                    bob_received.append(json.loads(res.stdout.strip()))
+                else:
+                    bob_err.append(f"Unexpected exit: rc={res.returncode}, err={res.stderr}")
+            except Exception as e:
+                bob_err.append(str(e))
+
+        t = threading.Thread(target=original_listener)
+        t.start()
+
+        # Give original listener time to claim the lock and block on BRPOP
+        time.sleep(0.5)
+        self.assertTrue(t.is_alive(), "Original listener should be actively waiting")
+
+        # Now Bob calls send with --listen (e.g. intermediate status dispatch)
+        # Because a listener is already active on Bob's inbox, this MUST NOT stack another listener
+        send_res = self.run_locutus([
+            "send",
+            "--to", alice,
+            "--from", bob,
+            "--subject", "Intermediate update",
+            "--body", "Processing chunk 1",
+            "--listen"
+        ])
+        # Assert send succeeded and returned immediately (code 0) without hanging
+        self.assertEqual(send_res.returncode, 0)
+        self.assertIn("Active listener already running", send_res.stderr)
+        self.assertIn("skipping duplicate listener", send_res.stderr)
+
+        # Alice drains and confirms she received the message
+        alice_drain = self.run_locutus(["drain", "1", alice])
+        self.assertEqual(alice_drain.returncode, 0)
+        a_msg = json.loads(alice_drain.stdout.strip())
+        self.assertEqual(a_msg["subject"], "Intermediate update")
+        self.assertEqual(a_msg["body"], "Processing chunk 1")
+
+        # Original listener is still alive and waiting
+        self.assertTrue(t.is_alive(), "Original listener should still be alive")
+
+        # Now Alice replies to Bob, which should wake the original listener cleanly
+        self.run_locutus([
+            "send",
+            "--to", bob,
+            "--from", alice,
+            "--subject", "Ack update",
+            "--body", "Proceed to chunk 2"
+        ])
+
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive(), "Original listener should have completed upon receiving message")
+        self.assertEqual(len(bob_err), 0, f"Errors: {bob_err}")
+        self.assertEqual(len(bob_received), 1)
+        self.assertEqual(bob_received[0]["subject"], "Ack update")
+        self.assertEqual(bob_received[0]["body"], "Proceed to chunk 2")
+
+        self.run_locutus(["close", alice])
+        self.run_locutus(["close", bob])
+
+    def test_40_standalone_listen_rejects_duplicate(self):
+        """Verify that running 'locutus listen' when one is already active fails with code 1, unless --force is used."""
+        carol = "carol_dup_test"
+        self.run_locutus(["open", carol, "dev"])
+
+        stop_event = threading.Event()
+        def background_listener():
+            self.run_locutus(["listen", carol, "10"])
+
+        t = threading.Thread(target=background_listener)
+        t.start()
+        time.sleep(0.5)
+
+        # Attempt duplicate standalone listen without --force
+        dup_res = self.run_locutus(["listen", carol, "2"])
+        self.assertNotEqual(dup_res.returncode, 0)
+        self.assertIn("Listener already active", dup_res.stderr)
+        self.assertIn("Refusing to start duplicate listener", dup_res.stderr)
+
+        # Standalone listen WITH --force bypasses the guard
+        force_res = self.run_locutus(["listen", carol, "1", "--force"])
+        self.assertEqual(force_res.returncode, 0)
+        self.assertEqual(force_res.stdout.strip(), "")
+
+        t.join(timeout=12)
+        self.run_locutus(["close", carol])
+
+    def test_41_stale_listener_self_healing(self):
+        """Verify that a stale listener lock with a dead local PID is detected, cleared, and self-healed."""
+        dave = "dave_stale_test"
+        self.run_locutus(["open", dave, "dev"])
+
+        # Determine hostname
+        import socket
+        host = socket.gethostname()
+
+        # Inject fake stale listener lock with non-existent PID 9999999
+        stale_record = json.dumps({"pid": 9999999, "host": host, "started": int(time.time())})
+        subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "SET", f"{TEST_PREFIX}listener:{dave}", stale_record, "EX", "150"],
+            capture_output=True,
+            check=True
+        )
+
+        # Run listen with 1s timeout - must detect dead PID, clear lock, and listen successfully
+        res = self.run_locutus(["listen", dave, "1"])
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout.strip(), "")
+
+        # Verify key was cleaned up upon exit
+        chk = subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "GET", f"{TEST_PREFIX}listener:{dave}"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        self.assertEqual(chk.stdout.strip(), "")
+
+        self.run_locutus(["close", dave])
+
 
 if __name__ == "__main__":
     unittest.main()

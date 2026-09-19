@@ -33,8 +33,10 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
        *Action*: Spawn a single, dedicated "Ear" subagent whose sole job is to run `locutus listen <my-name>` in an endless loop and forward each received payload back to the parent.
      - **Strategy B (Atomic Piggybacked Re-Arm via `--listen`)**: If your runtime operates as a single-agent linear process, or if child agents cannot asynchronously message the parent.
        *Action*: Launch the initial listener in the background (`locutus listen`). Whenever concluding a task or forwarding work, couple the re-arm directly to your reply/send command:
-       `locutus reply --to <sender> --subject "Re: <subj>" --body "<result>" --reply-to <id> --listen`
-       Locutus delivers the reply, logs status to `stderr`, and seamlessly transitions the same running process into blocking on your inbox, delivering pure JSON on `stdout` when the next message arrives.
+        `locutus reply --to <sender> --subject "Re: <subj>" --body "<result>" --reply-to <id> --listen`
+        Locutus delivers the reply, logs status to `stderr`, and seamlessly transitions the same running process into blocking on your inbox, delivering pure JSON on `stdout` when the next message arrives.
+     - **Singleton Listener Invariant & Anti-Stacking Guard**:
+       Locutus natively enforces a strict singleton listener per agent (`listener:<agent>`). If `--listen` is executed while an active listener is already running (e.g. an ongoing Ear subagent or prior background task), Locutus delivers the outbound message, logs to `stderr`, and **automatically skips listening** to prevent stacking duplicate background tasks or splitting inbox messages.
 6. **Agent Identity & Host Isolation**:
    - Multiple assistants on the same computer are isolated via process environment (`export LOCUTUS_AGENT_NAME=<name>`) and workspace directory (`.locutus.agent`).
    - `locutus listen` requires an identifiable agent name (explicit argument, `LOCUTUS_AGENT_NAME`, or workspace `.locutus.agent`).
@@ -50,7 +52,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | Action | Command |
 | :--- | :--- |
 | **Register & Announce** | `locutus open [name] [tags]` |
-| **Arm Background Listener** | `locutus listen [name] [timeout_sec]` |
+| **Arm Background Listener** | `locutus listen [name] [timeout_sec] [--force/-f]` |
 | **Send Direct Task (O2O)** | `locutus send --to <recipient> --subject "<subj>" --body "<body>" [--listen/-l]` |
 | **Send Reply** | `locutus reply --to <sender> --subject "Re: <subj>" --body "<body>" [--reply-to <msg_id>] [--listen/-l]` |
 | **Broadcast (O2M)** | `locutus broadcast --tags "<tags>" --subject "<subj>" --body "<body>"` |
@@ -131,6 +133,7 @@ In linear runtimes, assistants frequently drop background listeners during compl
    - In the exact same process, it seamlessly begins listening on your inbox.
    - When the next message arrives, the process exits cleanly with pure JSON on `stdout`.
    - Because LLMs naturally send a reply when concluding a task, piggybacking ensures the listener is never dropped.
+   - **Anti-Stacking Guarantee**: If an active listener is already running (e.g. from an earlier call or an Ear subagent), `--listen` automatically delivers the message and exits `0` immediately without spawning a duplicate listener.
 
 ### Step 3: Advanced Coordination Protocols
 

@@ -4,9 +4,31 @@
 
 import std/[
   os, osproc, strutils, json, openssl, sha1,
-  times, random, streams, options, base64, tables
+  times, random, streams, options, base64, tables, nativesockets
 ]
+when defined(posix):
+  import posix
 import config, resp
+
+proc isPidAlive*(pid: int): bool =
+  if pid <= 0: return false
+  when defined(posix):
+    if kill(Pid(pid), 0) == 0:
+      return true
+    return errno == EPERM
+  elif defined(windows):
+    let (outp, code) = execCmdEx("tasklist /FI \"PID eq " & $pid & "\" /NH")
+    return code == 0 and $pid in outp
+  else:
+    return true
+
+proc getHostNameStr*(): string =
+  try:
+    let h = getHostName()
+    if h.len > 0: return h
+  except Exception:
+    discard
+  return getEnv("HOSTNAME", getEnv("COMPUTERNAME", "localhost"))
 
 # OpenSSL C-bindings for native cryptographic operations
 type
@@ -336,6 +358,27 @@ proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string = "", fallback
     return if cfg.project.len > 0: cfg.project & "-worker" else: "worker"
   return ""
 
+proc getActiveListenerInfo*(cfg: LocutusConfig, name: string): tuple[active: bool, pid: int, host: string] =
+  let (val, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
+  if code != 0 or val.strip().len == 0 or val.strip() == "(nil)":
+    return (false, 0, "")
+  try:
+    let node = parseJson(val.strip())
+    let pid = node.getOrDefault("pid").getInt(0)
+    let host = node.getOrDefault("host").getStr("")
+    let currentHost = getHostNameStr()
+    if host == currentHost and pid > 0:
+      if not isPidAlive(pid):
+        # Stale lock: process is no longer alive on this machine
+        discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+        return (false, 0, "")
+      else:
+        return (true, pid, host)
+    else:
+      return (true, pid, host)
+  except Exception:
+    return (false, 0, "")
+
 # Core Operations
 proc doRegister*(cfg: LocutusConfig, name, tags: string, ttl: int = -1): string =
   let effectiveTtl = if ttl > 0: ttl elif cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
@@ -348,6 +391,7 @@ proc doUnregister*(cfg: LocutusConfig, name: string): string =
   let saved = loadCurrentAgent()
   if saved == name or name.len == 0:
     clearCurrentAgent()
+  discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
   return runLuaScript(cfg.redisUrl, unregisterLua, unregisterSha, [cfg.prefix, name])
 
 proc doTag*(cfg: LocutusConfig, name, action, tags: string): string =
@@ -536,6 +580,10 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
     if listenerAgent.len == 0:
       stderr.writeLine("Error: Cannot listen after send: no agent name identified.")
       quit(1)
+    let (alreadyListening, existingPid, existingHost) = getActiveListenerInfo(cfg, listenerAgent)
+    if alreadyListening:
+      stderr.writeLine("[LOCUTUS BUS] Message sent to " & toAgent & ". Active listener already running for " & listenerAgent & " (PID " & $existingPid & " on " & existingHost & "); skipping duplicate listener.")
+      return res
     stderr.writeLine("[LOCUTUS BUS] Message sent to " & toAgent & ". Now listening on inbox for " & listenerAgent & "...")
     doListen(cfg, listenerAgent, listenTimeoutSec)
 
@@ -561,78 +609,92 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
     discard execRedis(cfg.redisUrl, ["HSET", cfg.prefix & "agent:" & name, "tags", projTag])
     discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "tag:" & projTag, name])
 
+  # Register listener ownership in Redis
+  let myPid = getCurrentProcessId()
+  let myHost = getHostNameStr()
+  var listenerNode = newJObject()
+  listenerNode["pid"] = %myPid
+  listenerNode["host"] = %myHost
+  listenerNode["started"] = %(getTime().toUnix())
+  let listenerJson = $listenerNode
+  discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
+
   let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: cfg.listenTimeout
   let startTime = getTime().toUnix()
   var remaining = effectiveTimeout
 
-  while isForever or remaining > 0:
-    let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
-    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $waitSec])
-    if exitCode != 0:
-      stderr.writeLine("Redis error: " & outStr.strip())
-      quit(exitCode)
+  try:
+    while isForever or remaining > 0:
+      let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
+      var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $waitSec])
+      if exitCode != 0:
+        stderr.writeLine("Redis error: " & outStr.strip())
+        quit(exitCode)
 
-    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
-      # Internal chunk timeout: renew heartbeat silently in Redis
-      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
-      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
-      if not isForever:
-        let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, effectiveTimeout - elapsed)
-        if remaining == 0:
-          return # Silent zero-token exit
-      continue
+      if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+        # Internal chunk timeout: renew heartbeat & listener lock silently in Redis
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
+        if not isForever:
+          let elapsed = int(getTime().toUnix() - startTime)
+          remaining = max(0, effectiveTimeout - elapsed)
+          if remaining == 0:
+            return # Silent zero-token exit
+        continue
 
-    let firstNl = outStr.find('\n')
-    if firstNl < 0:
-      continue
+      let firstNl = outStr.find('\n')
+      if firstNl < 0:
+        continue
 
-    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+      let payloadStr = outStr[firstNl + 1 .. ^1].strip()
 
-    var parsed: JsonNode
-    try:
-      parsed = parseJson(payloadStr)
-    except JsonParsingError:
-      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from inbox")
-      if not isForever:
-        let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, effectiveTimeout - elapsed)
-      continue
-
-    let id = parsed.getOrDefault("id").getStr("")
-    let fromAgent = parsed.getOrDefault("from").getStr("")
-    let toAgent = parsed.getOrDefault("to").getStr("")
-    let msgType = parsed.getOrDefault("type").getStr("")
-    let subject = parsed.getOrDefault("subject").getStr("")
-    let body = parsed.getOrDefault("body").getStr("")
-    let ts = parsed.getOrDefault("timestamp").getStr("")
-    let sig = parsed.getOrDefault("sig").getStr("")
-    let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
-
-    # Validate HMAC
-    let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
-    if not verifyHmac(secret, canonical, sig):
-      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
-      if not isForever:
-        let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, effectiveTimeout - elapsed)
-      continue
-
-    # Authenticated! Decrypt if required
-    if isEncrypted:
+      var parsed: JsonNode
       try:
-        let decryptedBody = decryptAes(body, secret, cfg)
-        parsed["body"] = %decryptedBody
-        parsed["encrypted"] = %false
-      except ValueError as e:
-        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
+        parsed = parseJson(payloadStr)
+      except JsonParsingError:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from inbox")
         if not isForever:
           let elapsed = int(getTime().toUnix() - startTime)
           remaining = max(0, effectiveTimeout - elapsed)
         continue
 
-    echo $parsed
-    return
+      let id = parsed.getOrDefault("id").getStr("")
+      let fromAgent = parsed.getOrDefault("from").getStr("")
+      let toAgent = parsed.getOrDefault("to").getStr("")
+      let msgType = parsed.getOrDefault("type").getStr("")
+      let subject = parsed.getOrDefault("subject").getStr("")
+      let body = parsed.getOrDefault("body").getStr("")
+      let ts = parsed.getOrDefault("timestamp").getStr("")
+      let sig = parsed.getOrDefault("sig").getStr("")
+      let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+      # Validate HMAC
+      let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
+      if not verifyHmac(secret, canonical, sig):
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
+        if not isForever:
+          let elapsed = int(getTime().toUnix() - startTime)
+          remaining = max(0, effectiveTimeout - elapsed)
+        continue
+
+      # Authenticated! Decrypt if required
+      if isEncrypted:
+        try:
+          let decryptedBody = decryptAes(body, secret, cfg)
+          parsed["body"] = %decryptedBody
+          parsed["encrypted"] = %false
+        except ValueError as e:
+          stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
+          if not isForever:
+            let elapsed = int(getTime().toUnix() - startTime)
+            remaining = max(0, effectiveTimeout - elapsed)
+          continue
+
+      echo $parsed
+      return
+  finally:
+    discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
 
 proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): string =
   let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
@@ -933,7 +995,7 @@ proc main() =
     echo "Usage:"
     echo "  locutus version"
     echo "  locutus open [name] [tags]"
-    echo "  locutus listen [name] [timeout_sec]"
+    echo "  locutus listen [name] [timeout_sec] [--force/-f]"
     echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body> [--listen/-l]"
     echo "  locutus reply --to <agent> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]"
     echo "  locutus broadcast [--tags <tags>] --subject <subj> --body <body>"
@@ -1014,20 +1076,30 @@ proc main() =
   of "listen":
     var explicitName = ""
     var timeout = cfg.listenTimeout
-    if args.len > 1:
-      try:
-        timeout = parseInt(args[1])
-      except ValueError:
-        explicitName = args[1]
-    if args.len > 2:
-      try:
-        timeout = parseInt(args[2])
-      except ValueError:
-        discard
+    var forceListen = false
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a in ["--force", "-f"]:
+        forceListen = true
+      elif not a.startsWith("-"):
+        try:
+          timeout = parseInt(a)
+        except ValueError:
+          if explicitName == "": explicitName = a
+      inc i
+
     let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
     if name.len == 0:
       stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name ('locutus listen <name>'), or export LOCUTUS_AGENT_NAME=<name>.")
       quit(1)
+
+    if not forceListen:
+      let (alreadyListening, existingPid, existingHost) = getActiveListenerInfo(cfg, name)
+      if alreadyListening:
+        stderr.writeLine("Error: Listener already active for agent '" & name & "' (PID " & $existingPid & " on " & existingHost & "). Refusing to start duplicate listener.")
+        quit(1)
+
     doListen(cfg, name, timeout)
 
   of "send", "broadcast", "reply":
