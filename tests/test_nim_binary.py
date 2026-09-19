@@ -1518,6 +1518,52 @@ secret = "my_inline_secret_test_555"
 
         self.run_locutus(["close", agent])
 
+    def test_47_blackboard_kv_append_and_snapshot(self):
+        """Test 'locutus blackboard' (set, get, append, snapshot, delete, clear)."""
+        room = f"room_{int(time.time() * 1000)}"
+
+        # 1. Set key-value and get
+        res_set = self.run_locutus(["blackboard", "set", room, "spec", '{"version": 1, "arch": "arm64"}'])
+        self.assertEqual(res_set.returncode, 0)
+
+        res_get = self.run_locutus(["blackboard", "get", room, "spec"])
+        self.assertEqual(res_get.returncode, 0)
+        self.assertEqual(json.loads(res_get.stdout.strip()), {"version": 1, "arch": "arm64"})
+
+        # 2. Append to list and get list
+        res_app1 = self.run_locutus(["blackboard", "append", room, "tasks", "Task A"])
+        self.assertEqual(res_app1.returncode, 0)
+        res_app2 = self.run_locutus(["blackboard", "append", room, "tasks", "Task B"])
+        self.assertEqual(res_app2.returncode, 0)
+
+        res_get_list = self.run_locutus(["blackboard", "get", room, "tasks"])
+        self.assertEqual(res_get_list.returncode, 0)
+        self.assertEqual(json.loads(res_get_list.stdout.strip()), ["Task A", "Task B"])
+
+        # 3. Snapshot whole room
+        res_snap = self.run_locutus(["blackboard", "snapshot", room])
+        self.assertEqual(res_snap.returncode, 0)
+        snap = json.loads(res_snap.stdout.strip())
+        self.assertEqual(snap["room"], room)
+        self.assertEqual(snap["kv"]["spec"], '{"version": 1, "arch": "arm64"}')
+        self.assertEqual(snap["lists"]["tasks"], ["Task A", "Task B"])
+
+        # 4. Delete single key
+        res_del = self.run_locutus(["blackboard", "delete", room, "spec"])
+        self.assertEqual(res_del.returncode, 0)
+        res_get_after = self.run_locutus(["blackboard", "get", room, "spec"])
+        self.assertEqual(res_get_after.returncode, 0)
+        self.assertEqual(res_get_after.stdout.strip(), "")
+
+        # 5. Clear entire room
+        res_clear = self.run_locutus(["blackboard", "clear", room])
+        self.assertEqual(res_clear.returncode, 0)
+        res_snap_after = self.run_locutus(["blackboard", "snapshot", room])
+        self.assertEqual(res_snap_after.returncode, 0)
+        snap_empty = json.loads(res_snap_after.stdout.strip())
+        self.assertEqual(snap_empty["kv"], {})
+        self.assertEqual(snap_empty["lists"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

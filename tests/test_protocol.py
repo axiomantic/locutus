@@ -58,6 +58,7 @@ LUA_ENQUEUE = load_lua("enqueue.lua")
 LUA_SCATTER = load_lua("scatter.lua")
 LUA_CLAIM = load_lua("claim.lua")
 LUA_ACK = load_lua("ack.lua")
+LUA_BLACKBOARD = load_lua("blackboard.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -655,6 +656,26 @@ class TestRedisA2AProtocol(unittest.TestCase):
         # Lease should be gone
         score_after = run_redis("ZSCORE", f"{PREFIX}leases:{q}", "task_proto_1")
         self.assertEqual(score_after, "")
+
+    def test_22_blackboard_lua_protocol(self):
+        """Test blackboard.lua via Redis EVAL."""
+        room = f"proto_room_{int(time.time() * 1000)}"
+        run_eval(LUA_BLACKBOARD, 0, PREFIX, "set", room, "author", "alice", "300")
+        val = run_eval(LUA_BLACKBOARD, 0, PREFIX, "get", room, "author", "", "300")
+        self.assertEqual(val, "alice")
+
+        run_eval(LUA_BLACKBOARD, 0, PREFIX, "append", room, "notes", "Note 1", "300")
+        run_eval(LUA_BLACKBOARD, 0, PREFIX, "append", room, "notes", "Note 2", "300")
+        notes_json = run_eval(LUA_BLACKBOARD, 0, PREFIX, "get", room, "notes", "", "300")
+        self.assertEqual(json.loads(notes_json), ["Note 1", "Note 2"])
+
+        snap_json = run_eval(LUA_BLACKBOARD, 0, PREFIX, "snapshot", room, "", "", "300")
+        snap = json.loads(snap_json)
+        self.assertEqual(snap["kv"]["author"], "alice")
+        self.assertEqual(snap["lists"]["notes"], ["Note 1", "Note 2"])
+
+        # Clean up
+        run_eval(LUA_BLACKBOARD, 0, PREFIX, "clear", room, "", "", "300")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory across roundtable brainstorming sessions, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'roundtable memory', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -65,6 +65,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec]` |
 | **Reliable Task Claim** | `locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]` |
 | **Acknowledge Task** | `locutus ack <queue_name> <task_id>` |
+| **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|append\|snapshot\|delete\|clear> <room> [key] [val]` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -302,6 +303,20 @@ payload=$(echo "$task" | jq -r '.body')
 locutus ack batch_pipeline "$task_id"
 
 # Note: If the worker crashes mid-task, the lease expires after 120s and is automatically returned to the queue (or moved to dlq:batch_pipeline after 3 failed attempts).
+```
+
+### Playbook 9: Shared Blackboard & Roundtable Scratchpad
+*Goal: Share persistent design specs and append idea logs without re-transmitting large contexts over chat.*
+```bash
+# Set shared architecture specification in room 'brainstorm':
+locutus blackboard set brainstorm arch_spec '{"runtime": "nim", "crypto": "openssl_evp"}'
+
+# Append ideas or action items to a shared list:
+locutus blackboard append brainstorm ideas "Idea 1: Add monotonic fencing tokens to mutex locks"
+locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline engine"
+
+# Dump entire room scratchpad as clean structured JSON:
+snapshot=$(locutus blackboard snapshot brainstorm)
 ```
 
 ---

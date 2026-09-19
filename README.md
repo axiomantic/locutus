@@ -155,6 +155,19 @@ task=$(locutus claim render_jobs 30 --lease 120)
 locutus ack render_jobs <task_id>
 ```
 
+#### Shared Blackboard / Scratchpad Memory (`locutus blackboard`)
+Stop wasting tokens re-transmitting large files, specs, or conversational state across multi-turn chats. `locutus blackboard` provides room-scoped shared key-value and append memory in Redis with single-call JSON snapshots:
+```bash
+# Set shared architecture state:
+locutus blackboard set room1 spec '{"model": "gpt-4o", "temperature": 0.2}'
+
+# Append notes or logs to a shared list:
+locutus blackboard append room1 action_items "Audit green mirage"
+
+# Dump entire room state as structured JSON:
+locutus blackboard snapshot room1
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -261,6 +274,20 @@ task_id=$(echo "$task" | jq -r '.id')
 
 # 3. Confirm completion and release lease:
 locutus ack batch_pipeline "$task_id"
+```
+
+### 7. Shared Blackboard & Roundtable Scratchpad
+Share persistent specs and append ideas across agents without context ballooning:
+```bash
+# Set shared architecture specification:
+locutus blackboard set brainstorm arch_spec '{"runtime": "nim", "crypto": "openssl_evp"}'
+
+# Append ideas:
+locutus blackboard append brainstorm ideas "Idea 1: Add monotonic fencing tokens to mutex locks"
+locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline engine"
+
+# Take room snapshot:
+locutus blackboard snapshot brainstorm
 ```
 
 ---

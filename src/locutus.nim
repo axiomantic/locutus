@@ -69,6 +69,7 @@ const
   scatterLua*    = staticRead("../scripts/scatter.lua")
   claimLua*      = staticRead("../scripts/claim.lua")
   ackLua*        = staticRead("../scripts/ack.lua")
+  blackboardLua* = staticRead("../scripts/blackboard.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -91,6 +92,7 @@ let
   scatterSha*    = computeSha1(scatterLua)
   claimSha*      = computeSha1(claimLua)
   ackSha*        = computeSha1(ackLua)
+  blackboardSha* = computeSha1(blackboardLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -951,6 +953,13 @@ proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int =
     stderr.writeLine("Warning: Task " & taskId & " not found or already acknowledged.")
   return res
 
+proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", val: string = ""): string =
+  let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
+  let res = runLuaScript(cfg.redisUrl, blackboardLua, blackboardSha, [cfg.prefix, action, room, key, val, $effectiveTtl])
+  if res == "(nil)":
+    return ""
+  return res.strip()
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1243,6 +1252,7 @@ proc main() =
     echo "  locutus work <queue_name> [timeout_sec]"
     echo "  locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]"
     echo "  locutus ack <queue_name> <task_id>"
+    echo "  locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -1688,6 +1698,52 @@ proc main() =
     let queueName = args[1]
     let taskId = args[2]
     discard doAck(cfg, queueName, taskId)
+
+  of "blackboard":
+    if args.len < 3:
+      stderr.writeLine("Usage: locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]")
+      quit(1)
+    let action = args[1].toLowerAscii
+    let room = args[2]
+    let key = if args.len > 3: args[3] else: ""
+    let val = if args.len > 4: args[4] else: ""
+
+    case action
+    of "set":
+      if key.len == 0 or val.len == 0:
+        stderr.writeLine("Usage: locutus blackboard set <room> <key> <json_value>")
+        quit(1)
+      let res = doBlackboard(cfg, "set", room, key, val)
+      echo res
+    of "get":
+      if key.len == 0:
+        stderr.writeLine("Usage: locutus blackboard get <room> <key>")
+        quit(1)
+      let res = doBlackboard(cfg, "get", room, key)
+      if res.len > 0:
+        echo res
+    of "append":
+      if key.len == 0 or val.len == 0:
+        stderr.writeLine("Usage: locutus blackboard append <room> <list_key> <entry>")
+        quit(1)
+      let res = doBlackboard(cfg, "append", room, key, val)
+      echo res
+    of "snapshot":
+      let res = doBlackboard(cfg, "snapshot", room)
+      echo res
+    of "delete", "del":
+      if key.len == 0:
+        stderr.writeLine("Usage: locutus blackboard delete <room> <key>")
+        quit(1)
+      let res = doBlackboard(cfg, "delete", room, key)
+      echo res
+    of "clear":
+      let res = doBlackboard(cfg, "clear", room)
+      echo res
+    else:
+      stderr.writeLine("Unknown blackboard action: " & action)
+      stderr.writeLine("Usage: locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]")
+      quit(1)
 
   of "status":
     if args.len < 2:
