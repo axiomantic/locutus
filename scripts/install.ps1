@@ -36,7 +36,7 @@ if ($Uninstall) {
     # A. Remove Skills
     Write-Host "Checking for installed Locutus AI agent skills..." -ForegroundColor Yellow
     if (Get-Command npx -ErrorAction SilentlyContinue) {
-        try { & npx -y skills remove locutus -g -a '*' -y 2>$null } catch {}
+        try { & npx -y skills remove locutus -g -y 2>$null } catch {}
     }
     if (Get-Command skilz -ErrorAction SilentlyContinue) {
         try { & skilz -y remove locutus 2>$null } catch {}

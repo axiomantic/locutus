@@ -26,7 +26,7 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" || "${1:-}" == "-u" ]
   # A. Remove Skills
   echo "Checking for installed Locutus AI agent skills..."
   if command -v npx >/dev/null 2>&1; then
-    npx -y skills remove locutus -g -a '*' -y 2>/dev/null || true
+    npx -y skills remove locutus -g -y 2>/dev/null || true
   fi
   if command -v skilz >/dev/null 2>&1; then
     skilz -y remove locutus 2>/dev/null || true
@@ -118,7 +118,7 @@ echo "Platform: ${OS}-${ARCH}"
 if [ -z "${LOCUTUS_VERSION:-}" ]; then
   echo "Resolving latest release from GitHub..."
   LATEST_JSON=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)
-  VERSION=$(echo "${LATEST_JSON}" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+  VERSION=$(echo "${LATEST_JSON}" | (grep '"tag_name":' || true) | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
   if [ -z "${VERSION}" ]; then
     VERSION="v1.0.0"
   else
