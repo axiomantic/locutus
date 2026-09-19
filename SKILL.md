@@ -23,10 +23,13 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
    - All messages require valid HMAC-SHA256 signatures derived from `~/.config/locutus/secret` (0600 mode).
    - `locutus listen` drops unauthenticated, forged, or tampered payloads at the process boundary before reaching stdout. The assistant never receives malicious prompts into its context window.
    - Optional E2EE: Setting `LOCUTUS_ENCRYPT=1` encrypts task bodies via OpenSSL AES-256-CBC PBKDF2 across Redis.
-5. **Drain-Execute-Rearm Discipline**:
-   - `locutus listen 90` blocks until a message arrives or 90s expires.
-   - On timeout: `locutus` outputs `(nil)`. Refresh heartbeat and re-arm.
-   - On message: execute task, send reply, and re-arm `locutus listen 90` in the *same turn*.
+5. **Continuous Ear Invariant (Immediate Hot Re-Arm)**:
+   - Once registered (`locutus open`), the agent MUST maintain an active background listener until explicitly closed via `locutus close`.
+   - On wakeup (whether timeout `(nil)` OR incoming message payload): **re-arm `locutus listen 90` as a background task IMMEDIATELY as your first action**.
+   - NEVER defer re-arming until after task execution or reply dispatch. Real task execution takes multiple tool calls and steps; deferring leaves the assistant deaf on the bus during active work.
+   - Order of operations on message receipt:
+     `Wakeup` -> `1. Immediately launch locutus listen 90 in background` -> `2. Parse & execute work` -> `3. Send reply`.
+   - **Turn-End Invariant**: Unless `locutus close` was commanded, NEVER conclude a turn without an active `locutus listen` background task running.
 6. **Agent Identity & Host Isolation**:
    - Multiple assistants on the same computer are isolated via process environment (`export LOCUTUS_AGENT_NAME=<name>`) and workspace directory (`.locutus.agent`).
    - `locutus listen` requires an identifiable agent name (explicit argument, `LOCUTUS_AGENT_NAME`, or workspace `.locutus.agent`).
@@ -78,29 +81,28 @@ locutus open my-agent-1 "backend,qa"
 > export LOCUTUS_AGENT_NAME="my-agent-1"
 > ```
 
-### Step 2: Arm the Secure Background Listener
+### Step 2: Arm the Secure Background Listener (Continuous Ear Invariant)
 Launch `locutus listen` as a background command:
 ```bash
 locutus listen 90
 ```
 - In assistants with background task notifications (Claude Code, Antigravity): stop calling tools and wait for wakeup notification.
-- **Handling Listener Output**:
-  - **Output is `(nil)` (90s Timeout)**:
-    Re-arm immediately:
-    ```bash
-    locutus listen 90
-    ```
-  - **Output contains JSON message**:
-    1. Parse JSON payload (`id`, `from`, `subject`, `body`).
-    2. Perform requested work (run tests, edit files, research).
-    3. Send unicast reply back to `from`:
-       ```bash
-       locutus send --to "<from>" --type reply --subject "Re: <subject>" --body "<result>" --reply-to "<id>"
-       ```
-    4. **Re-arm the listener in the same turn** before concluding:
-       ```bash
-       locutus listen 90
-       ```
+
+#### Continuous Ear Invariant (Unbreakable Listener Loop)
+Once registered, the assistant MUST keep an active background listener running at all times until `locutus close` is requested:
+1. **Immediate Hot Re-Arm (First Action on Wakeup)**:
+   Whenever `locutus listen` returns (whether `(nil)` timeout OR an incoming message):
+   **Re-arm `locutus listen 90` in the background IMMEDIATELY as your very first tool call.**
+   ```bash
+   locutus listen 90
+   ```
+   Do NOT defer re-arming until after executing the work or sending the reply. Real task execution requires multiple tool calls and steps; deferring re-arm leaves the assistant deaf to cancellation requests, urgent tasks, or bus updates.
+2. **Order of Operations on Message Receipt**:
+   `Wakeup` -> `[1. Re-arm locutus listen 90 in background]` -> `[2. Parse payload & execute work]` -> `[3. Send reply]`
+3. **Turn-End Invariant**:
+   - Unless `locutus close` was explicitly commanded by the user, **NEVER conclude a turn without an active `locutus listen` background task running**.
+   - If a listener timed out with `(nil)`: the new background listener was already re-armed in step 1; simply stop calling tools and return to standby.
+   - If a message arrived: execute the task, send reply (`locutus send --to "<from>" --type reply --subject "Re: <subject>" --body "<result>" --reply-to "<id>"`), and conclude. The background listener is already actively waiting for the next message.
 
 ### Step 3: Advanced Coordination Protocols
 
