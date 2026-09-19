@@ -1865,6 +1865,55 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_st_raw.returncode, 0)
         self.assertEqual(res_st_raw.stdout.strip(), "completed")
 
+    def test_53_cluster_sweep(self):
+        """Test cluster health watchdog and sweeper ('locutus sweep')."""
+        dead_bot = f"dead_sweep_{int(time.time() * 1000)}"
+        stale_listener_bot = f"stale_listen_{int(time.time() * 1000)}"
+
+        import socket
+        host = socket.gethostname()
+
+        # 1. Inject dead agent (in active_agents without heartbeat)
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "SADD", f"{TEST_PREFIX}active_agents", dead_bot], check=True)
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "HSET", f"{TEST_PREFIX}agents", dead_bot, "{}"], check=True)
+
+        # 2. Inject stale listener with dead PID 9999999 on this host
+        stale_rec = json.dumps({"pid": 9999999, "host": host, "started": int(time.time())})
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "SET", f"{TEST_PREFIX}listener:{stale_listener_bot}", stale_rec, "EX", "120"], check=True)
+
+        # 3. Dry run
+        res_dry = self.run_locutus(["sweep", "--dry-run"])
+        self.assertEqual(res_dry.returncode, 0)
+        dry_data = json.loads(res_dry.stdout.strip())
+        self.assertTrue(dry_data["dry_run"])
+        self.assertIn(dead_bot, dry_data["pruned_agents"])
+        self.assertIn(stale_listener_bot, dry_data["pruned_listeners"])
+
+        # Confirm they still exist after dry run
+        chk_mem = subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", f"{TEST_PREFIX}active_agents", dead_bot], capture_output=True, text=True, check=True)
+        self.assertEqual(chk_mem.stdout.strip(), "1")
+        chk_lis = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", f"{TEST_PREFIX}listener:{stale_listener_bot}"], capture_output=True, text=True, check=True)
+        self.assertEqual(chk_lis.stdout.strip(), "1")
+
+        # 4. Actual sweep
+        res_sweep = self.run_locutus(["sweep"])
+        self.assertEqual(res_sweep.returncode, 0)
+        sweep_data = json.loads(res_sweep.stdout.strip())
+        self.assertFalse(sweep_data["dry_run"])
+        self.assertIn(dead_bot, sweep_data["pruned_agents"])
+        self.assertIn(stale_listener_bot, sweep_data["pruned_listeners"])
+
+        # Confirm they are pruned from Redis
+        chk_mem_after = subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", f"{TEST_PREFIX}active_agents", dead_bot], capture_output=True, text=True, check=True)
+        self.assertEqual(chk_mem_after.stdout.strip(), "0")
+        chk_lis_after = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", f"{TEST_PREFIX}listener:{stale_listener_bot}"], capture_output=True, text=True, check=True)
+        self.assertEqual(chk_lis_after.stdout.strip(), "0")
+
+        # 5. Sweep with --raw produces clean summary line
+        res_raw = self.run_locutus(["sweep", "--raw"])
+        self.assertEqual(res_raw.returncode, 0)
+        self.assertIn("Pruned", res_raw.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

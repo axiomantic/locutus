@@ -75,6 +75,7 @@ const
   ballotLua*     = staticRead("../scripts/ballot.lua")
   leaderLua*     = staticRead("../scripts/leader.lua")
   workflowLua*   = staticRead("../scripts/workflow.lua")
+  sweepLua*      = staticRead("../scripts/sweep.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -103,6 +104,7 @@ let
   ballotSha*     = computeSha1(ballotLua)
   leaderSha*     = computeSha1(leaderLua)
   workflowSha*   = computeSha1(workflowLua)
+  sweepSha*      = computeSha1(sweepLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -1188,6 +1190,53 @@ proc doWorkflowStatus*(cfg: LocutusConfig, flowId: string, rawOutput: bool = fal
   else:
     echo res
 
+proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false) =
+  let action = if dryRun: "audit" else: "prune"
+  let dryRunArg = if dryRun: "1" else: "0"
+  let res = runLuaScript(cfg.redisUrl, sweepLua, sweepSha, [cfg.prefix, action, dryRunArg])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+
+  var prunedAgents: seq[string] = @[]
+  var prunedListeners: seq[string] = @[]
+  let currentHost = getHostNameStr()
+
+  try:
+    let n = parseJson(res)
+    if n.hasKey("dead_agents"):
+      for a in n["dead_agents"]:
+        prunedAgents.add(a.getStr())
+    if n.hasKey("listeners"):
+      for l in n["listeners"]:
+        let agent = l["agent"].getStr()
+        let lKey = l["key"].getStr()
+        let dataStr = l["data"].getStr()
+        if dataStr.len > 0:
+          try:
+            let lockData = parseJson(dataStr)
+            let host = lockData.getOrDefault("host").getStr()
+            let pid = lockData.getOrDefault("pid").getInt()
+            if host == currentHost and pid > 0 and not isPidAlive(pid):
+              prunedListeners.add(agent)
+              if not dryRun:
+                discard execRedis(cfg.redisUrl, @["DEL", lKey])
+          except CatchableError:
+            discard
+  except CatchableError as e:
+    stderr.writeLine("Error parsing sweep results: " & e.msg)
+    quit(1)
+
+  if rawOutput:
+    echo "Pruned " & $prunedAgents.len & " dead agents, " & $prunedListeners.len & " stale listeners."
+  else:
+    var outObj = %*{
+      "pruned_agents": %prunedAgents,
+      "pruned_listeners": %prunedListeners,
+      "dry_run": %dryRun
+    }
+    echo $outObj
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1492,6 +1541,7 @@ proc main() =
     echo "  locutus pub <channel> <message>"
     echo "  locutus sub <channel> [timeout_sec]"
     echo "  locutus who [filter_tag]"
+    echo "  locutus sweep [--dry-run] [--raw]"
     echo "  locutus tag <add|remove|set> <tags> [name]"
     echo "  locutus drain [count] [name]"
     echo "  locutus close [name]"
@@ -2311,6 +2361,17 @@ proc main() =
       stderr.writeLine("Unknown workflow action: " & action)
       stderr.writeLine("Usage: locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]")
       quit(1)
+
+  of "sweep":
+    var dryRun = false
+    var rawOutput = false
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a == "--dry-run" or a == "-n": dryRun = true
+      elif a == "--raw": rawOutput = true
+      inc i
+    doSweep(cfg, dryRun, rawOutput)
 
   of "status":
     if args.len < 2:

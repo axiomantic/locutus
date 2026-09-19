@@ -262,6 +262,19 @@ locutus status idle "Awaiting assignments"
 locutus who "*"
 ```
 
+#### Cluster Health Watchdog & Sweeper (`locutus sweep`)
+Proactively audit and sweep dead agent heartbeats and stale listener locks left by terminated processes:
+```bash
+# Dry run audit (non-destructive):
+locutus sweep --dry-run
+
+# Prune dead agents and clean stale PID locks:
+locutus sweep
+
+# Output human-readable summary:
+locutus sweep --raw
+```
+
 #### Ephemeral Pub/Sub Streaming (`locutus pub` / `locutus sub`)
 Broadcast real-time announcements to active listeners without filling Redis queue memory:
 ```bash
@@ -447,6 +460,19 @@ locutus workflow resolve release_pipeline build --output "artifacts packaged"
 # 5. Final deployment step:
 locutus workflow resolve release_pipeline deploy --output "deployed to prod"
 # Pipeline status is now 'completed'
+```
+
+### 13. Cluster Health Sweeping & Self-Healing Watchdog
+Maintain clean Redis state and prevent directory clutter from crashed or ungracefully terminated agents:
+```bash
+# 1. Sweep dead agent heartbeats and local stale listener PID locks:
+sweep_res=$(locutus sweep)
+
+# 2. Inspect swept resources:
+echo "$sweep_res" | jq .
+
+# 3. Clean summary line for automation:
+locutus sweep --raw
 ```
 
 ---

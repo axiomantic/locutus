@@ -64,6 +64,7 @@ LUA_CANCEL = load_lua("cancel.lua")
 LUA_BALLOT = load_lua("ballot.lua")
 LUA_LEADER = load_lua("leader.lua")
 LUA_WORKFLOW = load_lua("workflow.lua")
+LUA_SWEEP = load_lua("sweep.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -834,6 +835,48 @@ class TestRedisA2AProtocol(unittest.TestCase):
         r4_json = run_eval(LUA_WORKFLOW, 0, PREFIX, "resolve", flow_id, "deploy")
         r4 = json.loads(r4_json)
         self.assertEqual(r4["status"], "completed")
+
+    def test_28_sweep_lua_protocol(self):
+        """Test sweep.lua auditing and pruning expired heartbeats."""
+        dead_agent = f"dead_bot_{int(time.time() * 1000)}"
+        alive_agent = f"alive_bot_{int(time.time() * 1000)}"
+
+        # 1. Register both agents
+        run_redis("SADD", f"{PREFIX}active_agents", dead_agent)
+        run_redis("HSET", f"{PREFIX}agents", dead_agent, "{}")
+        run_redis("SADD", f"{PREFIX}active_agents", alive_agent)
+        run_redis("HSET", f"{PREFIX}agents", alive_agent, "{}")
+        # Give alive_agent a heartbeat key with 60s TTL
+        run_redis("SET", f"{PREFIX}heartbeat:{alive_agent}", "1", "EX", "60")
+        # dead_agent has NO heartbeat key
+
+        # 2. Dry run audit: should detect dead_agent but NOT prune it
+        dry_res = run_eval(LUA_SWEEP, 0, PREFIX, "audit", "1")
+        dry_data = json.loads(dry_res)
+        self.assertIn(dead_agent, dry_data["dead_agents"])
+        self.assertNotIn(alive_agent, dry_data["dead_agents"])
+
+        # Confirm dead_agent is still in active_agents after dry run
+        is_member = run_redis("SISMEMBER", f"{PREFIX}active_agents", dead_agent)
+        self.assertEqual(is_member.strip(), "1")
+
+        # 3. Prune run: should prune dead_agent from active_agents and agents hash
+        prune_res = run_eval(LUA_SWEEP, 0, PREFIX, "prune", "0")
+        prune_data = json.loads(prune_res)
+        self.assertIn(dead_agent, prune_data["dead_agents"])
+
+        # Confirm dead_agent is removed
+        is_member_after = run_redis("SISMEMBER", f"{PREFIX}active_agents", dead_agent)
+        self.assertEqual(is_member_after.strip(), "0")
+
+        # Confirm alive_agent is untouched
+        is_alive_member = run_redis("SISMEMBER", f"{PREFIX}active_agents", alive_agent)
+        self.assertEqual(is_alive_member.strip(), "1")
+
+        # Cleanup
+        run_redis("SREM", f"{PREFIX}active_agents", alive_agent)
+        run_redis("HDEL", f"{PREFIX}agents", alive_agent)
+        run_redis("DEL", f"{PREFIX}heartbeat:{alive_agent}")
 
 
 if __name__ == "__main__":
