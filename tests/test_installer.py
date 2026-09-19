@@ -190,8 +190,10 @@ class TestInstallerAndUninstaller(unittest.TestCase):
             timeout=30,
         )
         if res.returncode == 0:
-            self.assertIn("Found 1 skill", res.stdout)
-            self.assertIn("locutus", res.stdout)
+            import re
+            clean_output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', res.stdout)
+            self.assertIn("Found 1 skill", clean_output)
+            self.assertIn("locutus", clean_output)
 
     @unittest.skipUnless(os.name == "nt", "Windows install.ps1 test")
     def test_06_install_ps1_windows(self):

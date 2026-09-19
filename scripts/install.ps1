@@ -133,6 +133,15 @@ function Build-FromSource {
 
     Write-Host "Using Nim: $((nim --version)[0])" -ForegroundColor Green
 
+    if (Test-Path "src\locutus.nim") {
+        Write-Host "Compiling native Locutus binary from local source tree..." -ForegroundColor Green
+        if (-not (Test-Path $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        nim c -d:release --opt:speed -o:"$InstallDir\locutus.exe" src\locutus.nim
+        return
+    }
+
     $tempDir = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName())
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $srcZip = Join-Path $tempDir "source.zip"
@@ -198,16 +207,25 @@ function Install-Skills {
     # Option C: Direct fallback to standard assistant directories
     if (-not $skillInstalled) {
         Write-Host "Configuring skills directly for detected AI coding assistants..." -ForegroundColor Yellow
-        $skillUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/SKILL.md"
-        $specUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/references/wire_spec.md"
-        $tempSkillDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
-        New-Item -ItemType Directory -Path $tempSkillDir -Force | Out-Null
+        $localSkill = "skills\locutus\SKILL.md"
+        $localSpec = "skills\locutus\references\wire_spec.md"
+        $tempSkillDir = $null
 
-        try {
+        if (Test-Path $localSkill) {
+            $skillFile = (Resolve-Path $localSkill).Path
+            $specFile = if (Test-Path $localSpec) { (Resolve-Path $localSpec).Path } else { $null }
+        } else {
+            $skillUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/SKILL.md"
+            $specUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/references/wire_spec.md"
+            $tempSkillDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+            New-Item -ItemType Directory -Path $tempSkillDir -Force | Out-Null
             $skillFile = Join-Path $tempSkillDir "SKILL.md"
             $specFile = Join-Path $tempSkillDir "wire_spec.md"
-            Invoke-WebRequest -Uri $skillUrl -OutFile $skillFile -UseBasicParsing
-            Invoke-WebRequest -Uri $specUrl -OutFile $specFile -UseBasicParsing -ErrorAction SilentlyContinue
+            try {
+                Invoke-WebRequest -Uri $skillUrl -OutFile $skillFile -UseBasicParsing
+                Invoke-WebRequest -Uri $specUrl -OutFile $specFile -UseBasicParsing -ErrorAction SilentlyContinue
+            } catch {}
+        }
 
             $candidateDirs = @(
                 "$env:USERPROFILE\.claude\skills\locutus",
@@ -232,7 +250,9 @@ function Install-Skills {
         }
         catch {}
         finally {
-            Remove-Item -Path $tempSkillDir -Recurse -Force -ErrorAction SilentlyContinue
+            if ($tempSkillDir -and (Test-Path $tempSkillDir)) {
+                Remove-Item -Path $tempSkillDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
