@@ -1,82 +1,169 @@
-# Locutus: Zero-Glue Redis Agent-to-Agent (A2A) Bus
+# Locutus: Zero-Glue Redis Inter-Assistant Communication Bus
 
-Locutus provides a **100% prompt-based** inter-assistant communication protocol over Redis. It requires **no external JavaScript, Python packages, background daemons, or glue code**.
+Locutus provides a **100% prompt-based** inter-assistant communication protocol and execution engine over Redis. It requires **no external JavaScript, Python daemons, background processes, or glue code**.
 
-It enables multiple coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, Copilot, etc.) across different terminals, workspaces, or machines to coordinate work in real time.
-
----
-
-## Features
-
-- **100% Prompt-Driven**: Self-contained instructions with embedded Lua scripts executed directly via standard `redis-cli`.
-- **Namespaced & Non-Destructive**: All keys use a configurable prefix (default `a2a:`). Will not collide with existing Redis caches or databases.
-- **Zero-Token Idle Watcher**: Uses OS-level blocking `BRPOP` exit-chains. Idle sessions consume **0 CPU and 0 tokens** while waiting for work.
-- **Direct (O2O) & Multicast (O2M)**: Point-to-point tasks and group fan-out by tags (e.g. `@qa`, `@backend`, `@all`).
-- **Offline Backlog Delivery**: Messages waiting for offline or unregistered agents are queued in Redis and delivered as a batch upon startup.
-- **Automatic Dead-Agent Pruning**: Expired agent heartbeats are automatically pruned during multicast fan-out, preventing phantom queue memory leaks.
-- **Built-in Reply Threading**: Native `id`, `reply_to`, and `timestamp` fields for structured conversation flows.
+It enables multiple coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, etc.) across different terminals, projects, or machines to register, discover peers, coordinate work, and exchange tasks in real time over standard Redis primitives.
 
 ---
 
-## Quick Installation Across Assistants
+## Key Features
 
-### 1. Claude Code & Antigravity (Skill)
-Copy `SKILL.md` to your skills directory:
+- **100% Prompt-Driven with Embedded Lua**: Assistants execute standard `redis-cli` commands that invoke pure, atomic Lua scripts in `scripts/`. No client-side glue code or state machines.
+- **Configurable Namespace Isolation**: All Redis keys use `$LOCUTUS_REDIS_PREFIX` (defaults to `locutus:`), preventing any conflict with existing Redis usage.
+- **Project Isolation & Native AND-Filter Multicast**:
+  - Every agent belongs to a project tag (`$LOCUTUS_PROJECT`, automatically derived from working directory basename).
+  - Multicasting across multiple tags uses native Redis `SINTER` (set intersection in C) as an **AND-filter** (e.g. `locutus,qa` delivers only to agents matching BOTH tags).
+  - Cluster-wide broadcast is explicitly reserved for `*` or `@all`.
+- **Zero-Token Idle Watcher**:
+  - Assistants block on `BRPOP ${LOCUTUS_REDIS_PREFIX}inbox:<my_name> 90`.
+  - Idle sessions consume **0 CPU and 0 LLM tokens** while waiting for work.
+  - The 90s listener timeout cadence doubles as the liveness heartbeat refresher (`SET ... EX 150`).
+- **Dynamic Tag Management**: Add, remove, or set agent tags on the fly without unregistering or dropping queued inbox messages (`scripts/tag.lua`).
+- **Offline Backlog Delivery**: Tasks sent to offline or disconnected agents queue safely in Redis (7-day default TTL) and are delivered in FIFO order via `scripts/drain.lua` upon reconnect.
+- **Automatic Dead-Agent Pruning**: Expired agent heartbeats are automatically pruned during multicast fan-out, eliminating dead-queue bloat.
+- **Dual-Mode Structured Sending**: Messages can be sent either as raw JSON or via structured arguments where Redis automatically generates the envelope using native `cjson.encode`.
+- **Operator Slash Command**: Built-in human-facing slash command `/locutus` (`open`, `send`, `broadcast`, `who`, `tag`, `close`).
+- **Rigorous Test Suite**: Deterministic unit tests, single-agent Ollama tool-calling tests, and multi-agent autonomous ping-pong tests with Pydantic schema validation.
+
+---
+
+## Architecture & Wire Format
+
+Every agent listens to exactly **one** primitive list: `${LOCUTUS_REDIS_PREFIX}inbox:<name>`.
+
+```
+                    ┌─────────────────────────┐
+                    │      Sender Agent       │
+                    └───────────┬─────────────┘
+                                │
+                 ┌──────────────┴──────────────┐
+                 │                             │
+          Direct (O2O)                  Multicast (O2M)
+          send_o2o.lua                   multicast.lua
+                 │                             │
+                 │                    SINTER Tag Intersection
+                 │                    (AND-Filter by Project)
+                 │                             │
+                 ▼                             ▼
+        ┌─────────────────┐           ┌─────────────────┐
+        │  inbox:<bob>    │           │  inbox:<alice>  │
+        └────────┬────────┘           └────────┬────────┘
+                 │                             │
+                 ▼                             ▼
+           BRPOP Worker                  BRPOP Worker
+```
+
+### Standard Message Envelope
+
+All messages adhere to the formal [`LocutusMessage`](tests/schema.py) schema:
+
+```json
+{
+  "id": "msg_1789777056_alice_83728",
+  "from": "alice",
+  "to": "bob",
+  "type": "task",
+  "reply_to": null,
+  "tags": ["locutus", "calc"],
+  "subject": "Compute Product",
+  "body": "Please compute 15 * 15",
+  "timestamp": "2026-09-19T00:17:36Z"
+}
+```
+
+Envelope types:
+- `task`: Action request expecting a reply.
+- `query`: Read-only data request.
+- `reply`: Unicast response threaded to `reply_to: <task_id>`.
+- `status`: Informational status broadcast.
+
+*See [`references/wire_spec.md`](references/wire_spec.md) for full protocol specifications.*
+
+---
+
+## Lua Scripts (`scripts/`)
+
+All server-side coordination is executed atomically via Lua scripts located in `scripts/`:
+
+| Script | Description | Primary Arguments |
+| :--- | :--- | :--- |
+| [`register.lua`](scripts/register.lua) | Atomically registers agent identity, indexes tags, sets heartbeat TTL. | `prefix, name, tags_csv, ttl_sec` |
+| [`send_o2o.lua`](scripts/send_o2o.lua) | Direct point-to-point inbox queuing with TTL. Supports raw JSON or structured parameters. | `prefix, recipient, type/json, from, subject, body, [tags], [reply_to], [id], [ts]` |
+| [`multicast.lua`](scripts/multicast.lua) | Fans out message using Redis `SINTER` AND-filter. Prunes expired dead agents. | `prefix, target_tags_csv, type/json, ...` |
+| [`tag.lua`](scripts/tag.lua) | Dynamically adds, removes, or sets tags without dropping inbox messages. | `prefix, name, action ("add"\|"remove"\|"set"), tags_csv` |
+| [`drain.lua`](scripts/drain.lua) | Atomic batch RPOP to drain offline backlog on startup/reconnect. | `prefix, name, max_count` |
+| [`directory.lua`](scripts/directory.lua) | Lists active agents, liveness status, and tags with optional project filter. | `prefix, [filter_tag]` |
+| [`unregister.lua`](scripts/unregister.lua) | Clean logout, tag set cleanup, and heartbeat removal. | `prefix, name` |
+
+---
+
+## Operator Slash Command (`/locutus`)
+
+The human operator can inspect and control the bus using `/locutus`:
+
 ```bash
-# Global skill directory
-mkdir -p ~/.gemini/config/skills/redis-a2a
-cp SKILL.md ~/.gemini/config/skills/redis-a2a/SKILL.md
+# Open connection and register
+/locutus open name=worker-1 tags=qa,frontend
 
-# Or project-level Claude skills
-mkdir -p .claude/skills/redis-a2a
-cp SKILL.md .claude/skills/redis-a2a/SKILL.md
+# View live agents in current project
+/locutus who
+
+# View all agents cluster-wide
+/locutus who all=true
+
+# Send a direct task
+/locutus send to=coder-1 subject="Fix test" body="pytest tests/test_auth.py failed"
+
+# Broadcast to project team with AND-filtering
+/locutus broadcast tags=qa,backend subject="Deploy Sync" body="Staging updated"
+
+# Dynamically add a tag
+/locutus tag add ticket-42
+
+# Gracefully unregister and disconnect
+/locutus close
 ```
 
-### 2. Cursor / Windsurf
-Append the content of `SKILL.md` to:
-- `.cursorrules` (in project root)
-- Or Cursor **System Prompts / Custom Rules**
+*See [`commands/locutus.md`](commands/locutus.md) for full command documentation.*
 
-### 3. Aider / CLI Assistants
-Add to your custom instructions file or invoke with:
+---
+
+## Installation & Setup
+
+### 1. Global Skill Installation (Antigravity & Claude Code)
 ```bash
-aider --read SKILL.md
+mkdir -p ~/.gemini/config/skills/locutus
+cp -r SKILL.md scripts references commands ~/.gemini/config/skills/locutus/
+```
+
+### 2. Environment Variables
+Locutus automatically resolves connection parameters in order of precedence:
+```bash
+export LOCUTUS_REDIS_URL="redis://127.0.0.1:6379"
+export LOCUTUS_REDIS_PREFIX="locutus:"
+export LOCUTUS_PROJECT="$(basename "$PWD")"
+export LOCUTUS_SCRIPTS_DIR="$(pwd)/scripts"
+```
+*(Backwards-compatible fallbacks `A2A_REDIS_URL`, `A2A_REDIS_PREFIX`, and `REDIS_URL` are fully supported).*
+
+---
+
+## Running the Test Suite
+
+A Python virtual environment with `pydantic` is used for validation:
+
+```bash
+# 1. Run all 12 protocol unit tests (deterministic, zero-token, live Redis):
+.venv/bin/python3 -m unittest tests/test_protocol.py
+
+# 2. Run single-agent autonomous Ollama test (validates LLM tool-calling + Pydantic schema):
+.venv/bin/python3 tests/test_ollama_agent.py
+
+# 3. Run multi-agent autonomous ping-pong integration test (Alice & Bob live interaction):
+.venv/bin/python3 tests/test_multi_agent_pingpong.py
 ```
 
 ---
 
-## Getting Started
-
-### 1. Set Redis URL & Prefix (Optional)
-Defaults to `redis://127.0.0.1:6379` and prefix `a2a:`. To override, set in your shell, `AGENTS.md`, `.env`, or `~/.redis_a2a_env`:
-```bash
-export A2A_REDIS_URL="redis://127.0.0.1:6379"
-export A2A_REDIS_PREFIX="a2a:"
-```
-
-### 2. Instruct Your Assistant
-Tell any assistant session:
-> *"Load the redis-a2a skill. Register as `coder-1` with tags `backend,ticket-104`, and arm your listener."*
-
-In another assistant session:
-> *"Load the redis-a2a skill. Check who is online and send a task to `coder-1` to run tests and report back."*
-
----
-
-## File Structure
-
-```
-.
-├── SKILL.md                 # Canonical prompt & protocol specification
-├── README.md                # Quickstart and cross-assistant usage guide
-├── scripts/                 # Single source of truth for pure Redis Lua scripts
-│   ├── register.lua         # Atomic registration, tag indexing, heartbeat
-│   ├── send_o2o.lua         # Direct point-to-point task queueing
-│   ├── multicast.lua        # Group fan-out with automatic dead-agent pruning
-│   ├── drain.lua            # Offline backlog batch draining
-│   ├── directory.lua        # Peer discovery and heartbeat status
-│   └── unregister.lua       # Clean logout and tag deregistration
-└── tests/
-    ├── test_protocol.py     # Deterministic unit test suite
-    └── test_ollama_agent.py # End-to-end Ollama tool-calling agent simulation
-```
+## License
+MIT License

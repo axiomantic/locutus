@@ -20,11 +20,11 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from tests.schema import A2AMessage
+from tests.schema import LocutusMessage, A2AMessage
 
-A2A_REDIS_URL = os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
-A2A_REDIS_PREFIX = os.environ.get("A2A_REDIS_PREFIX", os.environ.get("A2A_PREFIX", "a2a_test:"))
-PREFIX = A2A_REDIS_PREFIX
+LOCUTUS_REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379")))
+LOCUTUS_REDIS_PREFIX = os.environ.get("LOCUTUS_REDIS_PREFIX", os.environ.get("A2A_REDIS_PREFIX", "locutus_test:"))
+PREFIX = LOCUTUS_REDIS_PREFIX
 
 # Load Lua Scripts directly from scripts/ directory (Single Source of Truth)
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -40,14 +40,15 @@ LUA_MULTICAST = load_lua("multicast.lua")
 LUA_DRAIN = load_lua("drain.lua")
 LUA_DIRECTORY = load_lua("directory.lua")
 LUA_UNREGISTER = load_lua("unregister.lua")
+LUA_TAG = load_lua("tag.lua")
 
 def run_redis(*args):
-    cmd = ["redis-cli", "-u", A2A_REDIS_URL] + list(args)
+    cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
 def run_eval(script, numkeys, *args):
-    cmd = ["redis-cli", "-u", A2A_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
+    cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
@@ -288,6 +289,165 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:worker"))
         self.assertEqual(run_redis("EXISTS", f"{PREFIX}heartbeat:alice"), "0")
         self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:alice"), "0")
+
+    def test_09_multi_tag_and_filtering_with_project_isolation(self):
+        """Test multi-tag AND-filtering via SINTER ensuring project isolation and role targeting."""
+        # Setup 4 agents across two separate projects
+        # Project 'alpha'
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "alpha,backend,python", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "alpha,frontend,react", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "charlie", "alpha,backend,golang", "120")
+        # Project 'beta'
+        run_eval(LUA_REGISTER, 0, PREFIX, "dave", "beta,backend,python", "120")
+
+        # 1. Multicast within project 'alpha' to 'backend' (target: "alpha,backend")
+        # Should reach alice and charlie, but NOT bob (frontend) and NOT dave (project beta)
+        task_msg = json.dumps({
+            "id": "msg_alpha_backend_001",
+            "from": "lead_alpha",
+            "to": "@alpha,backend",
+            "type": "task",
+            "tags": ["alpha", "backend"],
+            "subject": "Alpha Backend Sync",
+            "body": "Check API schema.",
+            "timestamp": "2026-09-18T23:40:00Z"
+        })
+        delivered = run_eval(LUA_MULTICAST, 0, PREFIX, "alpha,backend", task_msg, "604800")
+        self.assertIn(delivered, ["2", "(integer) 2"])
+
+        # Bob (alpha,frontend) and Dave (beta,backend) must have 0 messages
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:bob"), "0")
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:dave"), "0")
+
+        # Alice and Charlie received it
+        alice_msg = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_msg.id, "msg_alpha_backend_001")
+        self.assertEqual(alice_msg.subject, "Alpha Backend Sync")
+
+        charlie_msg = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:charlie"))
+        self.assertEqual(charlie_msg.id, "msg_alpha_backend_001")
+        self.assertEqual(charlie_msg.subject, "Alpha Backend Sync")
+
+        # 2. Targeted multicast with 3 tags: "alpha,backend,python"
+        # Only Alice has all 3 tags!
+        py_msg = json.dumps({
+            "id": "msg_alpha_py_001",
+            "from": "lead_alpha",
+            "to": "@alpha,backend,python",
+            "type": "task",
+            "subject": "Python Specialist Task",
+            "body": "Refactor async handler.",
+            "timestamp": "2026-09-18T23:41:00Z"
+        })
+        delivered2 = run_eval(LUA_MULTICAST, 0, PREFIX, "alpha,backend,python", py_msg, "604800")
+        self.assertIn(delivered2, ["1", "(integer) 1"])
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:charlie"), "0")
+        alice_py = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_py.id, "msg_alpha_py_001")
+        self.assertEqual(alice_py.body, "Refactor async handler.")
+
+    def test_10_dynamic_tag_management(self):
+        """Test tag.lua: adding, removing, and setting tags dynamically without dropping inbox."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "alpha,worker", "120")
+
+        # Queue a pending task message for Alice BEFORE changing tags
+        pending_msg = json.dumps({
+            "id": "pending_001",
+            "from": "lead",
+            "to": "alice",
+            "type": "task",
+            "subject": "Pending Work",
+            "body": "Do not lose me during re-tagging!",
+            "timestamp": "2026-09-18T23:42:00Z"
+        })
+        run_eval(LUA_SEND_O2O, 0, PREFIX, "alice", pending_msg, "604800")
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:alice"), "1")
+
+        # 1. Add tags 'gpu,ml'
+        res_add = run_eval(LUA_TAG, 0, PREFIX, "alice", "add", "gpu,ml")
+        self.assertEqual(res_add, "alpha,gpu,ml,worker")
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:gpu"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:ml"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:alpha"))
+
+        # 2. Remove tag 'worker'
+        res_rem = run_eval(LUA_TAG, 0, PREFIX, "alice", "remove", "worker")
+        self.assertEqual(res_rem, "alpha,gpu,ml")
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:worker"))
+
+        # 3. Set tags to 'alpha,specialist'
+        res_set = run_eval(LUA_TAG, 0, PREFIX, "alice", "set", "alpha,specialist")
+        self.assertEqual(res_set, "alpha,specialist")
+        self.assertNotIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:gpu"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:specialist"))
+        self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:alpha"))
+
+        # 4. Crucial: verify Alice's pending message was NOT dropped or disturbed!
+        self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:alice"), "1")
+        preserved = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(preserved.id, "pending_001")
+        self.assertEqual(preserved.body, "Do not lose me during re-tagging!")
+
+    def test_11_team_directory_project_filtering(self):
+        """Test directory.lua: listing roster filtered by project vs cluster-wide."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "team_alpha,lead", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "team_alpha,dev", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "charlie", "team_beta,dev", "120")
+
+        # Filter by project 'team_alpha'
+        dir_alpha = run_eval(LUA_DIRECTORY, 0, PREFIX, "team_alpha")
+        self.assertIn("alice|1|team_alpha,lead", dir_alpha)
+        self.assertIn("bob|1|team_alpha,dev", dir_alpha)
+        self.assertNotIn("charlie", dir_alpha)
+
+        # Filter by project 'team_beta'
+        dir_beta = run_eval(LUA_DIRECTORY, 0, PREFIX, "team_beta")
+        self.assertIn("charlie|1|team_beta,dev", dir_beta)
+        self.assertNotIn("alice", dir_beta)
+        self.assertNotIn("bob", dir_beta)
+
+        # Cluster-wide query ('*' or empty)
+        dir_all = run_eval(LUA_DIRECTORY, 0, PREFIX, "*")
+        self.assertIn("alice|1|team_alpha,lead", dir_all)
+        self.assertIn("bob|1|team_alpha,dev", dir_all)
+        self.assertIn("charlie|1|team_beta,dev", dir_all)
+
+    def test_12_structured_field_invocation_and_cjson_encoding(self):
+        """Test sending messages via individual field arguments with server-side cjson encoding."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "locutus,worker", "120")
+        run_eval(LUA_REGISTER, 0, PREFIX, "bob", "locutus,qa", "120")
+
+        # 1. Send O2O with field arguments (no JSON quoting in shell!)
+        ts = "2026-09-18T23:50:00Z"
+        res = run_eval(
+            LUA_SEND_O2O, 0,
+            PREFIX, "bob", "task", "alice", "Run Tests", "pytest tests/", "locutus", "", "", ts
+        )
+        self.assertEqual(res, "OK")
+
+        # Verify Bob received perfectly formed JSON validated by Pydantic
+        raw_msg = run_redis("RPOP", f"{PREFIX}inbox:bob")
+        msg = LocutusMessage.model_validate_json(raw_msg)
+        self.assertEqual(msg.from_agent, "alice")
+        self.assertEqual(msg.to_agent, "bob")
+        self.assertEqual(msg.type, "task")
+        self.assertEqual(msg.subject, "Run Tests")
+        self.assertEqual(msg.body, "pytest tests/")
+        self.assertEqual(msg.tags, ["locutus"])
+        self.assertEqual(msg.timestamp, ts)
+        self.assertIsNone(msg.reply_to)
+
+        # 2. Multicast with field arguments
+        res_mcast = run_eval(
+            LUA_MULTICAST, 0,
+            PREFIX, "locutus", "status", "lead", "Build Passed", "All tests green.", "locutus", "", "", ts
+        )
+        self.assertIn(res_mcast, ["2", "(integer) 2"])
+
+        # Alice and Bob received it
+        alice_mcast = LocutusMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_mcast.subject, "Build Passed")
+        self.assertEqual(alice_mcast.body, "All tests green.")
 
 
 if __name__ == "__main__":

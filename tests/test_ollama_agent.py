@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Integration test using a local Ollama model to test the Redis A2A Skill end-to-end.
+Integration test using a local Ollama model to test the Redis Locutus Skill end-to-end.
 Tests that a local LLM given SKILL.md and a bash tool can:
-1. Register on Redis with tags
-2. Send a structured JSON task message via LUA_SEND_O2O
+1. Register on Redis with tags using register.lua
+2. Send a structured JSON task message via send_o2o.lua
+3. Validate envelope and content strictly via Pydantic LocutusMessage
 """
 
 import json
@@ -14,15 +15,22 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from tests.schema import A2AMessage
+from tests.schema import LocutusMessage, A2AMessage
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
-SKILL_PATH = os.path.expanduser("/Users/eek/Development/locutus/SKILL.md")
-
+SKILL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "SKILL.md"))
 with open(SKILL_PATH, "r") as f:
-    SYSTEM_PROMPT = f.read()
+    RAW_SKILL = f.read()
+
+SYSTEM_PROMPT = f"""You are agent 'alice' on a Unix system running the Locutus inter-agent protocol.
+You have the `execute_bash` tool available to run shell commands.
+CRITICAL INSTRUCTION: You MUST NOT simulate or describe bash commands in text. You MUST call the `execute_bash` tool to actually execute every command on the system.
+
+PROTOCOL SPECIFICATION:
+{RAW_SKILL}
+"""
 
 TOOLS = [
     {
@@ -48,11 +56,11 @@ def run_bash(cmd: str) -> str:
     print(f"\n[AGENT BASH EXEC]: {cmd}")
     try:
         env = dict(os.environ)
-        env.setdefault("A2A_REDIS_URL", "redis://127.0.0.1:6379")
+        env.setdefault("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
         env.setdefault("REDIS_URL", "redis://127.0.0.1:6379")
-        env.setdefault("A2A_REDIS_PREFIX", "a2a:")
-        env.setdefault("A2A_PREFIX", "a2a:")
-        env.setdefault("A2A_SCRIPTS_DIR", os.path.abspath("scripts"))
+        env.setdefault("LOCUTUS_REDIS_PREFIX", "locutus:")
+        env.setdefault("LOCUTUS_PROJECT", "locutus")
+        env.setdefault("LOCUTUS_SCRIPTS_DIR", os.path.abspath("scripts"))
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
         output = (res.stdout + res.stderr).strip()
         print(f"[OUTPUT]: {output[:300]}")
@@ -68,7 +76,7 @@ def call_ollama(messages):
         "tools": TOOLS,
         "stream": False,
         "options": {
-            "temperature": 0.2
+            "temperature": 0.1
         }
     }
     req = urllib.request.Request(
@@ -80,21 +88,29 @@ def call_ollama(messages):
         return json.loads(resp.read().decode("utf-8"))
 
 def main():
-    print(f"Starting A2A Ollama Agent Test using model '{MODEL_NAME}'...")
+    print(f"Starting Locutus Ollama Agent Test using model '{MODEL_NAME}'...")
 
-    # Flush test recipient inbox
-    subprocess.run(["redis-cli", "DEL", "a2a:inbox:bob", "a2a:heartbeat:alice", "a2a:agent:alice"], check=False)
+    # Flush test recipient inbox and keys
+    subprocess.run([
+        "redis-cli", "DEL",
+        "locutus:inbox:bob",
+        "locutus:heartbeat:alice",
+        "locutus:agent:alice",
+        "locutus:tag:calc",
+        "locutus:tag:locutus",
+        "locutus:active_agents"
+    ], check=False)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
-                "You are agent 'alice'.\n"
-                "Please follow the redis-a2a protocol instructions:\n"
-                "1. Check if Redis is running, and register as 'alice' with tag 'calc'.\n"
-                "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4'.\n"
-                "Execute the bash commands to do this."
+                "You are agent 'alice' in project 'locutus'.\n"
+                "Execute the following tasks by calling the `execute_bash` tool:\n"
+                "1. Register as 'alice' with tag 'calc' using register.lua.\n"
+                "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4' using send_o2o.lua. Construct valid JSON using heredoc (cat << EOF) with ISO-8601 timestamp as specified in the skill instructions.\n"
+                "Call the execute_bash tool to perform these actions."
             )
         }
     ]
@@ -131,24 +147,24 @@ def main():
 
     # Verify Redis state & strict message content validation
     print("\n--- Verifying Redis State & Message Content ---")
-    hb = subprocess.run(["redis-cli", "GET", "a2a:heartbeat:alice"], capture_output=True, text=True).stdout.strip()
+    hb = subprocess.run(["redis-cli", "GET", "locutus:heartbeat:alice"], capture_output=True, text=True).stdout.strip()
     print(f"Alice heartbeat: {hb}")
     assert hb == "1", f"Expected Alice heartbeat to be '1', got '{hb}'"
     print("✓ Alice heartbeat is active ('1')")
 
-    inbox_len = subprocess.run(["redis-cli", "LLEN", "a2a:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    inbox_len = subprocess.run(["redis-cli", "LLEN", "locutus:inbox:bob"], capture_output=True, text=True).stdout.strip()
     print(f"Bob inbox length: {inbox_len}")
     assert inbox_len and int(inbox_len) > 0, "Bob inbox is empty! No message delivered."
     print("✓ Bob inbox has pending message(s)")
 
-    raw_msg = subprocess.run(["redis-cli", "RPOP", "a2a:inbox:bob"], capture_output=True, text=True).stdout.strip()
+    raw_msg = subprocess.run(["redis-cli", "RPOP", "locutus:inbox:bob"], capture_output=True, text=True).stdout.strip()
     print(f"\nRaw Message Received:\n{raw_msg}")
 
     try:
-        msg = A2AMessage.model_validate_json(raw_msg)
-        print("✓ Pydantic A2AMessage schema validation passed (id, types, envelope, timestamp)!")
+        msg = LocutusMessage.model_validate_json(raw_msg)
+        print("✓ Pydantic LocutusMessage schema validation passed (id, types, envelope, timestamp)!")
     except Exception as e:
-        print(f"FAILURE: Message violates Pydantic A2AMessage schema: {e}")
+        print(f"FAILURE: Message violates Pydantic LocutusMessage schema: {e}")
         return 1
 
     # Semantic Content Validation
