@@ -71,18 +71,18 @@ jobs:
           cp LICENSE deb-amd64/usr/share/doc/locutus/copyright
           cp README.md deb-amd64/usr/share/doc/locutus/
           chmod 755 deb-amd64/usr/bin/locutus
-          cat > deb-amd64/DEBIAN/control <<EOF
-Package: locutus
-Version: ${VERSION}
-Section: utils
-Priority: optional
-Architecture: amd64
-Maintainer: Axiomantic <info@axiomantic.org>
-Description: Message exchange and routing for software agents over Redis
- Standalone CLI client for inter-agent communication using Redis data
- structures without an intermediate background daemon. Includes HMAC-SHA256
- authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-EOF
+          printf "%s\n" \
+            "Package: locutus" \
+            "Version: ${VERSION}" \
+            "Section: utils" \
+            "Priority: optional" \
+            "Architecture: amd64" \
+            "Maintainer: Axiomantic <info@axiomantic.org>" \
+            "Description: Message exchange and routing for software agents over Redis" \
+            " Standalone CLI client for inter-agent communication using Redis data" \
+            " structures without an intermediate background daemon. Includes HMAC-SHA256" \
+            " authentication, dead-agent pruning, and optional AES-256-CBC encryption." \
+            > deb-amd64/DEBIAN/control
           dpkg-deb --build deb-amd64 dist/locutus_${VERSION}_amd64.deb
 
           # Build arm64 .deb
@@ -91,18 +91,18 @@ EOF
           cp LICENSE deb-arm64/usr/share/doc/locutus/copyright
           cp README.md deb-arm64/usr/share/doc/locutus/
           chmod 755 deb-arm64/usr/bin/locutus
-          cat > deb-arm64/DEBIAN/control <<EOF
-Package: locutus
-Version: ${VERSION}
-Section: utils
-Priority: optional
-Architecture: arm64
-Maintainer: Axiomantic <info@axiomantic.org>
-Description: Message exchange and routing for software agents over Redis
- Standalone CLI client for inter-agent communication using Redis data
- structures without an intermediate background daemon. Includes HMAC-SHA256
- authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-EOF
+          printf "%s\n" \
+            "Package: locutus" \
+            "Version: ${VERSION}" \
+            "Section: utils" \
+            "Priority: optional" \
+            "Architecture: arm64" \
+            "Maintainer: Axiomantic <info@axiomantic.org>" \
+            "Description: Message exchange and routing for software agents over Redis" \
+            " Standalone CLI client for inter-agent communication using Redis data" \
+            " structures without an intermediate background daemon. Includes HMAC-SHA256" \
+            " authentication, dead-agent pruning, and optional AES-256-CBC encryption." \
+            > deb-arm64/DEBIAN/control
           dpkg-deb --build deb-arm64 dist/locutus_${VERSION}_arm64.deb
 
       - name: Verify Linux packages in clean environment
