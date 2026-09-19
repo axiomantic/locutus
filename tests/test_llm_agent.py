@@ -12,13 +12,11 @@ import os
 import subprocess
 import sys
 import unittest
-import urllib.request
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from tests.schema import LocutusMessage, A2AMessage
-
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
-MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+from tests.llm_client import call_llm, is_llm_available, MODEL_NAME, TOOLS
 
 SKILL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "SKILL.md"))
 with open(SKILL_PATH, "r") as f:
@@ -31,26 +29,6 @@ CRITICAL INSTRUCTION: You MUST NOT simulate or describe bash commands in text. Y
 PROTOCOL SPECIFICATION:
 {RAW_SKILL}
 """
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_bash",
-            "description": "Execute a bash shell command on the system and return stdout/stderr.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The exact bash command to execute"
-                    }
-                },
-                "required": ["command"]
-            }
-        }
-    }
-]
 
 def run_bash(cmd: str) -> str:
     print(f"\n[AGENT BASH EXEC]: {cmd}")
@@ -72,45 +50,17 @@ def run_bash(cmd: str) -> str:
         print(f"[ERROR]: {e}")
         return f"Execution error: {e}"
 
-def call_ollama(messages):
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "tools": TOOLS,
-        "stream": False,
-        "options": {
-            "temperature": 0.1
-        }
-    }
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
 REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
 
 def redis_cmd(*args):
     return subprocess.run(["redis-cli", "-u", REDIS_URL] + list(args), capture_output=True, text=True).stdout.strip()
 
-def is_ollama_available() -> bool:
-    if os.environ.get("RUN_LLM_TESTS") != "1":
-        return False
-    check_url = OLLAMA_URL
-    if check_url.endswith("/api/chat"):
-        check_url = check_url[:-9] + "/api/tags"
-    try:
-        req = urllib.request.Request(check_url, method="GET")
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
 
-class TestLocutusOllamaAgent(unittest.TestCase):
-    @unittest.skipUnless(is_ollama_available(), "Requires local Ollama service and RUN_LLM_TESTS=1")
-    def test_ollama_agent_e2e(self):
+@pytest.mark.llm
+@pytest.mark.e2e
+class TestLocutusLLMAgent(unittest.TestCase):
+    @unittest.skipUnless(is_llm_available(), "Requires local Ollama service or LLM_API_KEY")
+    def test_llm_agent_e2e(self):
         # Flush test recipient inbox and keys
         redis_cmd(
             "DEL",
@@ -138,12 +88,17 @@ class TestLocutusOllamaAgent(unittest.TestCase):
 
         max_turns = 6
         for turn in range(max_turns):
-            print(f"\n--- Turn {turn + 1} ---")
-            resp = call_ollama(messages)
-            message = resp.get("message", {})
-            messages.append(message)
+            print(f"\n--- Turn {turn + 1} (Model: {MODEL_NAME}) ---")
+            message, tool_calls = call_llm(messages)
 
-            tool_calls = message.get("tool_calls", [])
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.get("content") or ""
+            }
+            if tool_calls:
+                assistant_msg["tool_calls"] = tool_calls
+            messages.append(assistant_msg)
+
             if not tool_calls:
                 print(f"\n[AGENT FINAL RESPONSE]:\n{message.get('content')}")
                 break
@@ -161,10 +116,13 @@ class TestLocutusOllamaAgent(unittest.TestCase):
                 if name == "execute_bash":
                     cmd = args.get("command", "")
                     result = run_bash(cmd)
-                    messages.append({
+                    tool_resp = {
                         "role": "tool",
                         "content": result
-                    })
+                    }
+                    if "id" in tc:
+                        tool_resp["tool_call_id"] = tc["id"]
+                    messages.append(tool_resp)
 
         # Verify Redis state & strict message content validation
         print("\n--- Verifying Redis State & Message Content ---")

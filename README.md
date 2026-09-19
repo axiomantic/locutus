@@ -454,22 +454,25 @@ Empirically measured end-to-end wall-clock timings on Apple Silicon against loca
 
 ## Testing & Verification
 
-Locutus includes a 100% automated test suite:
+Locutus includes a 100% automated, marked `pytest` suite:
 
 ```bash
-# Run all 46 hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
-.venv/bin/python3 -m unittest discover tests
+# Run all hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
+pytest -v -m "not llm"
 
-# Optional: Run live single-agent autonomous Ollama test (requires local Ollama)
-.venv/bin/python3 tests/test_ollama_agent.py
+# Run live LLM integration tests (Local Ollama)
+RUN_LLM_TESTS=1 pytest -v -m llm
 
-# Optional: Run live multi-agent autonomous ping-pong test (requires local Ollama)
-.venv/bin/python3 tests/test_multi_agent_pingpong.py
+# Run live LLM integration tests (OpenRouter / Cloud API)
+RUN_LLM_TESTS=1 LLM_API_KEY="sk-or-..." LLM_MODEL="deepseek/deepseek-chat:free" pytest -v -m llm
 ```
 
-Continuous Integration (GitHub Actions) runs strictly the 46 hermetic unit tests (49 total discovered tests) against live Redis services across Ubuntu Linux, macOS, and Windows. The standalone LLM scripts are for local end-to-end model verification and are automatically skipped when Ollama is offline.
+Continuous Integration (GitHub Actions) runs:
+- **CI Workflow (`ci.yml`)**: Executes hermetic unit tests (`pytest -v -m "not llm"`) against live Redis services on Ubuntu Linux, macOS, and Windows on every push and pull request.
+- **LLM CI Workflow (`llm-ci.yml`)**: Runs live model integration tests against OpenRouter (defaulting to free models such as `deepseek/deepseek-chat:free` or `nvidia/nemotron-3-nano-omni:free`) on release tags (`v*`), merges to `main`, and maintainer-reviewed pull requests.
 
 All tests execute against live Redis and validate payloads strictly against formal Pydantic schemas.
+
 
 ---
 

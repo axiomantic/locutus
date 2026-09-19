@@ -63,6 +63,9 @@ def run_eval(script, numkeys, *args):
     return res.stdout.strip()
 
 
+import pytest
+
+@pytest.mark.unit
 class TestRedisA2AProtocol(unittest.TestCase):
 
     def setUp(self):

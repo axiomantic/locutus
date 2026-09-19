@@ -10,6 +10,9 @@ INSTALL_PS1 = os.path.join(REPO_ROOT, "scripts", "install.ps1")
 SKILLS_DIR = os.path.join(REPO_ROOT, "skills", "locutus")
 
 
+import pytest
+
+@pytest.mark.unit
 class TestInstallerAndUninstaller(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="locutus_install_test_")

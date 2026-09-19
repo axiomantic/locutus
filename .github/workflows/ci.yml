@@ -58,7 +58,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pydantic>=2.0" skilz
+          pip install "pydantic>=2.0" skilz pytest
 
       - name: Compile native Nim binary
         run: |
@@ -70,7 +70,7 @@ jobs:
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
         run: |
-          python -u -m unittest discover -v tests
+          pytest -v -m "not llm"
 
   test-macos:
     name: Tests (macOS / asdf-nim)
@@ -113,7 +113,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pydantic>=2.0" skilz
+          pip install "pydantic>=2.0" skilz pytest
 
       - name: Compile native Nim binary
         run: |
@@ -125,7 +125,7 @@ jobs:
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
         run: |
-          python -u -m unittest discover -v tests
+          pytest -v -m "not llm"
 
   test-windows:
     name: Tests (Windows / setup-nimble-action)
@@ -172,7 +172,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install "pydantic>=2.0" skilz
+          pip install "pydantic>=2.0" skilz pytest
 
       - name: Compile native Nim binary
         shell: bash
@@ -187,4 +187,4 @@ jobs:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
           PYTHONUTF8: "1"
         run: |
-          python -u -m unittest discover -v tests
+          pytest -v -m "not llm"

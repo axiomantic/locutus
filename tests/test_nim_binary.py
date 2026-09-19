@@ -15,6 +15,9 @@ else:
     BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
 
 
+import pytest
+
+@pytest.mark.unit
 class TestLocutusNimBinary(unittest.TestCase):
     def setUp(self):
         self.env = os.environ.copy()
