@@ -315,6 +315,7 @@ jobs:
           mkdir -p gh-pages-branch/apt
           cp -r apt-output/* gh-pages-branch/apt/
           cp apt-output/index.html gh-pages-branch/index.html
+          touch gh-pages-branch/.nojekyll
           cd gh-pages-branch
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
