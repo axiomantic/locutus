@@ -61,10 +61,15 @@ else
         if tr ~= "" then table.insert(tags, tr) end
     end
 
+    local to_field = target_tags_csv
+    if to_field ~= "*" and string.sub(to_field, 1, 1) ~= "@" then
+        to_field = "@" .. to_field
+    end
+
     local payload = {
         id = msg_id,
         ["from"] = from_agent,
-        ["to"] = "@" .. target_tags_csv,
+        ["to"] = to_field,
         ["type"] = msg_type,
         tags = tags,
         subject = subject,

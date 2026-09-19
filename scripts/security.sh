@@ -14,7 +14,7 @@ get_secret() {
     local secret_file="${LOCUTUS_SECRET_FILE:-$HOME/.config/locutus/secret}"
     if [ ! -f "$secret_file" ]; then
         mkdir -p "$(dirname "$secret_file")"
-        openssl rand -hex 32 > "$secret_file"
+        (umask 077 && openssl rand -hex 32 > "$secret_file")
         chmod 600 "$secret_file"
     fi
     tr -d '\r\n' < "$secret_file"

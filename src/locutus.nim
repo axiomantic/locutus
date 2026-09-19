@@ -156,7 +156,7 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
     return (outStr, exitCode)
   else:
     # Docker fallback
-    let container = getEnv("LOCUTUS_CONTAINER", "a2a-redis")
+    let container = getEnv("LOCUTUS_CONTAINER", getEnv("A2A_CONTAINER", "locutus-redis"))
     var dockerArgs: seq[string] = @["exec", "-i", container, "redis-cli"]
     for a in fullArgs:
       dockerArgs.add(a)
@@ -473,6 +473,14 @@ proc main() =
 
     if isBroadcast and toAgent == "":
       toAgent = cfg.project
+
+    if (not isBroadcast and toAgent.len == 0) or subject.len == 0 or body.len == 0:
+      stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")
+      if not isBroadcast:
+        stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body>")
+      else:
+        stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
+      quit(1)
 
     doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast)
 

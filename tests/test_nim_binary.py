@@ -300,6 +300,17 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         self.run_locutus(["close", agent])
 
+    def test_11_argument_validation_for_send_and_broadcast(self):
+        # Missing required body/subject in send
+        res = self.run_locutus(["send", "--to", "nobody"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Missing required arguments", res.stderr)
+
+        # Missing required body/subject in broadcast
+        res_b = self.run_locutus(["broadcast"])
+        self.assertNotEqual(res_b.returncode, 0)
+        self.assertIn("Missing required arguments", res_b.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
