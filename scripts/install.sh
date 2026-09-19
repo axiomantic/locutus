@@ -165,7 +165,13 @@ build_from_source() {
     echo "Error: Failed to set up Nim compiler. Please install Nim manually."
     exit 1
   fi
-  echo "Using Nim: $(nim --version | head -n 1)"
+  if [ -f "src/locutus.nim" ]; then
+    echo "Compiling native Locutus binary from local source tree..."
+    nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+    chmod +x "${DEST_DIR}/locutus"
+    echo "✓ Locutus compiled and installed to ${DEST_DIR}/locutus"
+    return 0
+  fi
 
   BUILD_TMP="$(mktemp -d)"
   trap 'rm -rf "${BUILD_TMP}"' EXIT
@@ -187,13 +193,6 @@ build_from_source() {
 
   echo "✓ Locutus compiled and installed to ${DEST_DIR}/locutus"
 }
-
-# If user explicitly requested source build
-if [ "${BUILD_FROM_SOURCE:-0}" = "1" ]; then
-  build_from_source
-  install_skills
-  exit 0
-fi
 
 # Helper: Install AI Agent Skills
 install_skills() {
@@ -266,9 +265,16 @@ install_skills() {
   fi
 }
 
+# If user explicitly requested source build
+if [ "${BUILD_FROM_SOURCE:-0}" = "1" ]; then
+  build_from_source
+  install_skills
+  exit 0
+fi
+
 # 4. Check for Native Platform Package Managers
-# A. macOS with Homebrew
-if [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
+# A. macOS with Homebrew (skipped if custom INSTALL_DIR requested)
+if [ -z "${INSTALL_DIR:-}" ] && [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "Detected Homebrew on macOS. Installing via Homebrew tap..."
   if brew install axiomantic/tap/locutus; then
     echo "✓ Locutus successfully installed via Homebrew."
@@ -279,8 +285,8 @@ if [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-# B. Debian / Ubuntu with dpkg/apt
-if [ "${OS}" = "linux" ] && [ "${ARCH}" != "unknown" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian_version ]); then
+# B. Debian / Ubuntu with dpkg/apt (skipped if custom INSTALL_DIR requested)
+if [ -z "${INSTALL_DIR:-}" ] && [ "${OS}" = "linux" ] && [ "${ARCH}" != "unknown" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian_version ]); then
   DEB_PKG="locutus_${VERSION#v}_${ARCH}.deb"
   DEB_URL="${GITHUB_URL}/releases/download/${VERSION}/${DEB_PKG}"
   TMP_DIR="$(mktemp -d)"

@@ -34,6 +34,7 @@ class TestInstallerAndUninstaller(unittest.TestCase):
         env = os.environ.copy()
         env["INSTALL_DIR"] = self.install_dir
         env["HOME"] = self.fake_home
+        env["BUILD_FROM_SOURCE"] = "1"
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:" + os.path.dirname(shutil.which("nim") or "")
 
         res = subprocess.run(
@@ -96,6 +97,7 @@ class TestInstallerAndUninstaller(unittest.TestCase):
         env["INSTALL_DIR"] = self.install_dir
         env["HOME"] = self.fake_home
         env["NO_SKILLS"] = "1"
+        env["BUILD_FROM_SOURCE"] = "1"
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:" + os.path.dirname(shutil.which("nim") or "")
 
         res = subprocess.run(
