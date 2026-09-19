@@ -443,10 +443,12 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   var remaining = effectiveTimeout
 
   # Keep heartbeat alive while actively listening
-  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $cfg.heartbeatTtl])
+  let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
   if hbCode != 0:
     stderr.writeLine("Redis error: " & hbOut.strip())
     quit(hbCode)
+
 
   while remaining > 0:
     var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $remaining])
