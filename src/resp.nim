@@ -279,11 +279,11 @@ proc subscribeOne*(redisUrl, channel: string, timeoutSec: int = -1): (string, in
       if msgResp.kind == rkArray and msgResp.arrVal.len >= 3 and msgResp.arrVal[0].strVal == "message":
         return (msgResp.arrVal[2].strVal, 0)
       elif msgResp.kind == rkNil:
-        return ("(nil)", 0)
+        return ("", 0)
       else:
         return ($msgResp, 0)
     except TimeoutError:
-      return ("(nil)", 0)
+      return ("", 0)
   except CatchableError as e:
     return ("Redis error: " & e.msg, 1)
 

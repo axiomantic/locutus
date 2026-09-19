@@ -23,12 +23,14 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
    - All messages require valid HMAC-SHA256 signatures derived from `~/.config/locutus/secret` (0600 mode).
    - `locutus listen` drops unauthenticated, forged, or tampered payloads at the process boundary before reaching stdout. The assistant never receives malicious prompts into its context window.
    - Optional E2EE: Setting `LOCUTUS_ENCRYPT=1` encrypts task bodies via OpenSSL AES-256-CBC PBKDF2 across Redis.
-5. **Continuous Ear Invariant (Immediate Hot Re-Arm)**:
+5. **Continuous Ear Invariant (Infinite Silent Listener & Zero Token Churn)**:
    - Once registered (`locutus open`), the agent MUST maintain an active background listener until explicitly closed via `locutus close`.
-   - On wakeup (whether timeout `(nil)` OR incoming message payload): **re-arm `locutus listen 90` as a background task IMMEDIATELY as your first action**.
-   - NEVER defer re-arming until after task execution or reply dispatch. Real task execution takes multiple tool calls and steps; deferring leaves the assistant deaf on the bus during active work.
-   - Order of operations on message receipt:
-     `Wakeup` -> `1. Immediately launch locutus listen 90 in background` -> `2. Parse & execute work` -> `3. Send reply`.
+   - Run bare `locutus listen` (or `locutus listen <name>`) with NO timeout and NO wrapping shell loops.
+   - **Zero Token Churn**: Locutus blocks silently in native code and internally renews its Redis heartbeat. It outputs 0 bytes and never wakes up the assistant until an authentic message arrives.
+   - **No Shell Wrapping Loops**: NEVER wrap `locutus listen` in `while true`, `for`, or background bash scripts. The native binary handles indefinite waiting and heartbeats internally.
+   - **Order of operations on message receipt**:
+     `Wakeup with Message` -> `1. Immediately re-arm locutus listen in background` -> `2. Parse & execute work` -> `3. Send reply`.
+   - Re-arming immediately on wakeup ensures the listener is active while performing multi-step work without missing messages or incurring token churn (since it blocks silently until the next message arrives).
    - **Turn-End Invariant**: Unless `locutus close` was commanded, NEVER conclude a turn without an active `locutus listen` background task running.
 6. **Agent Identity & Host Isolation**:
    - Multiple assistants on the same computer are isolated via process environment (`export LOCUTUS_AGENT_NAME=<name>`) and workspace directory (`.locutus.agent`).
@@ -81,27 +83,29 @@ locutus open my-agent-1 "backend,qa"
 > export LOCUTUS_AGENT_NAME="my-agent-1"
 > ```
 
-### Step 2: Arm the Secure Background Listener (Continuous Ear Invariant)
+### Step 2: Arm the Secure Background Listener (Zero Token Churn)
 Launch `locutus listen` as a background command:
 ```bash
-locutus listen 90
+locutus listen
+# Or with explicit agent name:
+locutus listen my-agent-1
 ```
 - In assistants with background task notifications (Claude Code, Antigravity): stop calling tools and wait for wakeup notification.
+- **NEVER use a timeout or wrap in a shell loop (`while true; do ... done`)**. Locutus blocks indefinitely in native code and refreshes its Redis heartbeat every 60s silently. It wakes the assistant ONLY when an authentic message arrives, consuming zero prompt tokens while idling.
 
 #### Continuous Ear Invariant (Unbreakable Listener Loop)
 Once registered, the assistant MUST keep an active background listener running at all times until `locutus close` is requested:
 1. **Immediate Hot Re-Arm (First Action on Wakeup)**:
-   Whenever `locutus listen` returns (whether `(nil)` timeout OR an incoming message):
-   **Re-arm `locutus listen 90` in the background IMMEDIATELY as your very first tool call.**
+   When `locutus listen` completes with an incoming message payload:
+   **Re-arm `locutus listen` in the background IMMEDIATELY as your very first tool call.**
    ```bash
-   locutus listen 90
+   locutus listen
    ```
-   Do NOT defer re-arming until after executing the work or sending the reply. Real task execution requires multiple tool calls and steps; deferring re-arm leaves the assistant deaf to cancellation requests, urgent tasks, or bus updates.
+   Do NOT defer re-arming until after executing the work or sending the reply. Real task execution requires multiple tool calls and steps; deferring re-arm leaves the assistant deaf to cancellation requests, urgent tasks, or bus updates during active execution.
 2. **Order of Operations on Message Receipt**:
-   `Wakeup` -> `[1. Re-arm locutus listen 90 in background]` -> `[2. Parse payload & execute work]` -> `[3. Send reply]`
+   `Wakeup` -> `[1. Re-arm locutus listen in background]` -> `[2. Parse payload & execute work]` -> `[3. Send reply]`
 3. **Turn-End Invariant**:
    - Unless `locutus close` was explicitly commanded by the user, **NEVER conclude a turn without an active `locutus listen` background task running**.
-   - If a listener timed out with `(nil)`: the new background listener was already re-armed in step 1; simply stop calling tools and return to standby.
    - If a message arrived: execute the task, send reply (`locutus send --to "<from>" --type reply --subject "Re: <subject>" --body "<result>" --reply-to "<id>"`), and conclude. The background listener is already actively waiting for the next message.
 
 ### Step 3: Advanced Coordination Protocols
@@ -123,9 +127,9 @@ When coordinating independent tasks across a pool of worker agents:
   ```
 - **Worker (Consumer)**:
   ```bash
-  locutus work <queue_name> 60
+  locutus work <queue_name>
   ```
-  Guarantees exactly-once consumption across all competing workers.
+  Guarantees exactly-once consumption across all competing workers. Defaults to indefinite blocking wait until a task is available.
 
 #### C. Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 When executing critical sections that must not run concurrently across agents (e.g. git rebase, running migrations, deploying staging):

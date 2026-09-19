@@ -124,10 +124,10 @@ class TestLocutusNimBinary(unittest.TestCase):
             check=True
         )
 
-        # Listen should drop forged message to stderr and return (nil)
+        # Listen should drop forged message to stderr and return empty stdout
         listen_res = self.run_locutus(["listen", agent, "1"])
         self.assertEqual(listen_res.returncode, 0)
-        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertEqual(listen_res.stdout.strip(), "")
         self.assertIn("Dropping unauthenticated/tampered message", listen_res.stderr)
 
         self.run_locutus(["close", agent])
@@ -221,10 +221,10 @@ class TestLocutusNimBinary(unittest.TestCase):
         self.assertEqual(msg_qa.subject, "QA Notice")
         self.assertEqual(msg_qa.body, "Only for QA")
 
-        # agent_dev should NOT receive it ((nil))
+        # agent_dev should NOT receive it (empty output on timeout)
         res_dev = self.run_locutus(["listen", "agent_dev", "1"])
         self.assertEqual(res_dev.returncode, 0)
-        self.assertEqual(res_dev.stdout.strip(), "(nil)")
+        self.assertEqual(res_dev.stdout.strip(), "")
 
         self.run_locutus(["close", "agent_qa"])
         self.run_locutus(["close", "agent_dev"])
@@ -267,7 +267,7 @@ class TestLocutusNimBinary(unittest.TestCase):
         # Listen should drop the message because decryption fails
         listen_res = self.run_locutus(["listen", agent, "1"])
         self.assertEqual(listen_res.returncode, 0)
-        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertEqual(listen_res.stdout.strip(), "")
         self.assertIn("Dropping corrupted/undecryptable message", listen_res.stderr)
 
         self.run_locutus(["close", agent])
@@ -418,7 +418,7 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         listen_res = self.run_locutus(["listen", agent, "1"])
         self.assertEqual(listen_res.returncode, 0)
-        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertEqual(listen_res.stdout.strip(), "")
         self.assertIn("Dropping non-JSON payload from inbox", listen_res.stderr)
 
         self.run_locutus(["close", agent])
@@ -620,7 +620,7 @@ secret_file = "{custom_secret_file}"
             res_listen = self.run_locutus(["listen", agent], env_overrides=clean_env, cwd=tmp_dir)
             elapsed = time.time() - start_t
             self.assertEqual(res_listen.returncode, 0)
-            self.assertEqual(res_listen.stdout.strip(), "(nil)")
+            self.assertEqual(res_listen.stdout.strip(), "")
             self.assertTrue(elapsed < 4.0, f"Listen with listen_timeout=1 took too long: {elapsed}s")
 
             # E. Test inline secret configuration
@@ -736,10 +736,10 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(msg.subject, subject)
         self.assertEqual(msg.body, body)
 
-        # Work on now-empty queue with 1s timeout returns (nil)
+        # Work on now-empty queue with 1s timeout returns empty stdout
         res_empty = self.run_locutus(["work", qname, "1"])
         self.assertEqual(res_empty.returncode, 0)
-        self.assertEqual(res_empty.stdout.strip(), "(nil)")
+        self.assertEqual(res_empty.stdout.strip(), "")
 
     def test_29_synchronous_request_rpc(self):
         """Test synchronous RPC 'locutus request' roundtrip between requester and responder."""
@@ -825,10 +825,10 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0], message)
 
-        # Test sub timeout on silent channel
+        # Test sub timeout on silent channel (returns 0 bytes stdout)
         res_silent = self.run_locutus(["sub", "silent_channel_empty", "1"])
         self.assertEqual(res_silent.returncode, 0)
-        self.assertEqual(res_silent.stdout.strip(), "(nil)")
+        self.assertEqual(res_silent.stdout.strip(), "")
 
     def test_31_who_flags_and_json(self):
         """Test 'locutus who' supports -a, --all, and --json output."""
@@ -951,6 +951,58 @@ secret = "my_inline_secret_test_555"
             res = self.run_locutus(flag)
             self.assertEqual(res.returncode, 0)
             self.assertEqual(res.stdout.strip(), "locutus 0.1.0")
+
+    def test_36_listen_default_blocks_silently(self):
+        """Test that 'locutus listen <agent>' with no timeout blocks silently and receives messages."""
+        agent = "silent_listener_bot"
+        self.run_locutus(["open", agent, "testing"])
+
+        received = []
+        errors = []
+
+        def listener_worker():
+            try:
+                # No timeout specified -> blocks indefinitely until message arrives
+                res = self.run_locutus(["listen", agent])
+                if res.returncode == 0 and res.stdout.strip():
+                    received.append(json.loads(res.stdout))
+                else:
+                    errors.append(f"Unexpected listener exit: rc={res.returncode}, out='{res.stdout}', err='{res.stderr}'")
+            except Exception as e:
+                errors.append(str(e))
+
+        t = threading.Thread(target=listener_worker)
+        t.start()
+
+        # Give it a moment to enter the blocking Redis wait
+        time.sleep(0.5)
+
+        # Still alive and waiting
+        self.assertTrue(t.is_alive())
+        self.assertEqual(len(received), 0)
+
+        # Send a message to wake it up
+        res_send = self.run_locutus([
+            "send",
+            "--to", agent,
+            "--subject", "Zero Token Wakeup",
+            "--body", "Payload delivered cleanly"
+        ])
+        self.assertEqual(res_send.returncode, 0)
+
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive(), "Listener should have exited upon receiving message")
+        self.assertEqual(len(errors), 0, f"Listener encountered errors: {errors}")
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["subject"], "Zero Token Wakeup")
+        self.assertEqual(received[0]["body"], "Payload delivered cleanly")
+
+        # Now test that explicit timeout on empty inbox returns 0 bytes cleanly
+        res_empty = self.run_locutus(["listen", agent, "1"])
+        self.assertEqual(res_empty.returncode, 0)
+        self.assertEqual(res_empty.stdout.strip(), "")
+
+        self.run_locutus(["close", agent])
 
 
 if __name__ == "__main__":

@@ -303,7 +303,7 @@ proc resolveFullConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
     cluster: false,
     heartbeatTtl: 150,
     messageTtl: 604800,
-    listenTimeout: 90,
+    listenTimeout: 0,
     profile: "default",
     provenance: initTable[string, ProvenanceEntry]()
   )
@@ -317,7 +317,7 @@ proc resolveFullConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
   result.provenance["cluster"] = ProvenanceEntry(key: "cluster", value: "false", source: srcDefault, detail: "builtin default")
   result.provenance["heartbeat_ttl"] = ProvenanceEntry(key: "heartbeat_ttl", value: $result.heartbeatTtl, source: srcDefault, detail: "150s default")
   result.provenance["message_ttl"] = ProvenanceEntry(key: "message_ttl", value: $result.messageTtl, source: srcDefault, detail: "7 days default")
-  result.provenance["listen_timeout"] = ProvenanceEntry(key: "listen_timeout", value: $result.listenTimeout, source: srcDefault, detail: "90s default")
+  result.provenance["listen_timeout"] = ProvenanceEntry(key: "listen_timeout", value: $result.listenTimeout, source: srcDefault, detail: "0s (infinite blocking default)")
 
   # Resolve profile selector
   var targetProfile = cli.profile
@@ -466,8 +466,8 @@ heartbeat_ttl = 150
 # Maximum message lifetime in seconds (default 7 days)
 message_ttl = 604800
 
-# Default listen timeout in seconds
-listen_timeout = 90
+# Default listen timeout in seconds (0 = block indefinitely until message arrives)
+listen_timeout = 0
 
 # Optional path to shared secret file (kept out of version control)
 # secret_file = "~/.config/locutus/secret"

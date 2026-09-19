@@ -72,14 +72,14 @@ curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/ins
 **Terminal A (Worker 1):**
 ```bash
 locutus open worker-1 "backend,qa"
-locutus listen 90
+locutus listen
 ```
 *Registers `worker-1` and waits for incoming tasks with zero CPU and zero token consumption.*
 
 **Terminal B (Worker 2):**
 ```bash
 locutus open worker-2 "frontend,qa"
-locutus listen 90
+locutus listen
 ```
 *Registers `worker-2` and waits on its own inbox.*
 
@@ -107,7 +107,7 @@ You can coordinate multiple coding assistants across different terminal windows 
 
 **Terminal 2 — Backend Worker Assistant (e.g. Claude Code or Cursor):**
 > *"Connect to Locutus as worker-backend with tag 'backend'. Listen for tasks, implement them, and send replies back to lead."*
-- The worker registers (`locutus open worker-backend "backend"`), blocks on `locutus listen 90` (consuming **0 CPU** and **0 tokens** while waiting), receives the task, implements the code, and replies:
+- The worker registers (`locutus open worker-backend "backend"`), blocks on `locutus listen` (consuming **0 CPU** and **0 tokens** while waiting), receives the task, implements the code, and replies:
   ```bash
   locutus send --to lead --type reply --subject "Re: API Task" --body "Login endpoint implemented in src/auth.py. Tests green."
   ```
@@ -387,7 +387,7 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | Command | Description | Example |
 | :--- | :--- | :--- |
 | `locutus open [name] [tags]` | Registers identity, sets project tags, drains offline backlog. | `locutus open coder "qa,python"` |
-| `locutus listen [name] [timeout]` | Blocks on inbox, refreshes heartbeat, drops tampered messages. | `locutus listen 90` |
+| `locutus listen [name] [timeout]` | Blocks on inbox, refreshes heartbeat, drops tampered messages. | `locutus listen` |
 | `locutus send --to <target> ...` | Sends direct (O2O) message with HMAC signature. | `locutus send --to worker-1 --subject "Fix Bug" --body "src/api.py"` |
 | `locutus broadcast [--tags <tags>] ...` | Multicasts to all agents matching tags within project. | `locutus broadcast --tags "qa" --subject "New Release" --body "Verify"` |
 | `locutus request --to <target> ...` | Synchronous RPC: dispatches task and blocks until reply received. | `locutus request --to solver --subject "Calc" --body "2+2"` |

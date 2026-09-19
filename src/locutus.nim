@@ -533,12 +533,11 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   let secret = getSecret(cfg)
   let inboxKey = cfg.prefix & "inbox:" & name
-  let effectiveTimeout = if timeoutSec >= 0: timeoutSec elif cfg.listenTimeout > 0: cfg.listenTimeout else: 90
-  let startTime = getTime().toUnix()
-  var remaining = effectiveTimeout
-
-  # Keep heartbeat alive and ensure agent is in active roster
+  let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+  let pollChunk = min(60, max(1, hbTtl div 2))
+
+  # Initial Heartbeat & Directory Registration
   let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
   if hbCode != 0:
     stderr.writeLine("Redis error: " & hbOut.strip())
@@ -550,20 +549,31 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
     discard execRedis(cfg.redisUrl, ["HSET", cfg.prefix & "agent:" & name, "tags", projTag])
     discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "tag:" & projTag, name])
 
+  let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: cfg.listenTimeout
+  let startTime = getTime().toUnix()
+  var remaining = effectiveTimeout
 
-  while remaining > 0:
-    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $remaining])
+  while isForever or remaining > 0:
+    let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
+    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $waitSec])
     if exitCode != 0:
       stderr.writeLine("Redis error: " & outStr.strip())
       quit(exitCode)
-    if outStr.strip().len == 0:
-      echo "(nil)"
-      return
+
+    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+      # Internal chunk timeout: renew heartbeat silently in Redis
+      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
+      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
+        if remaining == 0:
+          return # Silent zero-token exit
+      continue
 
     let firstNl = outStr.find('\n')
     if firstNl < 0:
-      echo "(nil)"
-      return
+      continue
 
     let payloadStr = outStr[firstNl + 1 .. ^1].strip()
 
@@ -572,8 +582,9 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
       parsed = parseJson(payloadStr)
     except JsonParsingError:
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from inbox")
-      let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, effectiveTimeout - elapsed)
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     let id = parsed.getOrDefault("id").getStr("")
@@ -590,8 +601,9 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
     let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
     if not verifyHmac(secret, canonical, sig):
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
-      let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, effectiveTimeout - elapsed)
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     # Authenticated! Decrypt if required
@@ -602,14 +614,13 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
         parsed["encrypted"] = %false
       except ValueError as e:
         stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
-        let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, effectiveTimeout - elapsed)
+        if not isForever:
+          let elapsed = int(getTime().toUnix() - startTime)
+          remaining = max(0, effectiveTimeout - elapsed)
         continue
 
     echo $parsed
     return
-
-  echo "(nil)"
 
 proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): string =
   let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
@@ -673,23 +684,28 @@ proc doEnqueue*(cfg: LocutusConfig, queueName, msgType, fromAgent, subject, body
 proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
   let secret = getSecret(cfg)
   let queueKey = cfg.prefix & "queue:" & queueName
-  let effectiveTimeout = if timeoutSec >= 0: timeoutSec elif cfg.listenTimeout > 0: cfg.listenTimeout else: 60
+  let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
+  let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: (if cfg.listenTimeout > 0: cfg.listenTimeout else: 60)
   let startTime = getTime().toUnix()
   var remaining = effectiveTimeout
 
-  while remaining > 0:
-    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $remaining])
+  while isForever or remaining > 0:
+    let waitSec = if isForever: 60 else: remaining
+    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $waitSec])
     if exitCode != 0:
       stderr.writeLine("Redis error: " & outStr.strip())
       quit(exitCode)
     if outStr.strip().len == 0 or outStr.strip() == "(nil)":
-      echo "(nil)"
-      return
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
+        if remaining == 0:
+          return # Silent zero-token exit
+      continue
 
     let firstNl = outStr.find('\n')
     if firstNl < 0:
-      echo "(nil)"
-      return
+      continue
 
     let payloadStr = outStr[firstNl + 1 .. ^1].strip()
 
@@ -698,8 +714,9 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
       parsed = parseJson(payloadStr)
     except JsonParsingError:
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from queue")
-      let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, effectiveTimeout - elapsed)
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     let id = parsed.getOrDefault("id").getStr("")
@@ -716,8 +733,9 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
     let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
     if not verifyHmac(secret, canonical, sig):
       stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
-      let elapsed = int(getTime().toUnix() - startTime)
-      remaining = max(0, effectiveTimeout - elapsed)
+      if not isForever:
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
       continue
 
     # Authenticated! Decrypt if required
@@ -728,14 +746,13 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
         parsed["encrypted"] = %false
       except ValueError as e:
         stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
-        let elapsed = int(getTime().toUnix() - startTime)
-        remaining = max(0, effectiveTimeout - elapsed)
+        if not isForever:
+          let elapsed = int(getTime().toUnix() - startTime)
+          remaining = max(0, effectiveTimeout - elapsed)
         continue
 
     echo $parsed
     return
-
-  echo "(nil)"
 
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
@@ -827,7 +844,8 @@ proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
   if code != 0:
     stderr.writeLine(res)
     quit(code)
-  echo res
+  if res.len > 0:
+    echo res
 
 # Main Entrypoint / CLI Router
 proc main() =
