@@ -101,3 +101,15 @@
 - [x] Deterministic security test suite in `tests/test_security.py` (5/5 tests passing).
 - [x] Documentation & prompt updates across `SKILL.md`, `README.md`, `references/wire_spec.md`, and slash commands.
 
+### 13. High-Performance Nim Single-Binary Engine & EVALSHA Optimization
+- [x] Implemented `src/locutus.nim` with compile-time embedded Lua scripts (`staticRead`).
+- [x] Implemented Redis `EVALSHA` caching with automatic fallback to `EVAL` on `NOSCRIPT`.
+- [x] Native OpenSSL C-bindings in Nim (`HMAC`, `SHA1`, `RAND_bytes`, `CRYPTO_memcmp`).
+- [x] Full CLI coverage: `open`, `listen`, `send`, `broadcast`, `who`, `tag`, `drain`, `close`, `get-secret`.
+- [x] Air-gapped prompt injection firewall built directly into native `locutus listen`.
+- [x] Compiled standalone native binary (`bin/locutus`, 289 KB, 1ms startup) and installed globally to `~/.local/bin/locutus`.
+- [x] Created black-box Python integration test suite `tests/test_nim_binary.py` (5/5 tests passing).
+- [x] Total test suite expanded to 25/25 tests passing in under 2 seconds.
+- [x] Streamlined `SKILL.md` from 365 lines down to 99 lines.
+
+

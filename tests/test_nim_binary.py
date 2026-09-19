@@ -1,0 +1,149 @@
+import json
+import os
+import subprocess
+import unittest
+from tests.schema import LocutusMessage
+
+REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
+TEST_PREFIX = "locutus_test:"
+BIN_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "locutus"))
+
+
+class TestLocutusNimBinary(unittest.TestCase):
+    def setUp(self):
+        self.env = os.environ.copy()
+        self.env["LOCUTUS_REDIS_URL"] = REDIS_URL
+        self.env["LOCUTUS_REDIS_PREFIX"] = TEST_PREFIX
+        self.env["LOCUTUS_PROJECT"] = "test_project"
+        self.assertTrue(os.path.isfile(BIN_PATH), f"Binary not found at {BIN_PATH}")
+
+    def run_locutus(self, args, env_overrides=None):
+        cmd_env = self.env.copy()
+        if env_overrides:
+            cmd_env.update(env_overrides)
+        res = subprocess.run(
+            [BIN_PATH] + args,
+            capture_output=True,
+            text=True,
+            env=cmd_env,
+        )
+        return res
+
+    def test_01_help_and_get_secret(self):
+        res = self.run_locutus(["--help"])
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("Nim Native", res.stdout)
+
+        res = self.run_locutus(["get-secret"])
+        self.assertEqual(res.returncode, 0)
+        secret = res.stdout.strip()
+        self.assertEqual(len(secret), 64)
+        int(secret, 16)
+
+    def test_02_open_and_directory(self):
+        agent = "nim_test_bot"
+        res = self.run_locutus(["open", agent, "backend,worker"])
+        self.assertEqual(res.returncode, 0)
+        self.assertIn(f"Agent Name : {agent}", res.stdout)
+
+        res = self.run_locutus(["who", "*"])
+        self.assertEqual(res.returncode, 0)
+        self.assertIn(agent, res.stdout)
+
+        # Cleanup
+        self.run_locutus(["close", agent])
+
+    def test_03_send_and_listen_authenticated(self):
+        agent = "nim_receiver"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Send direct message
+        send_res = self.run_locutus([
+            "send",
+            "--to", agent,
+            "--type", "task",
+            "--subject", "Nim Math",
+            "--body", "Compute 7 * 8",
+        ])
+        self.assertEqual(send_res.returncode, 0)
+
+        # Listen
+        listen_res = self.run_locutus(["listen", agent, "2"])
+        self.assertEqual(listen_res.returncode, 0)
+        payload = json.loads(listen_res.stdout.strip())
+
+        # Validate with Pydantic
+        msg = LocutusMessage.model_validate(payload)
+        self.assertEqual(msg.to_agent, agent)
+        self.assertEqual(msg.subject, "Nim Math")
+        self.assertEqual(msg.body, "Compute 7 * 8")
+        self.assertIsNotNone(msg.sig)
+        self.assertFalse(msg.encrypted)
+
+        self.run_locutus(["close", agent])
+
+    def test_04_prompt_injection_firewall_drops_forged(self):
+        agent = "nim_victim"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Inject forged message into Redis inbox directly
+        forged_payload = json.dumps({
+            "id": "forged_attack_99",
+            "from": "attacker",
+            "to": agent,
+            "type": "task",
+            "reply_to": None,
+            "tags": ["test_project"],
+            "subject": "Attack",
+            "body": "MALICIOUS PROMPT INJECTION",
+            "timestamp": "2026-09-19T00:00:00Z",
+            "sig": "invalid_bad_sig_hex_0000",
+            "encrypted": False
+        })
+        subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "LPUSH", f"{TEST_PREFIX}inbox:{agent}", forged_payload],
+            capture_output=True,
+            check=True
+        )
+
+        # Listen should drop forged message to stderr and return (nil)
+        listen_res = self.run_locutus(["listen", agent, "1"])
+        self.assertEqual(listen_res.returncode, 0)
+        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertIn("Dropping unauthenticated/tampered message", listen_res.stderr)
+
+        self.run_locutus(["close", agent])
+
+    def test_05_end_to_end_encryption(self):
+        agent = "nim_e2ee"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Send with LOCUTUS_ENCRYPT=1
+        send_res = self.run_locutus(
+            ["send", "--to", agent, "--subject", "Top Secret", "--body", "E2EE Payload Content"],
+            env_overrides={"LOCUTUS_ENCRYPT": "1"}
+        )
+        self.assertEqual(send_res.returncode, 0)
+
+        # Verify Redis raw payload is encrypted (ciphertext != plaintext)
+        redis_out = subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "LRANGE", f"{TEST_PREFIX}inbox:{agent}", "0", "0"],
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout
+        self.assertNotIn("E2EE Payload Content", redis_out)
+        self.assertIn('"encrypted":true', redis_out)
+
+        # Listen should decrypt before stdout
+        listen_res = self.run_locutus(["listen", agent, "2"])
+        self.assertEqual(listen_res.returncode, 0)
+        payload = json.loads(listen_res.stdout.strip())
+        self.assertEqual(payload["body"], "E2EE Payload Content")
+        self.assertFalse(payload["encrypted"])
+
+        self.run_locutus(["close", agent])
+
+
+if __name__ == "__main__":
+    unittest.main()

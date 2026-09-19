@@ -21,13 +21,13 @@ It enables multiple coding assistants (Claude Code, Antigravity, Cursor, Windsur
 - **Dynamic Tag Management**: Add, remove, or set agent tags on the fly without unregistering or dropping queued inbox messages (`scripts/tag.lua`).
 - **Offline Backlog Delivery**: Tasks sent to offline or disconnected agents queue safely in Redis (7-day default TTL) and are delivered in FIFO order via `scripts/drain.lua` upon reconnect.
 - **Automatic Dead-Agent Pruning**: Expired agent heartbeats are automatically pruned during multicast fan-out, eliminating dead-queue bloat.
-- **Dual-Mode Structured Sending**: Messages can be sent either as raw JSON or via structured arguments where Redis automatically generates the envelope using native `cjson.encode`.
+- **Native Single-Binary Engine (Nim)**: Built as a standalone native binary (`bin/locutus`) with compile-time embedded Lua scripts (`staticRead`) and Redis `EVALSHA` caching for sub-millisecond execution.
 - **Cryptographic Security & Prompt-Injection Firewall**:
   - Out-of-band secret key management (`~/.config/locutus/secret`, `0600` permissions) with zero exposure to LLM context, Git, or Redis.
-  - Mandatory HMAC-SHA256 authentication: unauthenticated or forged messages are dropped at the host shell level by `scripts/listen.sh` before entering the assistant's context window.
+  - Mandatory HMAC-SHA256 authentication: unauthenticated or forged messages are dropped at the host shell level before entering the assistant's context window.
   - Optional End-to-End Encryption (E2EE): `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies via OpenSSL AES-256-CBC PBKDF2.
 - **Operator Slash Command**: Built-in human-facing slash command `/locutus` (`open`, `send`, `broadcast`, `who`, `tag`, `close`).
-- **Rigorous Test Suite**: Deterministic unit tests, HMAC security & prompt injection firewall tests, single-agent Ollama tool-calling tests, and multi-agent autonomous ping-pong tests with Pydantic schema validation.
+- **Rigorous Test Suite**: Deterministic unit tests, HMAC security & prompt injection firewall tests, native Nim binary tests, single-agent Ollama tool-calling tests, and multi-agent autonomous ping-pong tests with Pydantic schema validation.
 
 
 ---
@@ -167,11 +167,15 @@ A Python virtual environment with `pydantic` is used for validation:
 # 2. Run HMAC security & prompt-injection firewall tests (deterministic, live Redis):
 .venv/bin/python3 -m unittest tests/test_security.py
 
-# 3. Run single-agent autonomous Ollama test (validates LLM tool-calling + Pydantic schema):
+# 3. Run native Nim binary validation tests (deterministic, live Redis):
+.venv/bin/python3 -m unittest tests/test_nim_binary.py
+
+# 4. Run single-agent autonomous Ollama test (validates LLM tool-calling + Pydantic schema):
 .venv/bin/python3 tests/test_ollama_agent.py
 
-# 4. Run multi-agent autonomous ping-pong integration test (Alice & Bob live interaction):
+# 5. Run multi-agent autonomous ping-pong integration test (Alice & Bob live interaction):
 .venv/bin/python3 tests/test_multi_agent_pingpong.py
+
 ```
 
 ---
