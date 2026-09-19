@@ -1624,6 +1624,56 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(bob_result[0].returncode, 0)
         self.assertIn("ACQUIRED", bob_result[0].stdout)
 
+    def test_49_cancellation_tokens(self):
+        """Test global run cancellation tokens ('locutus cancel')."""
+        run_id = f"run_{int(time.time() * 1000)}"
+
+        # 1. Uncancelled run check: returns empty stdout and code 0
+        res_chk_empty = self.run_locutus(["cancel", "check", run_id])
+        self.assertEqual(res_chk_empty.returncode, 0)
+        self.assertEqual(res_chk_empty.stdout.strip(), "")
+
+        # 2. Check with --exit-code on uncancelled run: returns exit code 1
+        res_chk_exit1 = self.run_locutus(["cancel", "check", run_id, "--exit-code"])
+        self.assertEqual(res_chk_exit1.returncode, 1)
+
+        # 3. Cancel the run with a reason
+        res_cancel = self.run_locutus([
+            "cancel", run_id,
+            "--reason", "User requested abort",
+            "--by", "lead_agent"
+        ])
+        self.assertEqual(res_cancel.returncode, 0)
+        c_data = json.loads(res_cancel.stdout.strip())
+        self.assertTrue(c_data.get("cancelled"))
+        self.assertEqual(c_data.get("run_id"), run_id)
+        self.assertEqual(c_data.get("reason"), "User requested abort")
+
+        # 4. Check on cancelled run: returns JSON and code 0
+        res_chk = self.run_locutus(["cancel", "check", run_id])
+        self.assertEqual(res_chk.returncode, 0)
+        chk_data = json.loads(res_chk.stdout.strip())
+        self.assertTrue(chk_data.get("cancelled"))
+        self.assertEqual(chk_data.get("reason"), "User requested abort")
+
+        # 5. Check with --raw: prints bare reason
+        res_raw = self.run_locutus(["cancel", "check", run_id, "--raw"])
+        self.assertEqual(res_raw.returncode, 0)
+        self.assertEqual(res_raw.stdout.strip(), "User requested abort")
+
+        # 6. Check with --exit-code on cancelled run: returns code 0
+        res_chk_exit0 = self.run_locutus(["cancel", "check", run_id, "--exit-code"])
+        self.assertEqual(res_chk_exit0.returncode, 0)
+
+        # 7. Clear the cancellation token
+        res_clear = self.run_locutus(["cancel", "clear", run_id])
+        self.assertEqual(res_clear.returncode, 0)
+
+        # 8. Check after clear: returns empty
+        res_chk_after = self.run_locutus(["cancel", "check", run_id])
+        self.assertEqual(res_chk_after.returncode, 0)
+        self.assertEqual(res_chk_after.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

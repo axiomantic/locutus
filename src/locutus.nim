@@ -71,6 +71,7 @@ const
   ackLua*        = staticRead("../scripts/ack.lua")
   blackboardLua* = staticRead("../scripts/blackboard.lua")
   floorLua*      = staticRead("../scripts/floor.lua")
+  cancelLua*     = staticRead("../scripts/cancel.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -95,6 +96,7 @@ let
   ackSha*        = computeSha1(ackLua)
   blackboardSha* = computeSha1(blackboardLua)
   floorSha*      = computeSha1(floorLua)
+  cancelSha*     = computeSha1(cancelLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -1011,6 +1013,44 @@ proc doFloorStatus*(cfg: LocutusConfig, room: string) =
   let res = runLuaScript(cfg.redisUrl, floorLua, floorSha, [cfg.prefix, "status", room])
   echo res
 
+proc doCancelSet*(cfg: LocutusConfig, runId, reason, byAgent: string, ttlSec: int = 3600) =
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "cancel", runId, reason, byAgent, $ttlSec, ts])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  var n = newJObject()
+  n["status"] = %"cancelled"
+  n["run_id"] = %runId
+  n["reason"] = %reason
+  n["by"] = %byAgent
+  n["timestamp"] = %ts
+  n["cancelled"] = %true
+  echo $n
+
+proc doCancelCheck*(cfg: LocutusConfig, runId: string, rawOutput: bool = false, exitCodeOnUncancelled: bool = false) =
+  let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "check", runId])
+  if res.len == 0 or res == "(nil)":
+    if exitCodeOnUncancelled:
+      quit(1)
+    return
+
+  if rawOutput:
+    try:
+      let parsed = parseJson(res)
+      echo parsed.getOrDefault("reason").getStr("")
+    except JsonParsingError:
+      echo res
+  else:
+    echo res
+
+proc doCancelClear*(cfg: LocutusConfig, runId: string) =
+  let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "clear", runId])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1305,6 +1345,7 @@ proc main() =
     echo "  locutus ack <queue_name> <task_id>"
     echo "  locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]"
     echo "  locutus floor <request|yield|pass|status> <room> [args...]"
+    echo "  locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -1872,6 +1913,75 @@ proc main() =
       stderr.writeLine("Unknown floor action: " & action)
       stderr.writeLine("Usage: locutus floor <request|yield|pass|status> <room> [args...]")
       quit(1)
+
+  of "cancel":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing run_id or cancel subcommand.")
+      stderr.writeLine("Usage:")
+      stderr.writeLine("  locutus cancel <run_id> [--reason <reason>] [--by <agent>] [--ttl <sec>]")
+      stderr.writeLine("  locutus cancel check <run_id> [--raw] [--exit-code]")
+      stderr.writeLine("  locutus cancel clear <run_id>")
+      quit(1)
+
+    var action = ""
+    var runId = ""
+    var reason = "Cancelled by orchestrator"
+    var byAgent = getActiveAgentName(cfg, "", fallbackDefault = true)
+    var ttlSec = 3600
+    var rawOutput = false
+    var exitCodeOnUncancelled = false
+
+    if args[1] in ["check", "status"]:
+      action = "check"
+      if args.len > 2: runId = args[2]
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if a in ["--raw", "-r"]: rawOutput = true
+        elif a in ["--exit-code", "-e"]: exitCodeOnUncancelled = true
+        elif not a.startsWith("-") and runId.len == 0: runId = a
+        inc i
+    elif args[1] in ["clear", "reset"]:
+      action = "clear"
+      if args.len > 2: runId = args[2]
+      var i = 3
+      while i < args.len:
+        let a = args[i]
+        if not a.startsWith("-") and runId.len == 0: runId = a
+        inc i
+    else:
+      runId = args[1]
+      var i = 2
+      while i < args.len:
+        let a = args[i]
+        if a == "--check": action = "check"
+        elif a == "--clear": action = "clear"
+        elif a in ["--raw", "-r"]: rawOutput = true
+        elif a in ["--exit-code", "-e"]: exitCodeOnUncancelled = true
+        elif a.startsWith("--reason="): reason = a[9..^1]
+        elif a == "--reason" and i + 1 < args.len: reason = args[i+1]; inc i
+        elif a.startsWith("--by="): byAgent = a[5..^1]
+        elif a == "--by" and i + 1 < args.len: byAgent = args[i+1]; inc i
+        elif a.startsWith("--ttl="):
+          try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+        elif a == "--ttl" and i + 1 < args.len:
+          try: ttlSec = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif not a.startsWith("-") and reason == "Cancelled by orchestrator":
+          reason = a
+        inc i
+
+    if runId.len == 0:
+      stderr.writeLine("Error: Missing run_id.")
+      quit(1)
+
+    case action
+    of "check":
+      doCancelCheck(cfg, runId, rawOutput, exitCodeOnUncancelled)
+    of "clear":
+      doCancelClear(cfg, runId)
+    else:
+      doCancelSet(cfg, runId, reason, byAgent, ttlSec)
 
   of "status":
     if args.len < 2:

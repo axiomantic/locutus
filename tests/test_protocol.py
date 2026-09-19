@@ -60,6 +60,7 @@ LUA_CLAIM = load_lua("claim.lua")
 LUA_ACK = load_lua("ack.lua")
 LUA_BLACKBOARD = load_lua("blackboard.lua")
 LUA_FLOOR = load_lua("floor.lua")
+LUA_CANCEL = load_lua("cancel.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -696,6 +697,32 @@ class TestRedisA2AProtocol(unittest.TestCase):
 
         yielded = run_eval(LUA_FLOOR, 0, PREFIX, "yield", room, "bob")
         self.assertEqual(yielded, "YIELDED")
+
+    def test_24_cancel_lua_protocol(self):
+        """Test cancel.lua via Redis EVAL."""
+        run_id = f"run_{int(time.time() * 1000)}"
+        
+        # Check initial: should be empty
+        init_chk = run_eval(LUA_CANCEL, 0, PREFIX, "check", run_id)
+        self.assertEqual(init_chk, "")
+
+        # Cancel
+        res = run_eval(LUA_CANCEL, 0, PREFIX, "cancel", run_id, "User aborted operation", "lead_agent", "3600")
+        self.assertEqual(res, "CANCELLED")
+
+        # Check: should return JSON payload
+        chk_json = run_eval(LUA_CANCEL, 0, PREFIX, "check", run_id)
+        self.assertTrue(len(chk_json) > 0)
+        data = json.loads(chk_json)
+        self.assertTrue(data.get("cancelled"))
+        self.assertEqual(data.get("reason"), "User aborted operation")
+        self.assertEqual(data.get("by"), "lead_agent")
+
+        # Clear
+        clr = run_eval(LUA_CANCEL, 0, PREFIX, "clear", run_id)
+        self.assertEqual(clr, "CLEARED")
+        after_clr = run_eval(LUA_CANCEL, 0, PREFIX, "check", run_id)
+        self.assertEqual(after_clr, "")
 
 
 if __name__ == "__main__":

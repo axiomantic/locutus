@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -67,6 +67,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Acknowledge Task** | `locutus ack <queue_name> <task_id>` |
 | **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|append\|snapshot\|delete\|clear> <room> [key] [val]` |
 | **Floor Control (Speaker Ring)** | `locutus floor <request\|yield\|pass\|status> <room> [args...]` |
+| **Run Cancellation Token** | `locutus cancel <run_id> [--reason <reason>] \| check <run_id> \| clear <run_id>` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -233,6 +234,19 @@ locutus floor yield design_room
 locutus floor pass design_room specialist_agent
 ```
 
+#### J. Global Run Cancellation Tokens (`locutus cancel`)
+Instantly abort runaway workflows and stop background workers from spending tokens:
+```bash
+# Cancel an entire workflow run:
+locutus cancel run_42 --reason "Operator requested abort"
+
+# In worker loops before expensive LLM calls or tool actions:
+if locutus cancel check run_42 --exit-code; then
+  echo "Run was cancelled! Aborting cleanly..."
+  exit 0
+fi
+```
+
 ### Step 4: Graceful Exit
 When the session ends or user asks to disconnect:
 ```bash
@@ -365,6 +379,22 @@ locutus blackboard append design_review notes "Speaker proposal: Split monolithi
 # 3. Yield the floor to the next waiting speaker, or explicitly pass to a designated agent:
 locutus floor yield design_review
 # Or: locutus floor pass design_review architect_bob
+```
+
+### Playbook 11: Coordinated Run Cancellation Across Workers
+*Goal: Instantly stop background tasks and prevent token burn when an objective is superseded or aborted.*
+```bash
+# Lead / Orchestrator: Publish cancellation token for active run
+locutus cancel run_101 --reason "Requirements updated: pivoting to Redis streams"
+
+# Workers: Check cancellation token before executing expensive tool steps
+if locutus cancel check run_101 --exit-code; then
+  echo "Run cancelled: $(locutus cancel check run_101 --raw). Halting execution."
+  exit 0
+fi
+
+# Reset token when starting a clean re-run:
+locutus cancel clear run_101
 ```
 
 ---
