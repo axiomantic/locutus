@@ -4,14 +4,32 @@
 
 import std/[
   os, osproc, strutils, json, openssl, sha1,
-  times, random, streams, options
+  times, random, streams, options, base64, tables
 ]
-import config
+import config, resp
 
 # OpenSSL C-bindings for native cryptographic operations
+type
+  EVP_CIPHER_CTX = pointer
+  EVP_CIPHER = pointer
+
 proc HMAC*(evp_md: EVP_MD, key: pointer, key_len: cint, d: cstring, n: csize_t, md: pointer, md_len: ptr cuint): cstring {.cdecl, importc: "HMAC", dynlib: DLLUtilName.}
 proc CRYPTO_memcmp*(a: pointer, b: pointer, len: csize_t): cint {.cdecl, importc: "CRYPTO_memcmp", dynlib: DLLUtilName.}
 proc RAND_bytes*(buf: pointer, num: cint): cint {.cdecl, importc: "RAND_bytes", dynlib: DLLUtilName.}
+
+proc EVP_CIPHER_CTX_new*(): EVP_CIPHER_CTX {.cdecl, importc: "EVP_CIPHER_CTX_new", dynlib: DLLUtilName.}
+proc EVP_CIPHER_CTX_free*(ctx: EVP_CIPHER_CTX) {.cdecl, importc: "EVP_CIPHER_CTX_free", dynlib: DLLUtilName.}
+proc EVP_aes_256_cbc*(): EVP_CIPHER {.cdecl, importc: "EVP_aes_256_cbc", dynlib: DLLUtilName.}
+
+proc EVP_EncryptInit_ex*(ctx: EVP_CIPHER_CTX, cipher: EVP_CIPHER, impl: pointer, key: pointer, iv: pointer): cint {.cdecl, importc: "EVP_EncryptInit_ex", dynlib: DLLUtilName.}
+proc EVP_EncryptUpdate*(ctx: EVP_CIPHER_CTX, outbuf: pointer, outlen: ptr cint, inbuf: pointer, inlen: cint): cint {.cdecl, importc: "EVP_EncryptUpdate", dynlib: DLLUtilName.}
+proc EVP_EncryptFinal_ex*(ctx: EVP_CIPHER_CTX, outbuf: pointer, outlen: ptr cint): cint {.cdecl, importc: "EVP_EncryptFinal_ex", dynlib: DLLUtilName.}
+
+proc EVP_DecryptInit_ex*(ctx: EVP_CIPHER_CTX, cipher: EVP_CIPHER, impl: pointer, key: pointer, iv: pointer): cint {.cdecl, importc: "EVP_DecryptInit_ex", dynlib: DLLUtilName.}
+proc EVP_DecryptUpdate*(ctx: EVP_CIPHER_CTX, outbuf: pointer, outlen: ptr cint, inbuf: pointer, inlen: cint): cint {.cdecl, importc: "EVP_DecryptUpdate", dynlib: DLLUtilName.}
+proc EVP_DecryptFinal_ex*(ctx: EVP_CIPHER_CTX, outbuf: pointer, outlen: ptr cint): cint {.cdecl, importc: "EVP_DecryptFinal_ex", dynlib: DLLUtilName.}
+
+proc PKCS5_PBKDF2_HMAC*(pass: cstring, passlen: cint, salt: pointer, saltlen: cint, iter: cint, digest: EVP_MD, keylen: cint, outbuf: pointer): cint {.cdecl, importc: "PKCS5_PBKDF2_HMAC", dynlib: DLLUtilName.}
 
 # Compile-time embedded Lua scripts
 const
@@ -22,6 +40,10 @@ const
   drainLua*      = staticRead("../scripts/drain.lua")
   tagLua*        = staticRead("../scripts/tag.lua")
   unregisterLua* = staticRead("../scripts/unregister.lua")
+  statusLua*     = staticRead("../scripts/status.lua")
+  lockLua*       = staticRead("../scripts/lock.lua")
+  unlockLua*     = staticRead("../scripts/unlock.lua")
+  enqueueLua*    = staticRead("../scripts/enqueue.lua")
 
 # Cryptographic Helpers
 proc computeSha1*(text: string): string =
@@ -36,6 +58,11 @@ let
   drainSha*      = computeSha1(drainLua)
   tagSha*        = computeSha1(tagLua)
   unregisterSha* = computeSha1(unregisterLua)
+  statusSha*     = computeSha1(statusLua)
+  lockSha*       = computeSha1(lockLua)
+  unlockSha*     = computeSha1(unlockLua)
+  enqueueSha*    = computeSha1(enqueueLua)
+
 
 proc secureFilePermissions*(path: string) =
   when not defined(windows):
@@ -124,111 +151,96 @@ proc getPassArg*(cfg: LocutusConfig = LocutusConfig()): string =
   return "file:" & secretFile
 
 proc encryptAes*(plaintext, secret: string, cfg: LocutusConfig = LocutusConfig()): string =
-  let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
-  createDir(tmpDir)
-  let randomId = $rand(100000..999999)
-  let inPath = tmpDir / ("enc_in_" & randomId & ".tmp")
-  let outPath = tmpDir / ("enc_out_" & randomId & ".tmp")
+  var salt: array[8, uint8]
+  if RAND_bytes(salt[0].addr, 8) != 1:
+    raise newException(ValueError, "Failed to generate cryptographically secure random salt")
+
+  var keyAndIv: array[48, uint8]
+  let md = EVP_sha256()
+  if PKCS5_PBKDF2_HMAC(secret.cstring, secret.len.cint, salt[0].addr, 8, 10000, md, 48, keyAndIv[0].addr) != 1:
+    raise newException(ValueError, "PBKDF2 key derivation failed")
+
+  let keyPtr = keyAndIv[0].addr
+  let ivPtr = keyAndIv[32].addr
+
+  let ctx = EVP_CIPHER_CTX_new()
+  if ctx == nil:
+    raise newException(ValueError, "Failed to create EVP_CIPHER_CTX")
   try:
-    writeFile(inPath, plaintext)
-    secureFilePermissions(inPath)
+    if EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nil, keyPtr, ivPtr) != 1:
+      raise newException(ValueError, "EVP_EncryptInit_ex failed")
 
-    let passArg = getPassArg(cfg)
-    let opensslBin = getOpenSslExe()
-    var p = startProcess(opensslBin, args = ["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
-    let outStr = p.outputStream.readAll()
-    let exitCode = p.waitForExit()
-    p.close()
+    var cipherBuf = newString(plaintext.len + 32)
+    var outLen1: cint = 0
+    if EVP_EncryptUpdate(ctx, cipherBuf[0].addr, outLen1.addr, plaintext.cstring, plaintext.len.cint) != 1:
+      raise newException(ValueError, "EVP_EncryptUpdate failed")
 
-    if exitCode != 0 or not fileExists(outPath):
-      raise newException(ValueError, "Encryption failed: " & outStr.strip())
+    var outLen2: cint = 0
+    if EVP_EncryptFinal_ex(ctx, cipherBuf[outLen1].addr, outLen2.addr) != 1:
+      raise newException(ValueError, "EVP_EncryptFinal_ex failed")
 
-    result = readFile(outPath).strip()
+    cipherBuf.setLen(outLen1 + outLen2)
+
+    var rawCombined = "Salted__"
+    for b in salt: rawCombined.add(char(b))
+    rawCombined.add(cipherBuf)
+
+    return encode(rawCombined)
   finally:
-    if fileExists(inPath): removeFile(inPath)
-    if fileExists(outPath): removeFile(outPath)
+    EVP_CIPHER_CTX_free(ctx)
 
 proc decryptAes*(ciphertext, secret: string, cfg: LocutusConfig = LocutusConfig()): string =
-  let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
-  createDir(tmpDir)
-  let randomId = $rand(100000..999999)
-  let inPath = tmpDir / ("dec_in_" & randomId & ".tmp")
-  let outPath = tmpDir / ("dec_out_" & randomId & ".tmp")
+  var raw = ""
   try:
-    writeFile(inPath, ciphertext)
-    secureFilePermissions(inPath)
+    raw = decode(ciphertext.strip())
+  except Exception:
+    raise newException(ValueError, "Decryption failed: invalid base64 encoding")
 
-    let passArg = getPassArg(cfg)
-    let opensslBin = getOpenSslExe()
-    var p = startProcess(opensslBin, args = ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "10000", "-salt", "-pass", passArg, "-base64", "-A", "-in", inPath, "-out", outPath], options = {poUsePath, poStdErrToStdOut})
-    let outStr = p.outputStream.readAll()
-    let exitCode = p.waitForExit()
-    p.close()
+  if raw.len < 16 or not raw.startsWith("Salted__"):
+    raise newException(ValueError, "Decryption failed: missing OpenSSL Salted__ header")
 
-    if exitCode != 0 or not fileExists(outPath):
-      raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext): " & outStr.strip())
+  var salt: array[8, uint8]
+  for i in 0 ..< 8:
+    salt[i] = uint8(raw[8 + i])
 
-    result = readFile(outPath)
+  var keyAndIv: array[48, uint8]
+  let md = EVP_sha256()
+  if PKCS5_PBKDF2_HMAC(secret.cstring, secret.len.cint, salt[0].addr, 8, 10000, md, 48, keyAndIv[0].addr) != 1:
+    raise newException(ValueError, "PBKDF2 key derivation failed")
+
+  let keyPtr = keyAndIv[0].addr
+  let ivPtr = keyAndIv[32].addr
+
+  let cipherData = raw[16..^1]
+  let ctx = EVP_CIPHER_CTX_new()
+  if ctx == nil:
+    raise newException(ValueError, "Failed to create EVP_CIPHER_CTX")
+  try:
+    if EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nil, keyPtr, ivPtr) != 1:
+      raise newException(ValueError, "EVP_DecryptInit_ex failed")
+
+    var plainBuf = newString(cipherData.len + 32)
+    var outLen1: cint = 0
+    if EVP_DecryptUpdate(ctx, plainBuf[0].addr, outLen1.addr, cipherData.cstring, cipherData.len.cint) != 1:
+      raise newException(ValueError, "EVP_DecryptUpdate failed")
+
+    var outLen2: cint = 0
+    if EVP_DecryptFinal_ex(ctx, plainBuf[outLen1].addr, outLen2.addr) != 1:
+      raise newException(ValueError, "Decryption failed: bad key or corrupted ciphertext")
+
+    plainBuf.setLen(outLen1 + outLen2)
+    return plainBuf
   finally:
-    if fileExists(inPath): removeFile(inPath)
-    if fileExists(outPath): removeFile(outPath)
+    EVP_CIPHER_CTX_free(ctx)
 
 # Configuration Resolution (implemented in src/config.nim)
 proc resolveConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
   resolveFullConfig(cli)
 
-
-# Redis CLI Execution with EVALSHA & Docker fallback
+# Redis Native Socket Execution with automatic fallback to redis-cli / docker
 proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
-  var fullArgs: seq[string] = @["-u", redisUrl]
-  for a in cmdArgs:
-    fullArgs.add(a)
+  execRedisAuto(redisUrl, cmdArgs)
 
-  # Check if redis-cli is present
-  if findExe("redis-cli").len > 0:
-    var p = startProcess("redis-cli", args = fullArgs, options = {poUsePath, poStdErrToStdOut})
-    if p.inputStream != nil:
-      p.inputStream.close()
-    var outStr = ""
-    var line = ""
-    while true:
-      if p.outputStream.readLine(line):
-        outStr.add(line)
-        outStr.add("\n")
-      elif not running(p):
-        break
-    while p.outputStream.readLine(line):
-      outStr.add(line)
-      outStr.add("\n")
-    let exitCode = p.waitForExit()
-    p.close()
-    return (outStr, exitCode)
-  elif findExe("docker").len > 0:
-    # Docker fallback
-    let container = getEnv("LOCUTUS_CONTAINER", getEnv("A2A_CONTAINER", "locutus-redis"))
-    var dockerArgs: seq[string] = @["exec", "-i", container, "redis-cli"]
-    for a in fullArgs:
-      dockerArgs.add(a)
-    var p = startProcess("docker", args = dockerArgs, options = {poUsePath, poStdErrToStdOut})
-    if p.inputStream != nil:
-      p.inputStream.close()
-    var outStr = ""
-    var line = ""
-    while true:
-      if p.outputStream.readLine(line):
-        outStr.add(line)
-        outStr.add("\n")
-      elif not running(p):
-        break
-    while p.outputStream.readLine(line):
-      outStr.add(line)
-      outStr.add("\n")
-    let exitCode = p.waitForExit()
-    p.close()
-    return (outStr, exitCode)
-  else:
-    stderr.writeLine("Error: Neither 'redis-cli' nor 'docker' executable was found in PATH.")
-    quit(1)
 
 proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
   var shaArgs: seq[string] = @["EVALSHA", scriptSha, "0"]
@@ -274,12 +286,16 @@ proc clearCurrentAgent*() =
 proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string): string =
   if explicitName.len > 0:
     return explicitName
+  if cfg.provenance.hasKey("agent_name") and cfg.provenance["agent_name"].source in {srcCli, srcEnv, srcCustomFile, srcWorkspaceFile, srcUserFile, srcSystemFile}:
+    return cfg.agentName
   let envName = getEnv("LOCUTUS_AGENT_NAME", getEnv("MY_NAME", ""))
   if envName.len > 0:
     return envName
   let saved = loadCurrentAgent()
   if saved.len > 0:
     return saved
+  if cfg.agentName.len > 0:
+    return cfg.agentName
   return cfg.project & "-worker"
 
 # Core Operations
@@ -316,24 +332,26 @@ proc formatDirectory*(raw: string): string =
   if raw.strip().len == 0:
     return "No agents found."
   var lines = raw.strip().splitLines()
-  var rows: seq[(string, string, string)] = @[]
+  var rows: seq[(string, string, string, string, string)] = @[]
   for line in lines:
     let parts = line.strip().split('|')
     if parts.len >= 3:
       let name = parts[0]
       let alive = if parts[1] == "1": "ACTIVE" else: "EXPIRED"
       let tags = parts[2]
-      rows.add((name, alive, tags))
+      let state = if parts.len > 3 and parts[3].len > 0: parts[3].toUpperAscii else: "IDLE"
+      let activity = if parts.len > 4: parts[4] else: ""
+      rows.add((name, alive, state, tags, activity))
     elif line.strip().len > 0:
-      rows.add((line.strip(), "", ""))
+      rows.add((line.strip(), "", "", "", ""))
 
   if rows.len == 0:
     return "No agents found."
 
-  result = "AGENT               STATUS     TAGS\n"
-  result.add("----------------------------------------------------\n")
-  for (name, status, tags) in rows:
-    result.add(name.alignLeft(20) & status.alignLeft(11) & tags & "\n")
+  result = "AGENT               STATUS     STATE      TAGS                ACTIVITY\n"
+  result.add("------------------------------------------------------------------------------------\n")
+  for (name, status, state, tags, activity) in rows:
+    result.add(name.alignLeft(20) & status.alignLeft(11) & state.alignLeft(11) & tags.alignLeft(20) & activity & "\n")
   result = result.strip()
 
 proc doDirectory*(cfg: LocutusConfig, filterTag: string = ""): string =
@@ -369,7 +387,7 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
     echo backlog
 
 proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: string,
-            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false, customTs: string = "") =
+            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false, customTs: string = "", echoResult: bool = true): string =
   randomize()
   let secret = getSecret(cfg)
   let id = if msgId.len > 0: msgId else: "msg_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
@@ -407,6 +425,7 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 
   let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
   let isTargetMulticast = isBroadcast or toAgent.startsWith("@") or toAgent == "*"
+  var res = ""
   if isTargetMulticast:
     var target = ""
     if toAgent.startsWith("@"):
@@ -429,11 +448,14 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
     else:
       target = if toAgent.len > 0: toAgent else: cfg.project
 
-    let res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, $effectiveTtl])
-    echo res
+    res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, $effectiveTtl])
   else:
-    let res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, $effectiveTtl])
+    res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, $effectiveTtl])
+
+  if echoResult:
     echo res
+  return res
+
 
 proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   let secret = getSecret(cfg)
@@ -510,6 +532,224 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
 
   echo "(nil)"
 
+proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): string =
+  let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+  return runLuaScript(cfg.redisUrl, statusLua, statusSha, [cfg.prefix, name, state.toLowerAscii, activity, $effectiveTtl])
+
+proc doLock*(cfg: LocutusConfig, lockName: string, ttlSec: int = 30): (string, int) =
+  let owner = getActiveAgentName(cfg, "")
+  let res = runLuaScript(cfg.redisUrl, lockLua, lockSha, [cfg.prefix, lockName, owner, $ttlSec])
+  if res == "1":
+    return ("LOCKED " & lockName & " by " & owner, 0)
+  else:
+    return ("Error: Lock '" & lockName & "' is already held.", 1)
+
+proc doUnlock*(cfg: LocutusConfig, lockName: string): (string, int) =
+  let owner = getActiveAgentName(cfg, "")
+  let res = runLuaScript(cfg.redisUrl, unlockLua, unlockSha, [cfg.prefix, lockName, owner])
+  if res == "1":
+    return ("UNLOCKED " & lockName, 0)
+  else:
+    return ("Error: Cannot unlock '" & lockName & "': not owner or lock not found.", 1)
+
+proc doEnqueue*(cfg: LocutusConfig, queueName, msgType, fromAgent, subject, body: string,
+                tags: seq[string] = @[], replyTo: string = "", msgId: string = "", customTs: string = ""): string =
+  randomize()
+  let secret = getSecret(cfg)
+  let id = if msgId.len > 0: msgId else: "msg_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
+  let ts = if customTs.len > 0: customTs else: now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let finalBody = if cfg.encrypt: encryptAes(body, secret, cfg) else: body
+
+  let canonical = id & "|" & fromAgent & "|queue:" & queueName & "|" & msgType & "|" & subject & "|" & finalBody & "|" & ts
+  let sig = computeHmacSha256(secret, canonical)
+
+  var node = newJObject()
+  node["id"] = %id
+  node["from"] = %fromAgent
+  node["to"] = %("queue:" & queueName)
+  node["type"] = %msgType
+  if replyTo.len > 0:
+    node["reply_to"] = %replyTo
+  else:
+    node["reply_to"] = newJNull()
+
+  var tagArray = newJArray()
+  for t in tags:
+    tagArray.add(%t)
+  if tagArray.len == 0 and cfg.project.len > 0:
+    tagArray.add(%cfg.project)
+  node["tags"] = tagArray
+
+  node["subject"] = %subject
+  node["body"] = %finalBody
+  node["timestamp"] = %ts
+  node["sig"] = %sig
+  node["encrypted"] = %cfg.encrypt
+
+  let msgJson = $node
+  let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
+  discard runLuaScript(cfg.redisUrl, enqueueLua, enqueueSha, [cfg.prefix, queueName, msgJson, $effectiveTtl])
+  return id
+
+proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
+  let secret = getSecret(cfg)
+  let queueKey = cfg.prefix & "queue:" & queueName
+  let effectiveTimeout = if timeoutSec >= 0: timeoutSec elif cfg.listenTimeout > 0: cfg.listenTimeout else: 60
+  let startTime = getTime().toUnix()
+  var remaining = effectiveTimeout
+
+  while remaining > 0:
+    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $remaining])
+    if exitCode != 0:
+      stderr.writeLine("Redis error: " & outStr.strip())
+      quit(exitCode)
+    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+      echo "(nil)"
+      return
+
+    let firstNl = outStr.find('\n')
+    if firstNl < 0:
+      echo "(nil)"
+      return
+
+    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+
+    var parsed: JsonNode
+    try:
+      parsed = parseJson(payloadStr)
+    except JsonParsingError:
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from queue")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, effectiveTimeout - elapsed)
+      continue
+
+    let id = parsed.getOrDefault("id").getStr("")
+    let fromAgent = parsed.getOrDefault("from").getStr("")
+    let toAgent = parsed.getOrDefault("to").getStr("")
+    let msgType = parsed.getOrDefault("type").getStr("")
+    let subject = parsed.getOrDefault("subject").getStr("")
+    let body = parsed.getOrDefault("body").getStr("")
+    let ts = parsed.getOrDefault("timestamp").getStr("")
+    let sig = parsed.getOrDefault("sig").getStr("")
+    let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+    # Validate HMAC
+    let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
+    if not verifyHmac(secret, canonical, sig):
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, effectiveTimeout - elapsed)
+      continue
+
+    # Authenticated! Decrypt if required
+    if isEncrypted:
+      try:
+        let decryptedBody = decryptAes(body, secret, cfg)
+        parsed["body"] = %decryptedBody
+        parsed["encrypted"] = %false
+      except ValueError as e:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, effectiveTimeout - elapsed)
+        continue
+
+    echo $parsed
+    return
+
+  echo "(nil)"
+
+proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
+  randomize()
+  let secret = getSecret(cfg)
+  let reqId = "req_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
+  let replyQueue = "reply:" & reqId
+  let replyInboxKey = cfg.prefix & "inbox:" & replyQueue
+
+  discard doSend(cfg, toAgent, "task", fromAgent, subject, body, tags = @[], replyTo = replyQueue, msgId = reqId, isBroadcast = false, echoResult = false)
+
+  let startTime = getTime().toUnix()
+  var remaining = timeoutSec
+
+  while remaining > 0:
+    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", replyInboxKey, $remaining])
+    if exitCode != 0:
+      stderr.writeLine("Redis error: " & outStr.strip())
+      quit(exitCode)
+    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+      stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
+      quit(1)
+
+    let firstNl = outStr.find('\n')
+    if firstNl < 0:
+      stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
+      quit(1)
+
+    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+
+    var parsed: JsonNode
+    try:
+      parsed = parseJson(payloadStr)
+    except JsonParsingError:
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from reply inbox")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, timeoutSec - elapsed)
+      continue
+
+    let id = parsed.getOrDefault("id").getStr("")
+    let sender = parsed.getOrDefault("from").getStr("")
+    let toTarget = parsed.getOrDefault("to").getStr("")
+    let msgType = parsed.getOrDefault("type").getStr("")
+    let subj = parsed.getOrDefault("subject").getStr("")
+    let bdy = parsed.getOrDefault("body").getStr("")
+    let ts = parsed.getOrDefault("timestamp").getStr("")
+    let sig = parsed.getOrDefault("sig").getStr("")
+    let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+    # Validate HMAC
+    let canonical = id & "|" & sender & "|" & toTarget & "|" & msgType & "|" & subj & "|" & bdy & "|" & ts
+    if not verifyHmac(secret, canonical, sig):
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered reply (ID: " & id & ")")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, timeoutSec - elapsed)
+      continue
+
+    # Authenticated! Decrypt if required
+    if isEncrypted:
+      try:
+        let decryptedBody = decryptAes(bdy, secret, cfg)
+        parsed["body"] = %decryptedBody
+        parsed["encrypted"] = %false
+      except ValueError as e:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable reply: " & e.msg & " (ID: " & id & ")")
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, timeoutSec - elapsed)
+        continue
+
+    if rawOutput:
+      echo parsed.getOrDefault("body").getStr("")
+    else:
+      echo $parsed
+    return
+
+  stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
+  quit(1)
+
+proc doPub*(cfg: LocutusConfig, channel, message: string): string =
+  let fullChan = cfg.prefix & "channel:" & channel
+  let (res, code) = execRedis(cfg.redisUrl, ["PUBLISH", fullChan, message])
+  if code != 0:
+    stderr.writeLine("Redis error: " & res.strip())
+    quit(code)
+  return res.strip()
+
+proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
+  let fullChan = cfg.prefix & "channel:" & channel
+  let (res, code) = subscribeOne(cfg.redisUrl, fullChan, timeoutSec)
+  if code != 0:
+    stderr.writeLine(res)
+    quit(code)
+  echo res
+
 # Main Entrypoint / CLI Router
 proc main() =
   let rawArgs = commandLineParams()
@@ -582,6 +822,14 @@ proc main() =
     echo "  locutus listen [name] [timeout_sec]"
     echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body>"
     echo "  locutus broadcast [--tags <tags>] --subject <subj> --body <body>"
+    echo "  locutus request --to <agent> --subject <subj> --body <body> [--timeout 30] [--raw]"
+    echo "  locutus enqueue <queue_name> --subject <subj> --body <body>"
+    echo "  locutus work <queue_name> [timeout_sec]"
+    echo "  locutus status <idle|busy|error> [activity_text] [name]"
+    echo "  locutus lock <lock_name> [ttl_sec]"
+    echo "  locutus unlock <lock_name>"
+    echo "  locutus pub <channel> <message>"
+    echo "  locutus sub <channel> [timeout_sec]"
     echo "  locutus who [filter_tag]"
     echo "  locutus tag <add|remove|set> <tags> [name]"
     echo "  locutus drain [count] [name]"
@@ -726,7 +974,7 @@ proc main() =
         stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
       quit(1)
 
-    doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)
+    discard doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)
 
   of "who":
     let filterTag = if args.len > 1: args[1] else: cfg.project
@@ -767,6 +1015,171 @@ proc main() =
 
   of "get-secret":
     echo getSecret(cfg)
+
+  of "request":
+    var toAgent = ""
+    var fromAgent = getActiveAgentName(cfg, "")
+    var subject = ""
+    var body = ""
+    var timeout = 30
+    var rawOutput = false
+
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--to="): toAgent = a[5..^1]
+      elif a == "--to" and i + 1 < args.len: toAgent = args[i+1]; inc i
+      elif a.startsWith("--from="): fromAgent = a[7..^1]
+      elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
+      elif a.startsWith("--subject="): subject = a[10..^1]
+      elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
+      elif a.startsWith("--body="): body = a[7..^1]
+      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--timeout="):
+        try: timeout = parseInt(a[10..^1])
+        except ValueError: discard
+      elif a == "--timeout" and i + 1 < args.len:
+        try: timeout = parseInt(args[i+1])
+        except ValueError: discard
+        inc i
+      elif a in ["--raw", "-r"]:
+        rawOutput = true
+      elif not a.startsWith("-"):
+        if toAgent == "": toAgent = a
+        elif subject == "": subject = a
+        elif body == "": body = a
+      inc i
+
+    if toAgent.len == 0 or subject.len == 0 or body.len == 0:
+      stderr.writeLine("Error: Missing required arguments. --to, --subject, and --body are required.")
+      stderr.writeLine("Usage: locutus request --to <agent> --subject <subj> --body <body> [--timeout 30] [--raw]")
+      quit(1)
+
+    doRequest(cfg, toAgent, fromAgent, subject, body, timeout, rawOutput)
+
+  of "enqueue":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing queue name.")
+      stderr.writeLine("Usage: locutus enqueue <queue_name> --subject <subj> --body <body>")
+      quit(1)
+    let queueName = args[1]
+    var msgType = "task"
+    var fromAgent = getActiveAgentName(cfg, "")
+    var subject = ""
+    var body = ""
+    var tags: seq[string] = @[]
+    var replyTo = ""
+    var msgId = ""
+    var customTs = ""
+
+    var i = 2
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--type="): msgType = a[7..^1]
+      elif a == "--type" and i + 1 < args.len: msgType = args[i+1]; inc i
+      elif a.startsWith("--from="): fromAgent = a[7..^1]
+      elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
+      elif a.startsWith("--subject="): subject = a[10..^1]
+      elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
+      elif a.startsWith("--body="): body = a[7..^1]
+      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--tags="):
+        for t in a[7..^1].split(','):
+          if t.strip().len > 0: tags.add(t.strip())
+      elif a == "--tags" and i + 1 < args.len:
+        for t in args[i+1].split(','):
+          if t.strip().len > 0: tags.add(t.strip())
+        inc i
+      elif a.startsWith("--reply-to=") or a.startsWith("--reply_to="): replyTo = a[11..^1]
+      elif (a == "--reply-to" or a == "--reply_to") and i + 1 < args.len: replyTo = args[i+1]; inc i
+      elif a.startsWith("--id="): msgId = a[5..^1]
+      elif a == "--id" and i + 1 < args.len: msgId = args[i+1]; inc i
+      elif a.startsWith("--timestamp="): customTs = a[12..^1]
+      elif a == "--timestamp" and i + 1 < args.len: customTs = args[i+1]; inc i
+      elif not a.startsWith("-"):
+        if subject == "": subject = a
+        elif body == "": body = a
+      inc i
+
+    if subject.len == 0 or body.len == 0:
+      stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")
+      stderr.writeLine("Usage: locutus enqueue <queue_name> --subject <subj> --body <body>")
+      quit(1)
+
+    let id = doEnqueue(cfg, queueName, msgType, fromAgent, subject, body, tags, replyTo, msgId, customTs)
+    echo id
+
+  of "work":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing queue name.")
+      stderr.writeLine("Usage: locutus work <queue_name> [timeout_sec]")
+      quit(1)
+    let queueName = args[1]
+    var timeout = -1
+    if args.len > 2:
+      try: timeout = parseInt(args[2])
+      except ValueError: discard
+    doWork(cfg, queueName, timeout)
+
+  of "status":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing state argument for status command.")
+      stderr.writeLine("Usage: locutus status <idle|busy|error> [activity_text] [name]")
+      quit(1)
+    let state = args[1]
+    let activity = if args.len > 2: args[2] else: ""
+    let explicitName = if args.len > 3: args[3] else: ""
+    let name = getActiveAgentName(cfg, explicitName)
+    echo doStatus(cfg, name, state, activity)
+
+  of "lock":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing lock name.")
+      stderr.writeLine("Usage: locutus lock <lock_name> [ttl_sec]")
+      quit(1)
+    let lockName = args[1]
+    var ttl = 30
+    if args.len > 2:
+      try: ttl = parseInt(args[2])
+      except ValueError: discard
+    let (msg, code) = doLock(cfg, lockName, ttl)
+    if code != 0:
+      stderr.writeLine(msg)
+      quit(code)
+    echo msg
+
+  of "unlock":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing lock name.")
+      stderr.writeLine("Usage: locutus unlock <lock_name>")
+      quit(1)
+    let lockName = args[1]
+    let (msg, code) = doUnlock(cfg, lockName)
+    if code != 0:
+      stderr.writeLine(msg)
+      quit(code)
+    echo msg
+
+  of "pub", "publish":
+    if args.len < 3:
+      stderr.writeLine("Error: Missing arguments for pub command.")
+      stderr.writeLine("Usage: locutus pub <channel> <message>")
+      quit(1)
+    let channel = args[1]
+    let message = args[2]
+    echo doPub(cfg, channel, message)
+
+  of "sub", "subscribe":
+    if args.len < 2:
+      stderr.writeLine("Error: Missing channel name for sub command.")
+      stderr.writeLine("Usage: locutus sub <channel> [timeout_sec]")
+      quit(1)
+    let channel = args[1]
+    var timeout = -1
+    if args.len > 2:
+      try: timeout = parseInt(args[2])
+      except ValueError: discard
+    doSub(cfg, channel, timeout)
 
   else:
     stderr.writeLine("Unknown subcommand: " & subcmd)

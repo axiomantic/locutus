@@ -41,10 +41,19 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Send Direct Task (O2O)** | `locutus send --to <recipient> --subject "<subj>" --body "<body>"` |
 | **Send Reply** | `locutus send --to <sender> --type reply --subject "Re: <subj>" --body "<body>" --reply-to <msg_id>` |
 | **Broadcast (O2M)** | `locutus broadcast --tags "<tags>" --subject "<subj>" --body "<body>"` |
+| **Synchronous RPC** | `locutus request --to <recipient> --subject "<subj>" --body "<body>" [--timeout 30] [--raw]` |
+| **Produce to Work Queue** | `locutus enqueue <queue_name> --subject "<subj>" --body "<body>"` |
+| **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec]` |
+| **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
+| **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
+| **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
+| **Ephemeral Pub/Sub Send** | `locutus pub <channel> "<message>"` |
+| **Ephemeral Pub/Sub Recv** | `locutus sub <channel> [timeout_sec]` |
 | **Discover Peers** | `locutus who [filter]` (e.g. `locutus who` or `locutus who "*"`) |
 | **Dynamic Tags** | `locutus tag <add\|remove\|set> <tags>` |
 | **Drain Backlog** | `locutus drain [count]` |
 | **Unregister / Close** | `locutus close` |
+
 
 ---
 

@@ -129,3 +129,44 @@ class LocutusMessage(BaseModel):
 # Backwards compatibility alias
 A2AMessage = LocutusMessage
 ```
+
+---
+
+## 5. Advanced Coordination & Bus Primitives
+
+Locutus extends standard direct and broadcast messaging with five primitives for multi-agent workflows:
+
+### 1. Synchronous RPC (`locutus request`)
+- **Key Pattern**: `${LOCUTUS_REDIS_PREFIX}inbox:reply:<request_id>`
+- **Workflow**:
+  1. Caller generates unique `req_id` and sets `reply_to: "reply:<req_id>"`.
+  2. Caller dispatches task to recipient and immediately blocks on `BRPOP ${LOCUTUS_REDIS_PREFIX}inbox:reply:<req_id> <timeout>`.
+  3. Recipient processes task and sends reply unicast to `reply:<req_id>`.
+  4. Caller authenticates HMAC signature, decrypts if encrypted, and outputs result.
+
+### 2. Competing-Consumers Work Queues (`locutus enqueue` / `locutus work`)
+- **Key Pattern**: `${LOCUTUS_REDIS_PREFIX}queue:<queue_name>`
+- **Workflow**:
+  - Producers run `locutus enqueue <queue_name> ...` which executes `LPUSH` + `EXPIRE`.
+  - Any number of worker agents run `locutus work <queue_name> [timeout]`.
+  - Redis `BRPOP` atomically pops exactly one task to exactly one worker (competing-consumers pattern with zero race conditions).
+
+### 3. Distributed Mutex / Lock (`locutus lock` / `locutus unlock`)
+- **Key Pattern**: `${LOCUTUS_REDIS_PREFIX}lock:<lock_name>`
+- **Workflow**:
+  - `locutus lock <name> [ttl]`: Atomically executes `SET key owner NX EX ttl`. Returns success (0) if acquired, error (1) if already held.
+  - `locutus unlock <name>`: Atomically verifies current owner matches caller before deleting key via Lua.
+
+### 4. Agent Operational State & Activity Tracking
+- **Key Pattern**: `${LOCUTUS_REDIS_PREFIX}agent:<agent_name>` (Hash)
+- **Fields**: `state` (`idle`, `busy`, `error`), `activity` (arbitrary descriptive text), `last_seen`.
+- **Workflow**:
+  - Agents announce status via `locutus status <state> [activity]`.
+  - Cluster peers view state and live activity in `locutus who` output.
+
+### 5. Ephemeral Pub/Sub Streaming (`locutus pub` / `locutus sub`)
+- **Channel Pattern**: `${LOCUTUS_REDIS_PREFIX}channel:<channel_name>`
+- **Workflow**:
+  - `locutus pub <channel> <message>`: Fires real-time Redis `PUBLISH` to active subscribers with zero queue storage overhead.
+  - `locutus sub <channel> [timeout]`: Listens for live broadcasts, exiting upon message receipt or timeout.
+

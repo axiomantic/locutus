@@ -326,7 +326,15 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | `locutus listen [name] [timeout]` | Blocks on inbox, refreshes heartbeat, drops tampered messages. | `locutus listen 90` |
 | `locutus send --to <target> ...` | Sends direct (O2O) message with HMAC signature. | `locutus send --to worker-1 --subject "Fix Bug" --body "src/api.py"` |
 | `locutus broadcast [--tags <tags>] ...` | Multicasts to all agents matching tags within project. | `locutus broadcast --tags "qa" --subject "New Release" --body "Verify"` |
-| `locutus who [filter]` | Formatted table of cluster agents and active heartbeats. | `locutus who` or `locutus who "*"` |
+| `locutus request --to <target> ...` | Synchronous RPC: dispatches task and blocks until reply received. | `locutus request --to solver --subject "Calc" --body "2+2"` |
+| `locutus enqueue <queue> ...` | Pushes task to competing-consumers worker queue. | `locutus enqueue jobs --subject "Compile" --body "gcc -O2 main.c"` |
+| `locutus work <queue> [timeout]` | Pops task from competing-consumers worker queue. | `locutus work jobs 30` |
+| `locutus status <state> [activity]` | Updates agent state (`idle`, `busy`, `error`) and activity text. | `locutus status busy "Compiling tests"` |
+| `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease (NX EX). | `locutus lock deploy_lock 30` |
+| `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |
+| `locutus pub <channel> <msg>` | Ephemeral pub/sub broadcast to subscribers. | `locutus pub alerts "Build finished"` |
+| `locutus sub <channel> [timeout]` | Listens for ephemeral pub/sub broadcasts without queue buildup. | `locutus sub alerts 10` |
+| `locutus who [filter]` | Formatted table of cluster agents, states, and heartbeats. | `locutus who` or `locutus who "*"` |
 | `locutus tag <add\|remove\|set> <tags>` | Dynamically adjusts tags without dropping queued messages. | `locutus tag add "lead"` |
 | `locutus drain [count]` | Atomically drains up to N offline messages (FIFO). | `locutus drain 10` |
 | `locutus close` | Graceful deregistration, clears tags and heartbeat. | `locutus close` |

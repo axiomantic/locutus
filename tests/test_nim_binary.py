@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from tests.schema import LocutusMessage
@@ -652,8 +653,186 @@ secret = "my_inline_secret_test_555"
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def test_26_status_and_directory_state(self):
+        """Test 'locutus status' updates state and activity, reflected in 'locutus who'."""
+        agent = "status_worker_test"
+        self.run_locutus(["open", agent, "backend,worker"])
+
+        # Update status to busy
+        res_stat = self.run_locutus(["status", "busy", "Compiling LLVM", agent])
+        self.assertEqual(res_stat.returncode, 0)
+        self.assertEqual(res_stat.stdout.strip(), "OK")
+
+        # Check directory
+        res_who = self.run_locutus(["who", "*"])
+        self.assertEqual(res_who.returncode, 0)
+        self.assertIn(agent, res_who.stdout)
+        self.assertIn("BUSY", res_who.stdout)
+        self.assertIn("Compiling LLVM", res_who.stdout)
+
+        # Update status to idle
+        res_stat2 = self.run_locutus(["status", "idle", "Awaiting jobs", agent])
+        self.assertEqual(res_stat2.returncode, 0)
+
+        res_who2 = self.run_locutus(["who", "*"])
+        self.assertEqual(res_who2.returncode, 0)
+        self.assertIn(agent, res_who2.stdout)
+        self.assertIn("IDLE", res_who2.stdout)
+        self.assertIn("Awaiting jobs", res_who2.stdout)
+
+        self.run_locutus(["close", agent])
+
+    def test_27_distributed_locking(self):
+        """Test 'locutus lock' acquisition, conflict rejection, and 'locutus unlock'."""
+        lock_name = "deploy_mutex_test"
+
+        # Acquire lock
+        res_lock = self.run_locutus(["--agent-name=agent_lock_owner", "lock", lock_name, "10"])
+        self.assertEqual(res_lock.returncode, 0)
+        self.assertIn(f"LOCKED {lock_name} by agent_lock_owner", res_lock.stdout)
+
+        # Attempt to acquire same lock with different owner -> should fail
+        res_conflict = self.run_locutus(["--agent-name=intruder_agent", "lock", lock_name, "10"])
+        self.assertNotEqual(res_conflict.returncode, 0)
+        self.assertIn("already held", res_conflict.stderr)
+
+        # Attempt to unlock with non-owner -> should fail
+        res_unlock_bad = self.run_locutus(["--agent-name=intruder_agent", "unlock", lock_name])
+        self.assertNotEqual(res_unlock_bad.returncode, 0)
+        self.assertIn("not owner", res_unlock_bad.stderr)
+
+        # Unlock with owner -> should succeed
+        res_unlock = self.run_locutus(["--agent-name=agent_lock_owner", "unlock", lock_name])
+        self.assertEqual(res_unlock.returncode, 0)
+        self.assertIn(f"UNLOCKED {lock_name}", res_unlock.stdout)
+
+    def test_28_task_queue_enqueue_and_work(self):
+        """Test competing-consumers task queue: enqueue and work with Pydantic validation."""
+        qname = "render_farm_jobs"
+        subject = "Render Frame 42"
+        body = "blender -b project.blend -f 42"
+
+        # Enqueue task
+        res_enq = self.run_locutus([
+            "enqueue", qname,
+            "--subject", subject,
+            "--body", body,
+            "--type", "task",
+            "--from", "scheduler_agent",
+        ])
+        self.assertEqual(res_enq.returncode, 0)
+        msg_id = res_enq.stdout.strip()
+        self.assertTrue(msg_id.startswith("msg_"))
+
+        # Work the queue
+        res_work = self.run_locutus(["work", qname, "5"])
+        self.assertEqual(res_work.returncode, 0)
+
+        # Validate message schema with Pydantic
+        msg = LocutusMessage.model_validate_json(res_work.stdout)
+        self.assertEqual(msg.id, msg_id)
+        self.assertEqual(msg.from_agent, "scheduler_agent")
+        self.assertEqual(msg.to_agent, f"queue:{qname}")
+        self.assertEqual(msg.subject, subject)
+        self.assertEqual(msg.body, body)
+
+        # Work on now-empty queue with 1s timeout returns (nil)
+        res_empty = self.run_locutus(["work", qname, "1"])
+        self.assertEqual(res_empty.returncode, 0)
+        self.assertEqual(res_empty.stdout.strip(), "(nil)")
+
+    def test_29_synchronous_request_rpc(self):
+        """Test synchronous RPC 'locutus request' roundtrip between requester and responder."""
+        server_agent = "rpc_server_agent"
+        self.run_locutus(["open", server_agent, "rpc"])
+
+        def server_loop():
+            req_res = self.run_locutus(["listen", server_agent, "5"])
+            if req_res.returncode == 0 and req_res.stdout.strip() not in ["", "(nil)"]:
+                data = json.loads(req_res.stdout)
+                reply_to = data.get("reply_to")
+                if reply_to:
+                    self.run_locutus([
+                        "--agent-name=" + server_agent,
+                        "send",
+                        "--to", reply_to,
+                        "--type", "reply",
+                        "--subject", "RPC Result",
+                        "--body", "answer:42"
+                    ])
+
+        t = threading.Thread(target=server_loop)
+        t.start()
+        time.sleep(0.3)
+
+        # Requester calls request
+        res_req = self.run_locutus([
+            "--agent-name=rpc_client_agent",
+            "request",
+            "--to", server_agent,
+            "--subject", "Math Question",
+            "--body", "What is 6 * 7?",
+            "--timeout", "8"
+        ])
+        t.join(timeout=10)
+
+        self.assertEqual(res_req.returncode, 0)
+        reply_msg = LocutusMessage.model_validate_json(res_req.stdout)
+        self.assertEqual(reply_msg.body, "answer:42")
+        self.assertEqual(reply_msg.subject, "RPC Result")
+
+        # Also test --raw mode
+        t2 = threading.Thread(target=server_loop)
+        t2.start()
+        time.sleep(0.3)
+
+        res_raw = self.run_locutus([
+            "--agent-name=rpc_client_agent",
+            "request",
+            "--to", server_agent,
+            "--subject", "Math Question 2",
+            "--body", "What is 6 * 7 again?",
+            "--timeout", "8",
+            "--raw"
+        ])
+        t2.join(timeout=10)
+
+        self.assertEqual(res_raw.returncode, 0)
+        self.assertEqual(res_raw.stdout.strip(), "answer:42")
+
+        self.run_locutus(["close", server_agent])
+
+    def test_30_ephemeral_pub_sub(self):
+        """Test ephemeral streaming with 'locutus pub' and 'locutus sub'."""
+        channel = "telemetry_test"
+        message = "METRIC:cpu_temp=48C"
+
+        received = []
+        def sub_worker():
+            res_sub = self.run_locutus(["sub", channel, "5"])
+            if res_sub.returncode == 0:
+                received.append(res_sub.stdout.strip())
+
+        t = threading.Thread(target=sub_worker)
+        t.start()
+        time.sleep(0.4)
+
+        # Publish message
+        res_pub = self.run_locutus(["pub", channel, message])
+        self.assertEqual(res_pub.returncode, 0)
+        t.join(timeout=6)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0], message)
+
+        # Test sub timeout on silent channel
+        res_silent = self.run_locutus(["sub", "silent_channel_empty", "1"])
+        self.assertEqual(res_silent.returncode, 0)
+        self.assertEqual(res_silent.stdout.strip(), "(nil)")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

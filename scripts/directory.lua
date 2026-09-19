@@ -17,7 +17,11 @@ end
 local result = {}
 for _, agent in ipairs(agents) do
     local alive = redis.call('EXISTS', prefix .. 'heartbeat:' .. agent)
-    local tags = redis.call('HGET', prefix .. 'agent:' .. agent, 'tags') or ""
-    table.insert(result, agent .. "|" .. tostring(alive) .. "|" .. tags)
+    local meta = redis.call('HMGET', prefix .. 'agent:' .. agent, 'tags', 'state', 'activity')
+    local tags = meta[1] or ""
+    local state = meta[2] or "idle"
+    local activity = meta[3] or ""
+    table.insert(result, agent .. "|" .. tostring(alive) .. "|" .. tags .. "|" .. state .. "|" .. activity)
 end
 return result
+
