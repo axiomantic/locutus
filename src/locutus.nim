@@ -342,11 +342,11 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
     echo backlog
 
 proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: string,
-            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false) =
+            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false, customTs: string = "") =
   randomize()
   let secret = getSecret()
   let id = if msgId.len > 0: msgId else: "msg_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
-  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let ts = if customTs.len > 0: customTs else: now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
   let finalBody = if cfg.encrypt: encryptAes(body, secret) else: body
 
   # Canonical concatenation for HMAC: id|from|to|type|subject|body|timestamp
@@ -525,6 +525,7 @@ proc main() =
     var tags: seq[string] = @[]
     var replyTo = ""
     var msgId = ""
+    var customTs = ""
 
     var i = 1
     while i < args.len:
@@ -547,9 +548,12 @@ proc main() =
           if t.strip().len > 0: tags.add(t.strip())
         inc i
       elif a.startsWith("--reply-to="): replyTo = a[11..^1]
-      elif a == "--reply-to" and i + 1 < args.len: replyTo = args[i+1]; inc i
+      elif a.startsWith("--reply_to="): replyTo = a[11..^1]
+      elif (a == "--reply-to" or a == "--reply_to") and i + 1 < args.len: replyTo = args[i+1]; inc i
       elif a.startsWith("--id="): msgId = a[5..^1]
       elif a == "--id" and i + 1 < args.len: msgId = args[i+1]; inc i
+      elif a.startsWith("--timestamp="): customTs = a[12..^1]
+      elif a == "--timestamp" and i + 1 < args.len: customTs = args[i+1]; inc i
       elif not a.startsWith("-"):
         # Positional arguments fallback: <to> <subject> <body>
         if toAgent == "": toAgent = a
@@ -568,7 +572,7 @@ proc main() =
         stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
       quit(1)
 
-    doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast)
+    doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)
 
   of "who":
     let filterTag = if args.len > 1: args[1] else: cfg.project
