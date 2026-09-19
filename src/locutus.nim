@@ -219,7 +219,17 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
     var p = startProcess("redis-cli", args = fullArgs, options = {poUsePath, poStdErrToStdOut})
     if p.inputStream != nil:
       p.inputStream.close()
-    let outStr = p.outputStream.readAll()
+    var outStr = ""
+    var line = ""
+    while true:
+      if p.outputStream.readLine(line):
+        outStr.add(line)
+        outStr.add("\n")
+      elif not running(p):
+        break
+    while p.outputStream.readLine(line):
+      outStr.add(line)
+      outStr.add("\n")
     let exitCode = p.waitForExit()
     p.close()
     return (outStr, exitCode)
@@ -232,7 +242,17 @@ proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
     var p = startProcess("docker", args = dockerArgs, options = {poUsePath, poStdErrToStdOut})
     if p.inputStream != nil:
       p.inputStream.close()
-    let outStr = p.outputStream.readAll()
+    var outStr = ""
+    var line = ""
+    while true:
+      if p.outputStream.readLine(line):
+        outStr.add(line)
+        outStr.add("\n")
+      elif not running(p):
+        break
+    while p.outputStream.readLine(line):
+      outStr.add(line)
+      outStr.add("\n")
     let exitCode = p.waitForExit()
     p.close()
     return (outStr, exitCode)

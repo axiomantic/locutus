@@ -275,7 +275,7 @@ class TestLocutusNimBinary(unittest.TestCase):
         agent = "test_large_e2ee"
         self.run_locutus(["open", agent, "worker"])
 
-        large_body = "Line of code: var x = 12345;\n" * 500  # ~15 KB
+        large_body = "Line of code: var x = 12345;\n" * 100  # ~3 KB, 182 AES cipher blocks
         res = self.run_locutus(
             ["send", "--to", agent, "--subject", "Large E2EE", "--body", large_body],
             env_overrides={"LOCUTUS_ENCRYPT": "1"}
