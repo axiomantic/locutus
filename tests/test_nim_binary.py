@@ -212,6 +212,10 @@ class TestLocutusNimBinary(unittest.TestCase):
         res_qa = self.run_locutus(["listen", "agent_qa", "1"])
         self.assertEqual(res_qa.returncode, 0)
         self.assertIn("QA Notice", res_qa.stdout)
+        msg_qa = LocutusMessage.model_validate_json(res_qa.stdout.strip())
+        self.assertEqual(msg_qa.to_agent, "@qa")
+        self.assertEqual(msg_qa.subject, "QA Notice")
+        self.assertEqual(msg_qa.body, "Only for QA")
 
         # agent_dev should NOT receive it ((nil))
         res_dev = self.run_locutus(["listen", "agent_dev", "1"])

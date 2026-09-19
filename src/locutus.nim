@@ -708,7 +708,13 @@ proc main() =
       inc i
 
     if isBroadcast and toAgent == "":
-      toAgent = cfg.project
+      if tags.len > 0:
+        if "*" in tags or "@all" in tags:
+          toAgent = "*"
+        else:
+          toAgent = "@" & tags.join(",")
+      else:
+        toAgent = if cfg.project.len > 0: "@" & cfg.project else: "*"
 
     if (not isBroadcast and toAgent.len == 0) or subject.len == 0 or body.len == 0:
       stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")

@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-41%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-46%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
@@ -431,7 +431,7 @@ Locutus supports Redis Cluster hash tags automatically:
 
 Locutus is packaged as an assistant skill for Claude Code, Antigravity, and other coding assistants:
 
-- **Skill Specification**: [`SKILL.md`](SKILL.md) (streamlined to 99 lines for minimal context overhead)
+- **Skill Specification**: [`SKILL.md`](SKILL.md) (streamlined to 98 lines for minimal context overhead)
 - **Slash Commands**: `/locutus open`, `/locutus send`, `/locutus broadcast`, `/locutus who`, `/locutus tag`, `/locutus close`
 - **Wire Specification**: [`references/wire_spec.md`](references/wire_spec.md)
 - **Validation Schema**: [`tests/schema.py`](tests/schema.py) (strict Pydantic envelope model)
@@ -444,9 +444,9 @@ Empirically measured end-to-end wall-clock timings on Apple Silicon against loca
 
 | Metric | Measurement | Description |
 | :--- | :--- | :--- |
-| **Binary Size** | `308 KB` | Standalone static binary, zero runtime dependencies |
-| **Cold Process Startup** | `~5.5 ms` | Full process spawn, arg parsing, OpenSSL bindings |
-| **End-to-End Send Dispatch** | `~11.9 ms` | CLI invocation, HMAC-SHA256 signature, JSON encode, EVALSHA |
+| **Binary Size** | `~313 KB` | Standalone static binary (stripped), zero runtime dependencies |
+| **Cold Process Startup** | `~5.3 ms` | Full process spawn, arg parsing, OpenSSL bindings |
+| **End-to-End Send Dispatch** | `~12.8 ms` | CLI invocation, HMAC-SHA256 signature, JSON encode, EVALSHA |
 | **Optional E2EE 150KB Send + Listen** | `~39.7 ms` | Full roundtrip: AES-256 PBKDF2 (10k iter) encrypt + Redis + decrypt |
 | **Idle Token Consumption** | `0 tokens` | Blocking `BRPOP` listener consumes zero LLM tokens while waiting |
 
@@ -457,7 +457,7 @@ Empirically measured end-to-end wall-clock timings on Apple Silicon against loca
 Locutus includes a 100% automated test suite:
 
 ```bash
-# Run all 41 hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
+# Run all 46 hermetic unit tests (Protocol, Security, Native Binary, Cross-Platform Installer)
 .venv/bin/python3 -m unittest discover tests
 
 # Optional: Run live single-agent autonomous Ollama test (requires local Ollama)
@@ -467,7 +467,7 @@ Locutus includes a 100% automated test suite:
 .venv/bin/python3 tests/test_multi_agent_pingpong.py
 ```
 
-Continuous Integration (GitHub Actions) runs strictly the 41 hermetic unit tests against live Redis services across Ubuntu Linux, macOS, and Windows. The standalone LLM scripts are for local end-to-end model verification and are automatically omitted from CI runs.
+Continuous Integration (GitHub Actions) runs strictly the 46 hermetic unit tests (49 total discovered tests) against live Redis services across Ubuntu Linux, macOS, and Windows. The standalone LLM scripts are for local end-to-end model verification and are automatically skipped when Ollama is offline.
 
 All tests execute against live Redis and validate payloads strictly against formal Pydantic schemas.
 
