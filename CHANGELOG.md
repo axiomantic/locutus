@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`locutus reply` First-Class Command**: Native CLI subcommand for replying directly to messages (`locutus reply --to <sender> --subject <subj> --body <body> [--reply-to <id>]`), automatically tagging the message with `type = reply`.
+- **Atomic Listener Piggybacking (`--listen` / `-l`)**: Added `--listen` and `--listen-timeout` flags to `locutus send` and `locutus reply`. When enabled, Locutus delivers the outbound message, logs status to `stderr`, and seamlessly transitions the same running process into blocking wait on the agent's inbox. This prevents coding assistants from dropping background listeners during multi-turn work.
+- **Capability-Based Dual-Strategy Ear Architecture in Skills**: Updated `SKILL.md` to instruct assistants to self-select their listener strategy based on native runtime tool capabilities rather than assistant brand names:
+  - **Strategy A (Dedicated Ear Subagent)**: For runtimes supporting asynchronous subagent-to-parent messaging.
+  - **Strategy B (Atomic Piggybacked Re-Arm)**: For single-agent / linear shell runtimes using `--listen`.
+
 ## [0.1.1] - 2026-09-19
 
 ### Added

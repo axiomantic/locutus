@@ -1004,6 +1004,159 @@ secret = "my_inline_secret_test_555"
 
         self.run_locutus(["close", agent])
 
+    def test_37_send_with_listen_piggyback(self):
+        """Test 'locutus send ... --listen' sends to recipient and immediately blocks on sender's inbox."""
+        alice = "alice_piggyback"
+        bob = "bob_piggyback"
+        self.run_locutus(["open", alice, "dev"])
+        self.run_locutus(["open", bob, "dev"])
+
+        alice_res = []
+        alice_err = []
+
+        def alice_sender_listener():
+            try:
+                # Alice sends task to Bob and immediately listens for reply on her inbox
+                res = self.run_locutus([
+                    "send",
+                    "--to", bob,
+                    "--from", alice,
+                    "--subject", "Task for Bob",
+                    "--body", "Compute hash",
+                    "--listen"
+                ])
+                alice_res.append(res)
+            except Exception as e:
+                alice_err.append(str(e))
+
+        t = threading.Thread(target=alice_sender_listener)
+        t.start()
+
+        # Allow Alice to send and enter listener loop
+        time.sleep(0.5)
+        self.assertTrue(t.is_alive(), "Alice should be blocked waiting for incoming reply")
+
+        # Bob drains his inbox
+        bob_drain = self.run_locutus(["drain", "1", bob])
+        self.assertEqual(bob_drain.returncode, 0)
+        bob_msg = json.loads(bob_drain.stdout.strip())
+        self.assertEqual(bob_msg["from"], alice)
+        self.assertEqual(bob_msg["subject"], "Task for Bob")
+        self.assertEqual(bob_msg["body"], "Compute hash")
+
+        # Bob replies to Alice
+        bob_reply = self.run_locutus([
+            "send",
+            "--to", alice,
+            "--from", bob,
+            "--type", "reply",
+            "--subject", "Re: Task for Bob",
+            "--body", "hash_result_abcdef"
+        ])
+        self.assertEqual(bob_reply.returncode, 0)
+
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive(), "Alice should have unblocked upon receiving Bob's reply")
+        self.assertEqual(len(alice_err), 0)
+        self.assertEqual(len(alice_res), 1)
+        res_a = alice_res[0]
+        self.assertEqual(res_a.returncode, 0)
+
+        # Verify stdout is clean JSON and contains ONLY the reply message (no send confirmation noise)
+        data = json.loads(res_a.stdout.strip())
+        self.assertEqual(data["from"], bob)
+        self.assertEqual(data["to"], alice)
+        self.assertEqual(data["subject"], "Re: Task for Bob")
+        self.assertEqual(data["body"], "hash_result_abcdef")
+
+        # Verify stderr logged the send status and listener transition
+        self.assertIn("[LOCUTUS BUS] Message sent to bob_piggyback", res_a.stderr)
+
+        self.run_locutus(["close", alice])
+        self.run_locutus(["close", bob])
+
+    def test_38_reply_command_with_listen(self):
+        """Test 'locutus reply ... --listen' sends type=reply with reply_to and blocks cleanly."""
+        carol = "carol_worker"
+        dave = "dave_worker"
+        self.run_locutus(["open", carol, "team"])
+        self.run_locutus(["open", dave, "team"])
+
+        dave_res = []
+        dave_err = []
+
+        def dave_reply_listener():
+            try:
+                # Dave replies to Carol with --reply-to and --listen
+                res = self.run_locutus([
+                    "reply",
+                    "--to", carol,
+                    "--from", dave,
+                    "--reply-to", "req_msg_999",
+                    "--subject", "Task Complete",
+                    "--body", "Built successfully",
+                    "--listen"
+                ])
+                dave_res.append(res)
+            except Exception as e:
+                dave_err.append(str(e))
+
+        t = threading.Thread(target=dave_reply_listener)
+        t.start()
+
+        time.sleep(0.5)
+        self.assertTrue(t.is_alive(), "Dave should be blocked waiting for subsequent message")
+
+        # Carol drains her inbox to verify reply structure
+        carol_drain = self.run_locutus(["drain", "1", carol])
+        self.assertEqual(carol_drain.returncode, 0)
+        rep = json.loads(carol_drain.stdout.strip())
+        self.assertEqual(rep["type"], "reply")
+        self.assertEqual(rep["from"], dave)
+        self.assertEqual(rep["to"], carol)
+        self.assertEqual(rep["reply_to"], "req_msg_999")
+        self.assertEqual(rep["subject"], "Task Complete")
+        self.assertEqual(rep["body"], "Built successfully")
+
+        # Carol sends next instruction to Dave
+        carol_next = self.run_locutus([
+            "send",
+            "--to", dave,
+            "--from", carol,
+            "--subject", "Next Task",
+            "--body", "Run deploy"
+        ])
+        self.assertEqual(carol_next.returncode, 0)
+
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive(), "Dave should have unblocked upon receiving Carol's next message")
+        self.assertEqual(len(dave_err), 0)
+        self.assertEqual(len(dave_res), 1)
+        res_d = dave_res[0]
+        self.assertEqual(res_d.returncode, 0)
+
+        # Dave's stdout must be clean JSON
+        next_msg = json.loads(res_d.stdout.strip())
+        self.assertEqual(next_msg["from"], carol)
+        self.assertEqual(next_msg["subject"], "Next Task")
+        self.assertEqual(next_msg["body"], "Run deploy")
+
+        # Verify timeout mode on send/reply with --listen-timeout
+        timeout_res = self.run_locutus([
+            "reply",
+            "--to", carol,
+            "--from", dave,
+            "--subject", "Quick reply",
+            "--body", "ack",
+            "--listen-timeout", "1"
+        ])
+        self.assertEqual(timeout_res.returncode, 0)
+        # Empty inbox after 1s should return 0 bytes stdout
+        self.assertEqual(timeout_res.stdout.strip(), "")
+
+        self.run_locutus(["close", carol])
+        self.run_locutus(["close", dave])
+
 
 if __name__ == "__main__":
     unittest.main()

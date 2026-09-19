@@ -23,15 +23,18 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
    - All messages require valid HMAC-SHA256 signatures derived from `~/.config/locutus/secret` (0600 mode).
    - `locutus listen` drops unauthenticated, forged, or tampered payloads at the process boundary before reaching stdout. The assistant never receives malicious prompts into its context window.
    - Optional E2EE: Setting `LOCUTUS_ENCRYPT=1` encrypts task bodies via OpenSSL AES-256-CBC PBKDF2 across Redis.
-5. **Continuous Ear Invariant (Infinite Silent Listener & Zero Token Churn)**:
-   - Once registered (`locutus open`), the agent MUST maintain an active background listener until explicitly closed via `locutus close`.
-   - Run bare `locutus listen` (or `locutus listen <name>`) with NO timeout and NO wrapping shell loops.
+5. **Continuous Ear Invariant & Listening Strategy Selection**:
+   - Once registered (`locutus open`), the assistant MUST maintain an active listener at all times until explicitly closed via `locutus close`.
    - **Zero Token Churn**: Locutus blocks silently in native code and internally renews its Redis heartbeat. It outputs 0 bytes and never wakes up the assistant until an authentic message arrives.
    - **No Shell Wrapping Loops**: NEVER wrap `locutus listen` in `while true`, `for`, or background bash scripts. The native binary handles indefinite waiting and heartbeats internally.
-   - **Order of operations on message receipt**:
-     `Wakeup with Message` -> `1. Immediately re-arm locutus listen in background` -> `2. Parse & execute work` -> `3. Send reply`.
-   - Re-arming immediately on wakeup ensures the listener is active while performing multi-step work without missing messages or incurring token churn (since it blocks silently until the next message arrives).
-   - **Turn-End Invariant**: Unless `locutus close` was commanded, NEVER conclude a turn without an active `locutus listen` background task running.
+   - **Choose Your Strategy Based On Tool Capabilities**:
+     Inspect your environment and available tool definitions to determine which listener pattern fits your runtime:
+     - **Strategy A (Dedicated Ear Subagent)**: If your runtime equips you with tools to spawn background subagents/workers AND tools that send asynchronous messages or events back to the parent agent.
+       *Action*: Spawn a single, dedicated "Ear" subagent whose sole job is to run `locutus listen <my-name>` in an endless loop and forward each received payload back to the parent.
+     - **Strategy B (Atomic Piggybacked Re-Arm via `--listen`)**: If your runtime operates as a single-agent linear process, or if child agents cannot asynchronously message the parent.
+       *Action*: Launch the initial listener in the background (`locutus listen`). Whenever concluding a task or forwarding work, couple the re-arm directly to your reply/send command:
+       `locutus reply --to <sender> --subject "Re: <subj>" --body "<result>" --reply-to <id> --listen`
+       Locutus delivers the reply, logs status to `stderr`, and seamlessly transitions the same running process into blocking on your inbox, delivering pure JSON on `stdout` when the next message arrives.
 6. **Agent Identity & Host Isolation**:
    - Multiple assistants on the same computer are isolated via process environment (`export LOCUTUS_AGENT_NAME=<name>`) and workspace directory (`.locutus.agent`).
    - `locutus listen` requires an identifiable agent name (explicit argument, `LOCUTUS_AGENT_NAME`, or workspace `.locutus.agent`).
@@ -48,8 +51,8 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | :--- | :--- |
 | **Register & Announce** | `locutus open [name] [tags]` |
 | **Arm Background Listener** | `locutus listen [name] [timeout_sec]` |
-| **Send Direct Task (O2O)** | `locutus send --to <recipient> --subject "<subj>" --body "<body>"` |
-| **Send Reply** | `locutus send --to <sender> --type reply --subject "Re: <subj>" --body "<body>" --reply-to <msg_id>` |
+| **Send Direct Task (O2O)** | `locutus send --to <recipient> --subject "<subj>" --body "<body>" [--listen/-l]` |
+| **Send Reply** | `locutus reply --to <sender> --subject "Re: <subj>" --body "<body>" [--reply-to <msg_id>] [--listen/-l]` |
 | **Broadcast (O2M)** | `locutus broadcast --tags "<tags>" --subject "<subj>" --body "<body>"` |
 | **Synchronous RPC** | `locutus request --to <recipient> --subject "<subj>" --body "<body>" [--timeout 30] [--raw]` |
 | **Produce to Work Queue** | `locutus enqueue <queue_name> --subject "<subj>" --body "<body>"` |
@@ -83,30 +86,51 @@ locutus open my-agent-1 "backend,qa"
 > export LOCUTUS_AGENT_NAME="my-agent-1"
 > ```
 
-### Step 2: Arm the Secure Background Listener (Zero Token Churn)
-Launch `locutus listen` as a background command:
-```bash
-locutus listen
-# Or with explicit agent name:
-locutus listen my-agent-1
-```
-- In assistants with background task notifications (Claude Code, Antigravity): stop calling tools and wait for wakeup notification.
-- **NEVER use a timeout or wrap in a shell loop (`while true; do ... done`)**. Locutus blocks indefinitely in native code and refreshes its Redis heartbeat every 60s silently. It wakes the assistant ONLY when an authentic message arrives, consuming zero prompt tokens while idling.
+### Step 2: Maintain Continuous Listening (Choose Strategy A or Strategy B)
 
-#### Continuous Ear Invariant (Unbreakable Listener Loop)
-Once registered, the assistant MUST keep an active background listener running at all times until `locutus close` is requested:
-1. **Immediate Hot Re-Arm (First Action on Wakeup)**:
-   When `locutus listen` completes with an incoming message payload:
-   **Re-arm `locutus listen` in the background IMMEDIATELY as your very first tool call.**
+Never miss a message while busy executing tasks. Inspect your available tools and adopt the strategy matching your runtime capabilities:
+
+#### Strategy A: Dedicated Ear Subagent (Asynchronous Multi-Agent Runtimes)
+*Use this strategy if your environment provides tools to spawn subagents AND communicate/send messages back to the parent agent.*
+
+1. **Spawn the Ear Subagent**:
+   Immediately after `locutus open`, launch a dedicated background subagent with this explicit role and instruction:
+   > **Role**: Locutus Ear / Bus Listener  
+   > **Instructions**:
+   > "You are the dedicated Locutus bus listener for agent '<my-name>'. Run this loop continuously:
+   > 1. Execute `locutus listen <my-name>` (this blocks silently until an authentic message arrives).
+   > 2. When `locutus listen` returns an incoming JSON payload, immediately forward that full message payload to the parent agent using your agent messaging tool.
+   > 3. Immediately repeat step 1 to listen for the next message.
+   > Do NOT attempt to execute tasks, write code, or edit files yourself. Your sole duty is listening and forwarding."
+2. **Perpetual Bus Connection**:
+   Because the Ear subagent has only one task, it never gets distracted by multi-turn coding, refactoring, or tool execution. It keeps an unbreakable ear on the bus, forwarding work to the parent agent reactively.
+
+#### Strategy B: Piggybacked Re-Arm via `--listen` (Single-Agent / Linear Runtimes)
+*Use this strategy if your environment operates as a single agent or lacks asynchronous subagent-to-parent messaging.*
+
+In linear runtimes, assistants frequently drop background listeners during complex multi-step tasks. Locutus solves this via the `--listen` (`-l`) piggyback flag, coupling the re-arm directly to task completion:
+
+1. **Initial Arming**:
+   Launch the initial listener in the background:
    ```bash
    locutus listen
    ```
-   Do NOT defer re-arming until after executing the work or sending the reply. Real task execution requires multiple tool calls and steps; deferring re-arm leaves the assistant deaf to cancellation requests, urgent tasks, or bus updates during active execution.
-2. **Order of Operations on Message Receipt**:
-   `Wakeup` -> `[1. Re-arm locutus listen in background]` -> `[2. Parse payload & execute work]` -> `[3. Send reply]`
-3. **Turn-End Invariant**:
-   - Unless `locutus close` was explicitly commanded by the user, **NEVER conclude a turn without an active `locutus listen` background task running**.
-   - If a message arrived: execute the task, send reply (`locutus send --to "<from>" --type reply --subject "Re: <subject>" --body "<result>" --reply-to "<id>"`), and conclude. The background listener is already actively waiting for the next message.
+2. **Wakeup & Execution**:
+   When a message arrives into your context, parse the payload and execute the requested work.
+3. **Atomic Reply & Re-Arm**:
+   When your work is done, send your reply using `locutus reply` with `--listen` in the background:
+   ```bash
+   locutus reply --to "<sender>" --subject "Re: <subject>" --body "<result>" --reply-to "<id>" --listen
+   ```
+   Or if sending a new task or query:
+   ```bash
+   locutus send --to "<recipient>" --subject "<subj>" --body "<body>" --listen
+   ```
+   **How It Works**:
+   - Locutus sends the message and emits a status log to `stderr`.
+   - In the exact same process, it seamlessly begins listening on your inbox.
+   - When the next message arrives, the process exits cleanly with pure JSON on `stdout`.
+   - Because LLMs naturally send a reply when concluding a task, piggybacking ensures the listener is never dropped.
 
 ### Step 3: Advanced Coordination Protocols
 

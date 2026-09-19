@@ -459,8 +459,11 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
     echo "\n[PENDING BACKLOG]:"
     echo backlog
 
+proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1)
+
 proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: string,
-            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false, customTs: string = "", echoResult: bool = true): string =
+            tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false,
+            customTs: string = "", echoResult: bool = true, rearmListen: bool = false, listenTimeoutSec: int = -1): string =
   randomize()
   let secret = getSecret(cfg)
   let id = if msgId.len > 0: msgId else: "msg_" & $getTime().toUnix() & "_" & fromAgent & "_" & $rand(1000..9999)
@@ -525,8 +528,17 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
   else:
     res = runLuaScript(cfg.redisUrl, sendO2oLua, sendO2oSha, [cfg.prefix, toAgent, msgJson, $effectiveTtl])
 
-  if echoResult:
+  if echoResult and not rearmListen:
     echo res
+
+  if rearmListen:
+    let listenerAgent = if fromAgent.len > 0: fromAgent else: getActiveAgentName(cfg, "", fallbackDefault = true)
+    if listenerAgent.len == 0:
+      stderr.writeLine("Error: Cannot listen after send: no agent name identified.")
+      quit(1)
+    stderr.writeLine("[LOCUTUS BUS] Message sent to " & toAgent & ". Now listening on inbox for " & listenerAgent & "...")
+    doListen(cfg, listenerAgent, listenTimeoutSec)
+
   return res
 
 
@@ -922,7 +934,8 @@ proc main() =
     echo "  locutus version"
     echo "  locutus open [name] [tags]"
     echo "  locutus listen [name] [timeout_sec]"
-    echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body>"
+    echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body> [--listen/-l]"
+    echo "  locutus reply --to <agent> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]"
     echo "  locutus broadcast [--tags <tags>] --subject <subj> --body <body>"
     echo "  locutus request --to <agent> --subject <subj> --body <body> [--timeout 30] [--raw]"
     echo "  locutus enqueue <queue_name> --subject <subj> --body <body>"
@@ -1017,10 +1030,11 @@ proc main() =
       quit(1)
     doListen(cfg, name, timeout)
 
-  of "send", "broadcast":
+  of "send", "broadcast", "reply":
     let isBroadcast = (subcmd == "broadcast")
+    let isReply = (subcmd == "reply")
     var toAgent = ""
-    var msgType = "task"
+    var msgType = if isReply: "reply" else: "task"
     var fromAgent = getActiveAgentName(cfg, "")
     var subject = ""
     var body = ""
@@ -1028,6 +1042,8 @@ proc main() =
     var replyTo = ""
     var msgId = ""
     var customTs = ""
+    var rearmListen = false
+    var listenTimeout = -1
 
     var i = 1
     while i < args.len:
@@ -1056,6 +1072,18 @@ proc main() =
       elif a == "--id" and i + 1 < args.len: msgId = args[i+1]; inc i
       elif a.startsWith("--timestamp="): customTs = a[12..^1]
       elif a == "--timestamp" and i + 1 < args.len: customTs = args[i+1]; inc i
+      elif a in ["--listen", "-l"]:
+        rearmListen = true
+      elif a.startsWith("--listen="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[9..^1]) except ValueError: discard
+      elif a.startsWith("--listen-timeout="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[17..^1]) except ValueError: discard
+      elif a == "--listen-timeout" and i + 1 < args.len:
+        rearmListen = true
+        try: listenTimeout = parseInt(args[i+1]) except ValueError: discard
+        inc i
       elif not a.startsWith("-"):
         # Positional arguments fallback: <to> <subject> <body>
         if toAgent == "": toAgent = a
@@ -1075,16 +1103,21 @@ proc main() =
     if (not isBroadcast and toAgent.len == 0) or subject.len == 0 or body.len == 0:
       if not isBroadcast and toAgent.len == 0:
         stderr.writeLine("Error: Missing required argument '--to <recipient>'.")
-        stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body>")
+        if isReply:
+          stderr.writeLine("Usage: locutus reply --to <recipient> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]")
+        else:
+          stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body> [--listen/-l]")
       else:
         stderr.writeLine("Error: Missing required arguments. --subject and --body are required.")
-        if not isBroadcast:
-          stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body>")
+        if isReply:
+          stderr.writeLine("Usage: locutus reply --to <recipient> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]")
+        elif not isBroadcast:
+          stderr.writeLine("Usage: locutus send --to <recipient> --subject <subj> --body <body> [--listen/-l]")
         else:
           stderr.writeLine("Usage: locutus broadcast [--tags <tags>] --subject <subj> --body <body>")
       quit(1)
 
-    discard doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)
+    discard doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs, echoResult = true, rearmListen = rearmListen, listenTimeoutSec = listenTimeout)
 
   of "who":
     var filterTag = cfg.project
