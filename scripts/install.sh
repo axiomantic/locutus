@@ -23,13 +23,36 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" || "${1:-}" == "-u" ]
   echo "=== Locutus Uninstaller ==="
   REMOVED=0
 
-  # Check Homebrew
+  # A. Remove Skills
+  echo "Checking for installed Locutus AI agent skills..."
+  if command -v npx >/dev/null 2>&1; then
+    npx -y skills remove locutus -g -a '*' -y 2>/dev/null || true
+  fi
+  if command -v skilz >/dev/null 2>&1; then
+    skilz -y remove locutus 2>/dev/null || true
+  fi
+  for sdir in \
+    "${HOME}/.claude/skills/locutus" \
+    "${HOME}/.gemini/config/skills/locutus" \
+    "${HOME}/.gemini/antigravity/skills/locutus" \
+    "${HOME}/.agents/skills/locutus" \
+    "${HOME}/.codex/skills/locutus" \
+    "${HOME}/.hermes/skills/locutus" \
+    "${HOME}/.pi/agent/skills/locutus"; do
+    if [ -d "$sdir" ]; then
+      echo "Removing skill directory: $sdir"
+      rm -rf "$sdir"
+      REMOVED=1
+    fi
+  done
+
+  # B. Check Homebrew
   if command -v brew >/dev/null 2>&1 && brew list locutus >/dev/null 2>&1; then
     echo "Detected Homebrew installation. Removing..."
     brew uninstall locutus && REMOVED=1
   fi
 
-  # Check Debian / dpkg
+  # C. Check Debian / dpkg
   if command -v dpkg >/dev/null 2>&1 && dpkg -s locutus >/dev/null 2>&1; then
     echo "Detected Debian/dpkg installation. Removing..."
     if [ "${EUID:-$(id -u)}" -eq 0 ]; then
@@ -42,7 +65,7 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" || "${1:-}" == "-u" ]
     REMOVED=1
   fi
 
-  # Check standard binary paths
+  # D. Check standard binary paths
   for p in "/usr/local/bin/locutus" "${HOME}/.local/bin/locutus" "${INSTALL_DIR:-}/locutus"; do
     if [ -f "$p" ]; then
       echo "Removing binary at: $p"
@@ -56,7 +79,7 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" || "${1:-}" == "-u" ]
   done
 
   if [ "$REMOVED" -eq 1 ]; then
-    echo "✓ Locutus has been completely uninstalled."
+    echo "✓ Locutus (binary and AI agent skills) has been completely uninstalled."
     echo "Note: Configuration files in ~/.config/locutus were preserved."
     echo "To remove config & secrets: rm -rf ~/.config/locutus"
   else
@@ -168,8 +191,80 @@ build_from_source() {
 # If user explicitly requested source build
 if [ "${BUILD_FROM_SOURCE:-0}" = "1" ]; then
   build_from_source
+  install_skills
   exit 0
 fi
+
+# Helper: Install AI Agent Skills
+install_skills() {
+  if [ "${NO_SKILLS:-0}" = "1" ] || [[ "${1:-}" == "--no-skills" ]]; then
+    echo "Skipping AI agent skill installation (--no-skills requested)."
+    return 0
+  fi
+
+  echo ""
+  echo "=== Installing Locutus AI Agent Skills ==="
+  SKILL_INSTALLED=0
+
+  # Option A: skills.sh (Vercel Labs) via npx
+  if command -v npx >/dev/null 2>&1; then
+    echo "Attempting global skill installation via skills.sh (npx)..."
+    if npx -y skills add axiomantic/locutus -g -a '*' -y 2>/dev/null; then
+      echo "✓ Locutus skill installed globally via skills.sh."
+      SKILL_INSTALLED=1
+    fi
+  fi
+
+  # Option B: skilz (Spillwave)
+  if [ "${SKILL_INSTALLED}" -eq 0 ] && command -v skilz >/dev/null 2>&1; then
+    echo "Attempting global skill installation via skilz..."
+    if skilz -y install https://github.com/axiomantic/locutus 2>/dev/null; then
+      echo "✓ Locutus skill installed globally via skilz."
+      SKILL_INSTALLED=1
+    fi
+  fi
+
+  # Option C: Direct fallback to standard assistant directories
+  if [ "${SKILL_INSTALLED}" -eq 0 ]; then
+    echo "Configuring skills directly for detected AI coding assistants..."
+    SKILL_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/SKILL.md"
+    SPEC_URL="https://raw.githubusercontent.com/${REPO}/main/skills/locutus/references/wire_spec.md"
+    TMP_SKILL="$(mktemp -d)"
+    if curl -fsSL -o "${TMP_SKILL}/SKILL.md" "${SKILL_URL}" 2>/dev/null; then
+      mkdir -p "${TMP_SKILL}/references"
+      curl -fsSL -o "${TMP_SKILL}/references/wire_spec.md" "${SPEC_URL}" 2>/dev/null || true
+
+      for target_skill in \
+        "${HOME}/.claude/skills/locutus" \
+        "${HOME}/.gemini/config/skills/locutus" \
+        "${HOME}/.gemini/antigravity/skills/locutus" \
+        "${HOME}/.agents/skills/locutus" \
+        "${HOME}/.codex/skills/locutus" \
+        "${HOME}/.hermes/skills/locutus" \
+        "${HOME}/.pi/agent/skills/locutus"
+      do
+        parent_agent_dir="$(dirname "$(dirname "${target_skill}")")"
+        if [ -d "${parent_agent_dir}" ] || [ -d "$(dirname "${target_skill}")" ]; then
+          mkdir -p "${target_skill}/references"
+          cp "${TMP_SKILL}/SKILL.md" "${target_skill}/SKILL.md"
+          [ -f "${TMP_SKILL}/references/wire_spec.md" ] && cp "${TMP_SKILL}/references/wire_spec.md" "${target_skill}/references/wire_spec.md"
+          echo "  ✓ Installed Locutus skill to: ${target_skill}"
+          SKILL_INSTALLED=1
+        fi
+      done
+      rm -rf "${TMP_SKILL}"
+    fi
+  fi
+
+  if [ "${SKILL_INSTALLED}" -eq 1 ]; then
+    echo "✓ AI Agent Skills configured successfully."
+  else
+    echo "Notice: No coding assistant directories detected yet."
+    echo "Install the skill into your assistant at any time using:"
+    echo "    npx skills add axiomantic/locutus -g"
+    echo "    # Or: skilz install https://github.com/axiomantic/locutus"
+  fi
+}
 
 # 4. Check for Native Platform Package Managers
 # A. macOS with Homebrew
@@ -177,6 +272,7 @@ if [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "Detected Homebrew on macOS. Installing via Homebrew tap..."
   if brew install axiomantic/tap/locutus; then
     echo "✓ Locutus successfully installed via Homebrew."
+    install_skills
     exit 0
   else
     echo "Homebrew tap install failed or pending tap creation. Falling back to binary release..."
@@ -200,6 +296,7 @@ if [ "${OS}" = "linux" ] && [ "${ARCH}" != "unknown" ] && (command -v dpkg >/dev
       dpkg -i "${TMP_DIR}/${DEB_PKG}"
     fi
     echo "✓ Locutus successfully installed from Debian package."
+    install_skills
     exit 0
   else
     echo "Notice: ${DEB_PKG} not found on release, proceeding with standalone binary..."
@@ -244,6 +341,7 @@ if [ "${OS}" != "unknown" ] && [ "${ARCH}" != "unknown" ]; then
       fi
 
       "${DEST_DIR}/locutus" --help >/dev/null 2>&1 && echo "✓ Locutus is ready to use!" || true
+      install_skills
       exit 0
     fi
   else
@@ -264,4 +362,5 @@ if [[ ":$PATH:" != *":${DEST_DIR}:"* ]]; then
 fi
 
 "${DEST_DIR}/locutus" --help >/dev/null 2>&1 && echo "✓ Locutus is ready to use!" || true
+install_skills
 echo "Run 'locutus --help' to get started."

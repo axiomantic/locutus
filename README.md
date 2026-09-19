@@ -19,9 +19,48 @@
 
 ## What is Locutus?
 
-**Locutus** is a command-line tool that lets AI coding assistants (such as Claude Code, Cursor, Windsurf, Antigravity, and Ollama) send messages to each other.
+**Locutus** is an inter-agent communication bus that lets AI coding assistants (such as Claude Code, Cursor, Windsurf, Antigravity, and Ollama) exchange tasks and messages across terminals, editors, and machines.
 
-Instead of running a complex background service, Locutus stores queues and routes messages directly through **Redis**.
+Instead of running a complex background server, Locutus routes and queues messages directly through **Redis**.
+
+---
+
+## 30-Second Quickstart
+
+### 1. Install (Engine + AI Agent Skills)
+
+```bash
+# macOS & Linux: Installs native binary and equips detected coding assistants
+curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
+
+# Or on macOS via Homebrew:
+# brew install axiomantic/tap/locutus
+
+# Windows (PowerShell):
+# irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
+```
+
+### 2. Try it in Two Terminals
+
+**Terminal A (Worker):**
+```bash
+locutus open worker-1 "backend,qa"
+locutus listen 90
+```
+*Registers `worker-1` and waits for incoming tasks with zero CPU and zero token consumption.*
+
+**Terminal B (Sender):**
+```bash
+locutus send --to worker-1 --subject "Run Tests" --body "pytest tests/auth"
+```
+*Terminal A receives and prints the cryptographically authenticated message instantly.*
+
+### 3. Or Use it Inside Your AI Assistant
+
+Once installed, ask **Claude Code**, **Antigravity**, or **OpenCode**:
+> *"Connect to Locutus as worker-1 with tags 'backend,qa' and check for any queued tasks."*
+
+---
 
 ### Why no background service?
 
@@ -101,52 +140,76 @@ Every agent receives tasks through a single atomic inbox: `${PREFIX}inbox:<agent
 
 ---
 
-## Installation Options
+## Installation & Setup
 
-Locutus is distributed as a single, static compiled binary with zero runtime dependencies. Choose your preferred installation method:
+Locutus consists of two components:
+1. **The Native Engine (CLI Binary)**: High-speed, compiled binary (`locutus`) that communicates directly with Redis.
+2. **The AI Agent Skill**: Instructions (`SKILL.md`) that teach your AI assistants (Claude Code, Antigravity, OpenCode, Codex, Cursor) how to use Locutus.
 
-### Method A: Homebrew (macOS & Linux)
+You can install them together in one step, or install each component separately:
+
+### Option 1: Unified One-Line Installer (Recommended)
+
+Installs the native binary **and** automatically configures skills across all detected AI assistants:
+
+```bash
+# macOS & Linux:
+curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
+
+# Windows (PowerShell):
+irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
+```
+
+### Option 2: Install the AI Agent Skill (Using Skill Tools)
+
+If you already have the binary, or prefer to manage skills through standard AI package managers:
+
+#### Via skills.sh (Vercel Labs)
+```bash
+# Install globally for all detected AI assistants:
+npx -y skills add axiomantic/locutus -g -a '*' -y
+
+# Or install for a specific project / assistant:
+npx skills add axiomantic/locutus --agent claude-code
+```
+
+#### Via skilz (Spillwave Solutions)
+```bash
+# Install globally across 30+ supported agent runtimes:
+skilz install https://github.com/axiomantic/locutus
+
+# Or install for a specific project:
+skilz install https://github.com/axiomantic/locutus --project
+```
+
+### Option 3: Install the Native Engine (Binary / Package Managers)
+
+If you manage command-line tools with your system package manager:
+
+#### Homebrew (macOS & Linux)
 ```bash
 brew install axiomantic/tap/locutus
 ```
-*Or tap directly:*
-```bash
-brew tap axiomantic/tap
-brew install locutus
-```
 
-### Method B: Debian / Ubuntu APT Repository
+#### Debian / Ubuntu APT Repository
 ```bash
-# Add the official APT repository
+# 1. Add official APT repository
 echo "deb [trusted=yes] https://axiomantic.github.io/locutus/apt/ ./" | sudo tee /etc/apt/sources.list.d/locutus.list
 
-# Update package index and install
+# 2. Update and install
 sudo apt-get update
 sudo apt-get install -y locutus
 ```
 
-### Method C: Universal One-Line Installer (macOS & Linux)
-```bash
-curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
-```
-*Intelligently prefers native package managers (`brew` / `dpkg`), falls back to pre-compiled binary tarballs with SHA256 checksum verification, and automatically compiles from source (installing Nim if needed) if no pre-built binary matches the architecture.*
-
-### Method D: Windows PowerShell Installer
-Run in PowerShell (Admin not required):
-```powershell
-irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
-```
-*Installs via Scoop if available, falls back to pre-compiled `.zip` archive into `%LOCALAPPDATA%\Programs\locutus`, configures User `PATH`, and falls back to building via Nim if required.*
-
-### Method E: Scoop (Windows)
+#### Windows Scoop
 ```powershell
 scoop install https://raw.githubusercontent.com/axiomantic/locutus/main/packaging/scoop/locutus.json
 ```
 
-### Method F: Standalone Binaries & Manual .deb Download
-Pre-compiled standalone archives and `.deb` files are attached to every [GitHub Release](https://github.com/axiomantic/locutus/releases):
+#### Standalone Pre-Compiled Binaries
+Pre-built archives and Debian packages are attached to every [GitHub Release](https://github.com/axiomantic/locutus/releases):
 
-| OS | Architecture | Package |
+| Operating System | Architecture | Package Archive |
 | :--- | :--- | :--- |
 | **macOS** | Apple Silicon (M1/M2/M3/M4) | `locutus-darwin-arm64.tar.gz` |
 | **macOS** | Intel x86_64 | `locutus-darwin-amd64.tar.gz` |
@@ -156,100 +219,39 @@ Pre-compiled standalone archives and `.deb` files are attached to every [GitHub 
 
 ---
 
-## Easy Uninstallation
+## Uninstallation
 
-Uninstalling Locutus is clean and takes a single command:
+You can remove the skill, the binary, or both:
+
+### 1. Remove the AI Agent Skill (Using Skill Tools)
 
 ```bash
-# macOS / Linux Universal Uninstaller:
-curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash -s -- --uninstall
+# Using skills.sh (npx):
+npx skills remove locutus -g
 
-# Windows PowerShell Uninstaller:
-irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex -ArgumentList "-Uninstall"
+# Using skilz:
+skilz remove locutus
+```
 
-# Or using your system package manager:
+### 2. Remove the Binary / System Package
+
+```bash
 brew uninstall locutus          # Homebrew
-sudo dpkg -r locutus            # Debian / Ubuntu
+sudo apt remove locutus         # Debian / Ubuntu (or sudo dpkg -r locutus)
 scoop uninstall locutus         # Windows Scoop
 ```
+
+### 3. Or Clean Unified Uninstaller (Removes Both Binary & Skills)
+
+```bash
+# macOS & Linux:
+curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash -s -- --uninstall
+
+# Windows (PowerShell):
+irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex -ArgumentList "-Uninstall"
+```
+
 *Note: Configuration files in `~/.config/locutus` are preserved. To completely purge configurations and secret keys, run `rm -rf ~/.config/locutus`.*
-
----
-
-## 30-Second Quickstart
-
-### 1. Install Prerequisites (Nim & Redis)
-
-**macOS:**
-```bash
-# Install Nim compiler & Redis server via Homebrew
-brew install nim redis
-
-# Start Redis service
-brew services start redis
-```
-
-**Linux (Ubuntu / Debian):**
-```bash
-# Install Nim compiler & Redis server
-sudo apt update && sudo apt install -y nim redis-server
-
-# Start Redis service
-sudo systemctl start redis-server
-```
-*(Or install the official Nim toolchain universally via `curl https://nim-lang.org/choosenim/init.sh -sSf | sh`)*
-
-**Windows:**
-```powershell
-# Install Nim and Redis via Scoop or Chocolatey
-scoop install nim redis
-# Or using Chocolatey:
-# choco install nim redis-64 -y
-```
-
-### 2. Clone & Build Locutus
-```bash
-# Clone
-git clone https://github.com/axiomantic/locutus.git
-cd locutus
-
-# Compile standalone native binary (under 1 second)
-# On macOS / Linux:
-nim c -d:release -o:bin/locutus src/locutus.nim
-mkdir -p ~/.local/bin && cp bin/locutus ~/.local/bin/locutus
-
-# On Windows (PowerShell):
-# nim c -d:release -o:bin/locutus.exe src/locutus.nim
-```
-
-### 3. Open Connection in Terminal A (Worker)
-```bash
-locutus open worker-1 "backend,qa"
-```
-```text
-====================================================
-[LOCUTUS BUS] Registered Successfully
-- Agent Name : worker-1
-- Project    : my-project
-- Tags       : my-project,backend,qa
-- Redis URL  : redis://127.0.0.1:6379 (prefix: locutus:)
-- Security   : HMAC-SHA256 authenticated (Air-Gap Prompt Firewall)
-- Engine     : Nim Native (EVALSHA cached)
-- Status     : Active & Listening on inbox
-====================================================
-```
-
-### 4. Arm Background Listener in Terminal A
-```bash
-locutus listen 90
-```
-*Blocks with zero token consumption and automatically refreshes heartbeat.*
-
-### 5. Send Task from Terminal B (Requester)
-```bash
-locutus send --to worker-1 --subject "Run Tests" --body "pytest tests/auth"
-```
-*Terminal A receives and prints the authenticated message instantly.*
 
 ---
 

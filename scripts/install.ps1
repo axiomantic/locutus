@@ -19,7 +19,8 @@
 param(
     [string]$Version = $env:LOCUTUS_VERSION,
     [switch]$Uninstall,
-    [switch]$BuildFromSource
+    [switch]$BuildFromSource,
+    [switch]$NoSkills
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,21 +33,43 @@ if ($Uninstall) {
     Write-Host "=== Locutus Windows Uninstaller ===" -ForegroundColor Cyan
     $removed = $false
 
-    # Check Scoop
+    # A. Remove Skills
+    Write-Host "Checking for installed Locutus AI agent skills..." -ForegroundColor Yellow
+    if (Get-Command npx -ErrorAction SilentlyContinue) {
+        try { & npx -y skills remove locutus -g -a '*' -y 2>$null } catch {}
+    }
+    if (Get-Command skilz -ErrorAction SilentlyContinue) {
+        try { & skilz -y remove locutus 2>$null } catch {}
+    }
+    $skillPaths = @(
+        "$env:USERPROFILE\.claude\skills\locutus",
+        "$env:APPDATA\gemini\skills\locutus",
+        "$env:USERPROFILE\.agents\skills\locutus",
+        "$env:USERPROFILE\.codex\skills\locutus"
+    )
+    foreach ($spath in $skillPaths) {
+        if (Test-Path $spath) {
+            Write-Host "Removing skill directory: $spath..." -ForegroundColor Yellow
+            Remove-Item -Path $spath -Recurse -Force -ErrorAction SilentlyContinue
+            $removed = $true
+        }
+    }
+
+    # B. Check Scoop
     if ((Get-Command scoop -ErrorAction SilentlyContinue) -and (scoop list | Select-String "^locutus\b")) {
         Write-Host "Detected Scoop package. Uninstalling via Scoop..." -ForegroundColor Yellow
         scoop uninstall locutus
         $removed = $true
     }
 
-    # Check Standalone Directory
+    # C. Check Standalone Directory
     if (Test-Path $InstallDir) {
         Write-Host "Removing installation directory: $InstallDir..." -ForegroundColor Yellow
         Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
         $removed = $true
     }
 
-    # Clean User PATH
+    # D. Clean User PATH
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -split ";" -contains $InstallDir) {
         Write-Host "Removing $InstallDir from User PATH..." -ForegroundColor Yellow
@@ -56,7 +79,7 @@ if ($Uninstall) {
     }
 
     if ($removed) {
-        Write-Host "✓ Locutus has been successfully uninstalled." -ForegroundColor Green
+        Write-Host "✓ Locutus (binary and AI agent skills) has been successfully uninstalled." -ForegroundColor Green
         Write-Host "Note: Configuration files in %APPDATA%\locutus were preserved."
     } else {
         Write-Host "Locutus does not appear to be installed on this system." -ForegroundColor Gray
@@ -140,11 +163,95 @@ function Build-FromSource {
     }
 }
 
+# Helper: Install AI Agent Skills
+function Install-Skills {
+    if ($NoSkills -or ($env:NO_SKILLS -eq "1")) {
+        Write-Host "Skipping AI agent skill installation (-NoSkills requested)." -ForegroundColor Gray
+        return
+    }
+
+    Write-Host "`n=== Installing Locutus AI Agent Skills ===" -ForegroundColor Cyan
+    $skillInstalled = $false
+
+    # Option A: skills.sh via npx
+    if (Get-Command npx -ErrorAction SilentlyContinue) {
+        Write-Host "Attempting global skill installation via skills.sh (npx)..." -ForegroundColor Yellow
+        try {
+            & npx -y skills add axiomantic/locutus -g -a '*' -y
+            Write-Host "✓ Locutus skill installed globally via skills.sh." -ForegroundColor Green
+            $skillInstalled = $true
+        }
+        catch {}
+    }
+
+    # Option B: skilz
+    if (-not $skillInstalled -and (Get-Command skilz -ErrorAction SilentlyContinue)) {
+        Write-Host "Attempting global skill installation via skilz..." -ForegroundColor Yellow
+        try {
+            & skilz -y install https://github.com/axiomantic/locutus
+            Write-Host "✓ Locutus skill installed globally via skilz." -ForegroundColor Green
+            $skillInstalled = $true
+        }
+        catch {}
+    }
+
+    # Option C: Direct fallback to standard assistant directories
+    if (-not $skillInstalled) {
+        Write-Host "Configuring skills directly for detected AI coding assistants..." -ForegroundColor Yellow
+        $skillUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/SKILL.md"
+        $specUrl = "https://raw.githubusercontent.com/$Repo/main/skills/locutus/references/wire_spec.md"
+        $tempSkillDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempSkillDir -Force | Out-Null
+
+        try {
+            $skillFile = Join-Path $tempSkillDir "SKILL.md"
+            $specFile = Join-Path $tempSkillDir "wire_spec.md"
+            Invoke-WebRequest -Uri $skillUrl -OutFile $skillFile -UseBasicParsing
+            Invoke-WebRequest -Uri $specUrl -OutFile $specFile -UseBasicParsing -ErrorAction SilentlyContinue
+
+            $candidateDirs = @(
+                "$env:USERPROFILE\.claude\skills\locutus",
+                "$env:APPDATA\gemini\skills\locutus",
+                "$env:USERPROFILE\.agents\skills\locutus",
+                "$env:USERPROFILE\.codex\skills\locutus"
+            )
+
+            foreach ($targetSkill in $candidateDirs) {
+                $parentDir = Split-Path (Split-Path $targetSkill -Parent) -Parent
+                if (Test-Path $parentDir) {
+                    $refDir = Join-Path $targetSkill "references"
+                    New-Item -ItemType Directory -Path $refDir -Force | Out-Null
+                    Copy-Item -Path $skillFile -Destination (Join-Path $targetSkill "SKILL.md") -Force
+                    if (Test-Path $specFile) {
+                        Copy-Item -Path $specFile -Destination (Join-Path $refDir "wire_spec.md") -Force
+                    }
+                    Write-Host "  ✓ Installed Locutus skill to: $targetSkill" -ForegroundColor Green
+                    $skillInstalled = $true
+                }
+            }
+        }
+        catch {}
+        finally {
+            Remove-Item -Path $tempSkillDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($skillInstalled) {
+        Write-Host "✓ AI Agent Skills configured successfully." -ForegroundColor Green
+    } else {
+        Write-Host "Notice: No coding assistant directories detected yet." -ForegroundColor Gray
+        Write-Host "Install the skill into your assistant at any time using:"
+        Write-Host "    npx skills add axiomantic/locutus -g"
+        Write-Host "    # Or: skilz install https://github.com/axiomantic/locutus"
+    }
+}
+
 # 3. Check for Scoop Package Manager
 if (-not $BuildFromSource -and (Get-Command scoop -ErrorAction SilentlyContinue)) {
     Write-Host "Detected Scoop package manager. Installing via Scoop..." -ForegroundColor Green
     if (scoop install "https://raw.githubusercontent.com/$Repo/main/packaging/scoop/locutus.json") {
         Write-Host "✓ Locutus successfully installed via Scoop." -ForegroundColor Green
+        Install-Skills
         exit 0
     }
     Write-Warning "Scoop installation failed. Falling back to binary release..."
@@ -207,3 +314,6 @@ try {
 catch {
     Write-Warning "Executable installed, but execution check failed. You may need to restart your terminal."
 }
+
+# 8. Install Skills
+Install-Skills
