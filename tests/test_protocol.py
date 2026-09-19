@@ -563,6 +563,42 @@ class TestRedisA2AProtocol(unittest.TestCase):
         pop2 = run_redis("RPOP", f"{PREFIX}queue:{qname}")
         self.assertEqual(pop2, msg2)
 
+    def test_19_directory_auto_pruning(self):
+        """Test directory.lua: query automatically prunes dead agents whose heartbeat expired."""
+        agent_alive = "alive_agent_1"
+        agent_dead = "dead_agent_2"
+
+        # Register both agents
+        run_eval(LUA_REGISTER, 0, PREFIX, agent_alive, "team,projectX", "150")
+        run_eval(LUA_REGISTER, 0, PREFIX, agent_dead, "team,projectX", "150")
+
+        # Expire dead agent's heartbeat
+        run_redis("DEL", f"{PREFIX}heartbeat:{agent_dead}")
+
+        # Query directory for projectX
+        directory_res = run_eval(LUA_DIRECTORY, 0, PREFIX, "projectX")
+        if isinstance(directory_res, str):
+            directory_lines = directory_res.splitlines()
+        else:
+            directory_lines = list(directory_res)
+
+        # alive_agent_1 should be present and marked alive (1)
+        alive_entries = [line for line in directory_lines if line.startswith(f"{agent_alive}|")]
+        self.assertEqual(len(alive_entries), 1)
+        self.assertIn("|1|", alive_entries[0])
+
+        # dead_agent_2 should be completely absent from directory output
+        dead_entries = [line for line in directory_lines if line.startswith(f"{agent_dead}|")]
+        self.assertEqual(len(dead_entries), 0)
+
+        # dead_agent_2 should be pruned from Redis active_agents and tag sets
+        is_active = run_redis("SISMEMBER", f"{PREFIX}active_agents", agent_dead)
+        self.assertEqual(is_active, "0")
+        is_in_tag = run_redis("SISMEMBER", f"{PREFIX}tag:projectX", agent_dead)
+        self.assertEqual(is_in_tag, "0")
+        meta_exists = run_redis("EXISTS", f"{PREFIX}agent:{agent_dead}")
+        self.assertEqual(meta_exists, "0")
+
 
 if __name__ == "__main__":
     unittest.main()

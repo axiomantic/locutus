@@ -267,36 +267,73 @@ proc currentAgentPath*(): string =
   getHomeDir() / ".config" / "locutus" / "current_agent"
 
 proc saveCurrentAgent*(name: string) =
-  let p = currentAgentPath()
-  createDir(p.splitPath.head)
-  writeFile(p, name.strip())
-  secureFilePermissions(p)
+  # 1. Save workspace-scoped .locutus.agent in current working directory
+  try:
+    let localFile = getCurrentDir() / ".locutus.agent"
+    writeFile(localFile, name.strip() & "\n")
+    secureFilePermissions(localFile)
+  except OSError:
+    discard
+
+  # 2. Save user-scoped fallback file
+  try:
+    let p = currentAgentPath()
+    createDir(p.splitPath.head)
+    writeFile(p, name.strip() & "\n")
+    secureFilePermissions(p)
+  except OSError:
+    discard
 
 proc loadCurrentAgent*(): string =
-  let p = currentAgentPath()
-  if fileExists(p):
-    return readFile(p).strip()
+  # 1. Check workspace-scoped .locutus.agent first
+  try:
+    let localFile = getCurrentDir() / ".locutus.agent"
+    if fileExists(localFile):
+      let val = readFile(localFile).strip()
+      if val.len > 0:
+        return val
+  except OSError:
+    discard
+
+  # 2. Check user-scoped fallback file
+  try:
+    let p = currentAgentPath()
+    if fileExists(p):
+      return readFile(p).strip()
+  except OSError:
+    discard
   return ""
 
 proc clearCurrentAgent*() =
-  let p = currentAgentPath()
-  if fileExists(p):
-    removeFile(p)
+  try:
+    let localFile = getCurrentDir() / ".locutus.agent"
+    if fileExists(localFile):
+      removeFile(localFile)
+  except OSError:
+    discard
+  try:
+    let p = currentAgentPath()
+    if fileExists(p):
+      removeFile(p)
+  except OSError:
+    discard
 
-proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string): string =
+proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string = "", fallbackDefault: bool = false): string =
   if explicitName.len > 0:
     return explicitName
   if cfg.provenance.hasKey("agent_name") and cfg.provenance["agent_name"].source in {srcCli, srcEnv, srcCustomFile, srcWorkspaceFile, srcUserFile, srcSystemFile}:
     return cfg.agentName
-  let envName = getEnv("LOCUTUS_AGENT_NAME", getEnv("MY_NAME", ""))
+  let envName = getEnv("LOCUTUS_AGENT_NAME", getEnv("A2A_NAME", getEnv("MY_NAME", "")))
   if envName.len > 0:
     return envName
   let saved = loadCurrentAgent()
   if saved.len > 0:
     return saved
-  if cfg.agentName.len > 0:
-    return cfg.agentName
-  return cfg.project & "-worker"
+  if fallbackDefault:
+    if cfg.agentName.len > 0:
+      return cfg.agentName
+    return if cfg.project.len > 0: cfg.project & "-worker" else: "worker"
+  return ""
 
 # Core Operations
 proc doRegister*(cfg: LocutusConfig, name, tags: string, ttl: int = -1): string =
@@ -308,7 +345,7 @@ proc doDrain*(cfg: LocutusConfig, name: string, count: int = 50): string =
 
 proc doUnregister*(cfg: LocutusConfig, name: string): string =
   let saved = loadCurrentAgent()
-  if saved == name:
+  if saved == name or name.len == 0:
     clearCurrentAgent()
   return runLuaScript(cfg.redisUrl, unregisterLua, unregisterSha, [cfg.prefix, name])
 
@@ -354,8 +391,30 @@ proc formatDirectory*(raw: string): string =
     result.add(name.alignLeft(20) & status.alignLeft(11) & state.alignLeft(11) & tags.alignLeft(20) & activity & "\n")
   result = result.strip()
 
-proc doDirectory*(cfg: LocutusConfig, filterTag: string = ""): string =
+proc formatDirectoryJson*(raw: string): string =
+  var list = newJArray()
+  if raw.strip().len > 0:
+    for line in raw.strip().splitLines():
+      let parts = line.strip().split('|')
+      if parts.len >= 3:
+        var obj = newJObject()
+        obj["agent"] = %parts[0]
+        obj["status"] = %(if parts[1] == "1": "ACTIVE" else: "EXPIRED")
+        var tagArr = newJArray()
+        if parts[2].len > 0:
+          for t in parts[2].split(','):
+            let trimmed = t.strip()
+            if trimmed.len > 0: tagArr.add(%trimmed)
+        obj["tags"] = tagArr
+        obj["state"] = %(if parts.len > 3 and parts[3].len > 0: parts[3].toUpperAscii else: "IDLE")
+        obj["activity"] = %(if parts.len > 4: parts[4] else: "")
+        list.add(obj)
+  return $list
+
+proc doDirectory*(cfg: LocutusConfig, filterTag: string = "", asJson: bool = false): string =
   let raw = runLuaScript(cfg.redisUrl, directoryLua, directorySha, [cfg.prefix, filterTag])
+  if asJson:
+    return formatDirectoryJson(raw)
   return formatDirectory(raw)
 
 proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
@@ -477,12 +536,18 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   let startTime = getTime().toUnix()
   var remaining = effectiveTimeout
 
-  # Keep heartbeat alive while actively listening
+  # Keep heartbeat alive and ensure agent is in active roster
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
   let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
   if hbCode != 0:
     stderr.writeLine("Redis error: " & hbOut.strip())
     quit(hbCode)
+  discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
+  let (existingTags, _) = execRedis(cfg.redisUrl, ["HGET", cfg.prefix & "agent:" & name, "tags"])
+  if existingTags.strip().len == 0 or existingTags.strip() == "(nil)":
+    let projTag = if cfg.project.len > 0: cfg.project else: "default"
+    discard execRedis(cfg.redisUrl, ["HSET", cfg.prefix & "agent:" & name, "tags", projTag])
+    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "tag:" & projTag, name])
 
 
   while remaining > 0:
@@ -921,7 +986,10 @@ proc main() =
         timeout = parseInt(args[2])
       except ValueError:
         discard
-    let name = getActiveAgentName(cfg, explicitName)
+    let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
+    if name.len == 0:
+      stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name ('locutus listen <name>'), or export LOCUTUS_AGENT_NAME=<name>.")
+      quit(1)
     doListen(cfg, name, timeout)
 
   of "send", "broadcast":
@@ -990,8 +1058,24 @@ proc main() =
     discard doSend(cfg, toAgent, msgType, fromAgent, subject, body, tags, replyTo, msgId, isBroadcast, customTs)
 
   of "who":
-    let filterTag = if args.len > 1: args[1] else: cfg.project
-    echo doDirectory(cfg, filterTag)
+    var filterTag = cfg.project
+    var jsonOutput = false
+    var showAll = false
+
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a in ["-a", "--all", "*", "@all"]:
+        showAll = true
+      elif a in ["--json", "-j"]:
+        jsonOutput = true
+      elif not a.startsWith("-"):
+        filterTag = a
+      inc i
+
+    if showAll:
+      filterTag = "*"
+    echo doDirectory(cfg, filterTag, jsonOutput)
 
   of "tag":
     if args.len < 3:
@@ -1005,7 +1089,10 @@ proc main() =
       quit(1)
     let tags = args[2]
     let explicitName = if args.len > 3: args[3] else: ""
-    let name = getActiveAgentName(cfg, explicitName)
+    let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
+    if name.len == 0:
+      stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+      quit(1)
     echo doTag(cfg, name, action, tags)
 
   of "drain":
@@ -1018,13 +1105,20 @@ proc main() =
         stderr.writeLine("Usage: locutus drain [count] [name]")
         quit(1)
     let explicitName = if args.len > 2: args[2] else: ""
-    let name = getActiveAgentName(cfg, explicitName)
+    let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
+    if name.len == 0:
+      stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+      quit(1)
     echo doDrain(cfg, name, count)
 
   of "close", "unregister":
     let explicitName = if args.len > 1: args[1] else: ""
-    let name = getActiveAgentName(cfg, explicitName)
-    echo doUnregister(cfg, name)
+    let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
+    if name.len > 0:
+      echo doUnregister(cfg, name)
+    else:
+      clearCurrentAgent()
+      echo "OK"
 
   of "get-secret":
     echo getSecret(cfg)
@@ -1142,7 +1236,10 @@ proc main() =
     let state = args[1]
     let activity = if args.len > 2: args[2] else: ""
     let explicitName = if args.len > 3: args[3] else: ""
-    let name = getActiveAgentName(cfg, explicitName)
+    let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
+    if name.len == 0:
+      stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+      quit(1)
     echo doStatus(cfg, name, state, activity)
 
   of "lock":

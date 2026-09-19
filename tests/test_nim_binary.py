@@ -830,6 +830,121 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_silent.returncode, 0)
         self.assertEqual(res_silent.stdout.strip(), "(nil)")
 
+    def test_31_who_flags_and_json(self):
+        """Test 'locutus who' supports -a, --all, and --json output."""
+        agent = "who_test_bot"
+        self.run_locutus(["open", agent, "backend,testgroup"])
+
+        try:
+            # 1. Test -a flag (cluster-wide view)
+            res_a = self.run_locutus(["who", "-a"])
+            self.assertEqual(res_a.returncode, 0)
+            self.assertIn(agent, res_a.stdout)
+            self.assertIn("ACTIVE", res_a.stdout)
+
+            # 2. Test --all flag
+            res_all = self.run_locutus(["who", "--all"])
+            self.assertEqual(res_all.returncode, 0)
+            self.assertIn(agent, res_all.stdout)
+
+            # 3. Test --json flag
+            res_json = self.run_locutus(["who", "--json", "-a"])
+            self.assertEqual(res_json.returncode, 0)
+            agents = json.loads(res_json.stdout.strip())
+            self.assertIsInstance(agents, list)
+            match = [a for a in agents if a["agent"] == agent]
+            self.assertEqual(len(match), 1)
+            self.assertEqual(match[0]["status"], "ACTIVE")
+            self.assertIn("backend", match[0]["tags"])
+            self.assertIn("testgroup", match[0]["tags"])
+        finally:
+            self.run_locutus(["close", agent])
+
+    def test_32_listen_auto_registers_in_directory(self):
+        """Test that listening with an agent name auto-registers it in the active directory."""
+        agent = "auto_listener_bot"
+        self.run_locutus(["close", agent])
+
+        # Send a message to the agent while it is offline
+        self.run_locutus(["send", "--to", agent, "--subject", "Wake", "--body", "Wakeup"])
+
+        # Agent listens for 1 second (consuming the message)
+        res_listen = self.run_locutus(["listen", agent, "1"])
+        self.assertEqual(res_listen.returncode, 0)
+
+        # Verify agent is immediately visible as ACTIVE in locutus who
+        res_who = self.run_locutus(["who", "-a", "--json"])
+        self.assertEqual(res_who.returncode, 0)
+        agents = json.loads(res_who.stdout.strip())
+        match = [a for a in agents if a["agent"] == agent]
+        self.assertEqual(len(match), 1, f"Expected {agent} to be registered in who output")
+        self.assertEqual(match[0]["status"], "ACTIVE")
+
+        self.run_locutus(["close", agent])
+
+    def test_33_multi_agent_workspace_and_env_isolation(self):
+        """Test that workspace-scoped .locutus.agent and LOCUTUS_AGENT_NAME isolate agents on the same host."""
+        tmp1 = tempfile.mkdtemp(prefix="locutus_ws1_")
+        tmp2 = tempfile.mkdtemp(prefix="locutus_ws2_")
+
+        try:
+            # 1. Open agent 1 in directory 1
+            res1 = self.run_locutus(["open", "agent_one_ws", "teamA"], cwd=tmp1)
+            self.assertEqual(res1.returncode, 0)
+
+            # 2. Open agent 2 in directory 2
+            res2 = self.run_locutus(["open", "agent_two_ws", "teamB"], cwd=tmp2)
+            self.assertEqual(res2.returncode, 0)
+
+            # 3. In dir1, listen with 1s timeout without passing name - must pick up agent_one_ws
+            # Send message to agent_one_ws
+            self.run_locutus(["send", "--to", "agent_one_ws", "--subject", "Dir1", "--body", "Payload1"])
+            listen1 = self.run_locutus(["listen", "2"], cwd=tmp1)
+            self.assertEqual(listen1.returncode, 0)
+            data1 = json.loads(listen1.stdout.strip())
+            self.assertEqual(data1["to"], "agent_one_ws")
+            self.assertEqual(data1["body"], "Payload1")
+
+            # 4. In dir2, listen with 1s timeout without passing name - must pick up agent_two_ws
+            self.run_locutus(["send", "--to", "agent_two_ws", "--subject", "Dir2", "--body", "Payload2"])
+            listen2 = self.run_locutus(["listen", "2"], cwd=tmp2)
+            self.assertEqual(listen2.returncode, 0)
+            data2 = json.loads(listen2.stdout.strip())
+            self.assertEqual(data2["to"], "agent_two_ws")
+            self.assertEqual(data2["body"], "Payload2")
+
+            # 5. LOCUTUS_AGENT_NAME env var overrides workspace directory file
+            env_override = {"LOCUTUS_AGENT_NAME": "agent_override_env"}
+            self.run_locutus(["send", "--to", "agent_override_env", "--subject", "Env", "--body", "EnvPayload"])
+            listen_env = self.run_locutus(["listen", "2"], cwd=tmp1, env_overrides=env_override)
+            self.assertEqual(listen_env.returncode, 0)
+            data_env = json.loads(listen_env.stdout.strip())
+            self.assertEqual(data_env["to"], "agent_override_env")
+
+        finally:
+            shutil.rmtree(tmp1, ignore_errors=True)
+            shutil.rmtree(tmp2, ignore_errors=True)
+            self.run_locutus(["close", "agent_one_ws"])
+            self.run_locutus(["close", "agent_two_ws"])
+            self.run_locutus(["close", "agent_override_env"])
+
+    def test_34_listen_requires_agent_identity(self):
+        """Test that calling 'locutus listen' without an agent name or configured identity fails fast."""
+        clean_dir = tempfile.mkdtemp(prefix="locutus_clean_ws_")
+        clean_env = {
+            "LOCUTUS_AGENT_NAME": "",
+            "A2A_NAME": "",
+            "MY_NAME": "",
+            "HOME": clean_dir,
+            "USERPROFILE": clean_dir,
+        }
+        try:
+            res = self.run_locutus(["listen", "1"], cwd=clean_dir, env_overrides=clean_env)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("No agent name specified", res.stderr)
+        finally:
+            shutil.rmtree(clean_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

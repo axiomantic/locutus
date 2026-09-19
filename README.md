@@ -398,7 +398,7 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |
 | `locutus pub <channel> <msg>` | Ephemeral pub/sub broadcast to subscribers. | `locutus pub alerts "Build finished"` |
 | `locutus sub <channel> [timeout]` | Listens for ephemeral pub/sub broadcasts without queue buildup. | `locutus sub alerts 10` |
-| `locutus who [filter]` | Formatted table of cluster agents, states, and heartbeats. | `locutus who` or `locutus who "*"` |
+| `locutus who [-a\|--all] [--json] [filter]` | Formatted table or JSON of active cluster agents, states, and tags (auto-prunes dead agents). | `locutus who`, `locutus who -a`, or `locutus who --json` |
 | `locutus tag <add\|remove\|set> <tags>` | Dynamically adjusts tags without dropping queued messages. | `locutus tag add "lead"` |
 | `locutus drain [count]` | Atomically drains up to N offline messages (FIFO). | `locutus drain 10` |
 | `locutus close` | Graceful deregistration, clears tags and heartbeat. | `locutus close` |

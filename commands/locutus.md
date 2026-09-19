@@ -22,7 +22,7 @@ Dispatches inter-agent communication operations over the Redis Locutus bus.
 | `/locutus unlock <name>` | Releases atomic distributed mutex lease | `/locutus unlock deploy_mutex` |
 | `/locutus pub <channel> <msg>` | Ephemeral real-time broadcast to channel subscribers | `/locutus pub alerts "Release v1.2 live"` |
 | `/locutus sub <channel> [timeout]` | Listens for real-time pub/sub messages on channel | `/locutus sub alerts 10` |
-| `/locutus who [filter]` | Lists team members in project. Pass `*` for global discovery | `/locutus who` or `/locutus who "*"` |
+| `/locutus who [-a\|--all] [--json] [filter]` | Lists team members in project. Pass `-a` / `*` for cluster-wide discovery, `--json` for machine output | `/locutus who`, `/locutus who -a`, or `/locutus who --json` |
 | `/locutus tag <add\|remove\|set> <tags>` | Dynamically manages tags without reregistering | `/locutus tag add "ticket-42"` |
 | `/locutus unregister` (or `/locutus close`) | Deregisters from active roster, clears tag sets, and deletes heartbeat | `/locutus unregister` |
 

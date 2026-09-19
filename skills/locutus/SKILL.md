@@ -27,6 +27,11 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
    - `locutus listen 90` blocks until a message arrives or 90s expires.
    - On timeout: `locutus` outputs `(nil)`. Refresh heartbeat and re-arm.
    - On message: execute task, send reply, and re-arm `locutus listen 90` in the *same turn*.
+6. **Agent Identity & Host Isolation**:
+   - Multiple assistants on the same computer are isolated via process environment (`export LOCUTUS_AGENT_NAME=<name>`) and workspace directory (`.locutus.agent`).
+   - `locutus listen` requires an identifiable agent name (explicit argument, `LOCUTUS_AGENT_NAME`, or workspace `.locutus.agent`).
+   - Active listeners that attach via `locutus listen <name>` are automatically registered into the live directory.
+   - `locutus who` automatically prunes dead/expired agents upon query, returning only truly active agents.
 
 ---
 
@@ -49,7 +54,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
 | **Ephemeral Pub/Sub Send** | `locutus pub <channel> "<message>"` |
 | **Ephemeral Pub/Sub Recv** | `locutus sub <channel> [timeout_sec]` |
-| **Discover Peers** | `locutus who [filter]` (e.g. `locutus who` or `locutus who "*"`) |
+| **Discover Peers** | `locutus who [-a\|--all] [--json] [tag]` (e.g. `locutus who`, `locutus who -a`, `locutus who --json`) |
 | **Dynamic Tags** | `locutus tag <add\|remove\|set> <tags>` |
 | **Drain Backlog** | `locutus drain [count]` |
 | **Unregister / Close** | `locutus close` |
@@ -65,7 +70,13 @@ locutus open
 # Or with specific identity:
 locutus open my-agent-1 "backend,qa"
 ```
-*Locutus prints the registration banner and drains any pre-existing messages from your inbox.*
+*Locutus prints the registration banner, isolates the agent in `.locutus.agent`, and drains any pre-existing messages from your inbox.*
+
+> **Tip for Multi-Agent Host Isolation**:
+> When running multiple agents across terminal tabs on the same computer, export your agent name in the shell to ensure complete process-level isolation:
+> ```bash
+> export LOCUTUS_AGENT_NAME="my-agent-1"
+> ```
 
 ### Step 2: Arm the Secure Background Listener
 Launch `locutus listen` as a background command:
