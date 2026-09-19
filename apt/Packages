@@ -1,5 +1,5 @@
 Package: locutus
-Version: 0.1.0
+Version: 0.1.1
 Section: utils
 Priority: optional
 Architecture: amd64
@@ -8,13 +8,13 @@ Description: Message exchange and routing for software agents over Redis
  Standalone CLI client for inter-agent communication using Redis data
  structures without an intermediate background daemon. Includes HMAC-SHA256
  authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-Filename: locutus_0.1.0_amd64.deb
-Size: 218482
-MD5sum: 25dbaf398d36ab4213e6932b0cb4c84c
-SHA256: 6b73a2588e328948a24a98b2764cb643717d39b358c1e69d54958201cccaf09f
+Filename: locutus_0.1.1_amd64.deb
+Size: 221022
+MD5sum: 858e2fd424e73257855639daaf0a44db
+SHA256: d7a5647408c87f47c3fd29b8bdab44cce5b349575172fe5b68699ee34cffaa78
 
 Package: locutus
-Version: 0.1.0
+Version: 0.1.1
 Section: utils
 Priority: optional
 Architecture: arm64
@@ -23,8 +23,8 @@ Description: Message exchange and routing for software agents over Redis
  Standalone CLI client for inter-agent communication using Redis data
  structures without an intermediate background daemon. Includes HMAC-SHA256
  authentication, dead-agent pruning, and optional AES-256-CBC encryption.
-Filename: locutus_0.1.0_arm64.deb
-Size: 229620
-MD5sum: 2165a39fdb39e6ff308e05600fad7cf2
-SHA256: ee621db813048f4c85c96b3fd9757f9ef5322ce8ace31a08c0e2ddf7d2baccfb
+Filename: locutus_0.1.1_arm64.deb
+Size: 231202
+MD5sum: 9d90104ecfb7ba1f174334642d27b8c6
+SHA256: 0556b94fcc39899a8ee4532bc671180deec7ee9e9c4de789fcc1025410ca8c39
 
