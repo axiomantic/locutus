@@ -4,8 +4,9 @@
 
 import std/[
   os, osproc, strutils, json, openssl, sha1,
-  times, random, streams
+  times, random, streams, options
 ]
+import config
 
 # OpenSSL C-bindings for native cryptographic operations
 proc HMAC*(evp_md: EVP_MD, key: pointer, key_len: cint, d: cstring, n: csize_t, md: pointer, md_len: ptr cuint): cstring {.cdecl, importc: "HMAC", dynlib: DLLUtilName.}
@@ -159,54 +160,10 @@ proc decryptAes*(ciphertext, secret: string): string =
   result = readFile(outPath)
   if fileExists(outPath): removeFile(outPath)
 
-# Environment & Config Resolution
-type LocutusConfig* = object
-  redisUrl*: string
-  prefix*: string
-  project*: string
-  encrypt*: bool
+# Configuration Resolution (implemented in src/config.nim)
+proc resolveConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
+  resolveFullConfig(cli)
 
-proc resolveConfig*(): LocutusConfig =
-  var redisUrl = getEnv("LOCUTUS_REDIS_URL", "")
-  var prefix = getEnv("LOCUTUS_REDIS_PREFIX", "")
-  var project = getEnv("LOCUTUS_PROJECT", "")
-
-  # Check AGENTS.md
-  if fileExists("AGENTS.md"):
-    for line in lines("AGENTS.md"):
-      let low = line.toLowerAscii.strip()
-      if redisUrl == "" and (low.startsWith("locutus_redis_url:") or low.startsWith("locutus_redis_url=")):
-        redisUrl = line.split({':', '='}, maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-      if prefix == "" and (low.startsWith("locutus_redis_prefix:") or low.startsWith("locutus_redis_prefix=")):
-        prefix = line.split({':', '='}, maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-      if project == "" and (low.startsWith("locutus_project:") or low.startsWith("locutus_project=")):
-        project = line.split({':', '='}, maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-
-  # Check .env
-  if fileExists(".env"):
-    for line in lines(".env"):
-      if redisUrl == "" and line.startsWith("LOCUTUS_REDIS_URL="):
-        redisUrl = line.split('=', maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-      if prefix == "" and line.startsWith("LOCUTUS_REDIS_PREFIX="):
-        prefix = line.split('=', maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-      if project == "" and line.startsWith("LOCUTUS_PROJECT="):
-        project = line.split('=', maxsplit = 1)[1].strip(chars = {'"', '\'', ' '})
-
-  # Fallbacks
-  if redisUrl == "":
-    redisUrl = getEnv("A2A_REDIS_URL", getEnv("REDIS_URL", "redis://127.0.0.1:6379"))
-  if prefix == "":
-    prefix = getEnv("A2A_REDIS_PREFIX", "locutus:")
-  if project == "":
-    project = getEnv("A2A_PROJECT", getCurrentDir().splitPath.tail)
-
-  let enc = getEnv("LOCUTUS_ENCRYPT", "0") in ["1", "true", "TRUE"]
-  let clusterMode = getEnv("LOCUTUS_CLUSTER", getEnv("LOCUTUS_REDIS_CLUSTER", "0")) in ["1", "true", "TRUE"]
-  if clusterMode and not (prefix.contains('{') and prefix.contains('}')):
-    let base = if prefix.endsWith(":"): prefix[0 .. ^2] else: prefix
-    prefix = "{" & base & ":" & project & "}:"
-
-  return LocutusConfig(redisUrl: redisUrl, prefix: prefix, project: project, encrypt: enc)
 
 # Redis CLI Execution with EVALSHA & Docker fallback
 proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
@@ -525,8 +482,68 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
 
 # Main Entrypoint / CLI Router
 proc main() =
-  let cfg = resolveConfig()
-  var args = commandLineParams()
+  let rawArgs = commandLineParams()
+  var cli: CliOverrides
+  var positionalArgs: seq[string] = @[]
+
+  var i = 0
+  while i < rawArgs.len:
+    let a = rawArgs[i]
+    if a.startsWith("--profile="):
+      cli.profile = a[10..^1]
+    elif a == "--profile" and i + 1 < rawArgs.len:
+      cli.profile = rawArgs[i+1]; inc i
+    elif a.startsWith("--config="):
+      cli.configFile = a[9..^1]
+    elif a == "--config" and i + 1 < rawArgs.len:
+      cli.configFile = rawArgs[i+1]; inc i
+    elif a.startsWith("--redis-url="):
+      cli.redisUrl = a[12..^1]
+    elif (a == "--redis-url" or a == "-u") and i + 1 < rawArgs.len:
+      cli.redisUrl = rawArgs[i+1]; inc i
+    elif a.startsWith("-u="):
+      cli.redisUrl = a[3..^1]
+    elif a.startsWith("--prefix="):
+      cli.prefix = a[9..^1]
+    elif a == "--prefix" and i + 1 < rawArgs.len:
+      cli.prefix = rawArgs[i+1]; inc i
+    elif a.startsWith("--project="):
+      cli.project = a[10..^1]
+    elif a == "--project" and i + 1 < rawArgs.len:
+      cli.project = rawArgs[i+1]; inc i
+    elif a.startsWith("--agent-name="):
+      cli.agentName = a[13..^1]
+    elif a == "--agent-name" and i + 1 < rawArgs.len:
+      cli.agentName = rawArgs[i+1]; inc i
+    elif a.startsWith("--secret="):
+      cli.secret = a[9..^1]
+    elif a == "--secret" and i + 1 < rawArgs.len:
+      cli.secret = rawArgs[i+1]; inc i
+    elif a.startsWith("--secret-file="):
+      cli.secretFile = a[14..^1]
+    elif a == "--secret-file" and i + 1 < rawArgs.len:
+      cli.secretFile = rawArgs[i+1]; inc i
+    elif a == "--encrypt":
+      cli.encrypt = some(true)
+    elif a == "--no-encrypt":
+      cli.encrypt = some(false)
+    elif a == "--cluster":
+      cli.cluster = some(true)
+    elif a == "--no-cluster":
+      cli.cluster = some(false)
+    elif a.startsWith("--timeout="):
+      try: cli.timeout = some(parseInt(a[10..^1]))
+      except ValueError: discard
+    elif a == "--timeout" and i + 1 < rawArgs.len:
+      try: cli.timeout = some(parseInt(rawArgs[i+1]))
+      except ValueError: discard
+      inc i
+    else:
+      positionalArgs.add(a)
+    inc i
+
+  let cfg = resolveConfig(cli)
+  var args = positionalArgs
 
   if args.len == 0 or args[0] in ["-h", "--help", "help"]:
     echo "Locutus - High Performance Inter-Assistant Redis Bus (Nim Native)"
@@ -540,10 +557,61 @@ proc main() =
     echo "  locutus drain [count] [name]"
     echo "  locutus close [name]"
     echo "  locutus get-secret"
+    echo "  locutus config <show|get|path|init>"
+    echo ""
+    echo "Global Options:"
+    echo "  --profile <name>      Select configuration profile from config file"
+    echo "  --config <file>       Explicit configuration file path"
+    echo "  --redis-url, -u <url> Redis connection endpoint"
+    echo "  --prefix <pfx>        Key namespace prefix"
+    echo "  --project <proj>      Project isolation group"
+    echo "  --encrypt             Enable AES-256-CBC payload encryption"
+    echo "  --cluster             Enable Redis Cluster hash tag compatibility"
     return
 
   let subcmd = args[0].toLowerAscii
   case subcmd
+  of "config":
+    let action = if args.len > 1: args[1].toLowerAscii else: "show"
+    case action
+    of "show":
+      let isJson = ("--json" in rawArgs) or ("-j" in rawArgs)
+      if isJson:
+        echo formatConfigJson(cfg)
+      else:
+        echo formatConfigTable(cfg)
+    of "get":
+      if args.len < 3:
+        stderr.writeLine("Usage: locutus config get <key>")
+        quit(1)
+      let key = args[2].toLowerAscii.replace("-", "_")
+      case key
+      of "redis_url", "url": echo cfg.redisUrl
+      of "prefix": echo cfg.prefix
+      of "project": echo cfg.project
+      of "agent_name", "agent": echo cfg.agentName
+      of "secret": echo cfg.secret
+      of "secret_file": echo cfg.secretFile
+      of "encrypt": echo $cfg.encrypt
+      of "cluster": echo $cfg.cluster
+      of "heartbeat_ttl", "heartbeat": echo $cfg.heartbeatTtl
+      of "message_ttl", "ttl": echo $cfg.messageTtl
+      of "listen_timeout", "timeout": echo $cfg.listenTimeout
+      of "profile": echo cfg.profile
+      of "config_file", "config": echo cfg.activeConfigFile
+      else:
+        stderr.writeLine("Error: Unknown configuration key: " & key)
+        quit(1)
+    of "path", "paths":
+      echo formatConfigPaths()
+    of "init":
+      let target = if args.len > 2: args[2] else: "workspace"
+      echo initConfigFile(target)
+    else:
+      stderr.writeLine("Unknown config action: " & action)
+      stderr.writeLine("Usage: locutus config <show|get|path|init>")
+      quit(1)
+
   of "open", "register":
     let name = if args.len > 1: args[1] else: ""
     let tags = if args.len > 2: args[2] else: ""

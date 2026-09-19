@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 from tests.schema import LocutusMessage
 
@@ -20,7 +22,7 @@ class TestLocutusNimBinary(unittest.TestCase):
         self.env["LOCUTUS_PROJECT"] = "test_project"
         self.assertTrue(os.path.isfile(BIN_PATH), f"Binary not found at {BIN_PATH}")
 
-    def run_locutus(self, args, env_overrides=None):
+    def run_locutus(self, args, env_overrides=None, cwd=None):
         cmd_env = self.env.copy()
         cmd_env["PYTHONUTF8"] = "1"
         if env_overrides:
@@ -32,6 +34,7 @@ class TestLocutusNimBinary(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
             env=cmd_env,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             timeout=15,
         )
@@ -289,6 +292,108 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         self.run_locutus(["close", agent])
 
+    def test_13_config_show_and_json(self):
+        # Table output
+        res = self.run_locutus(["config", "show"])
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("redis_url", res.stdout)
+        self.assertIn("prefix", res.stdout)
+        self.assertIn("project", res.stdout)
+        self.assertIn("SOURCE", res.stdout)
+
+        # JSON output
+        res_j = self.run_locutus(["config", "show", "--json"])
+        self.assertEqual(res_j.returncode, 0)
+        data = json.loads(res_j.stdout)
+        self.assertIn("redis_url", data)
+        self.assertEqual(data["redis_url"]["value"], REDIS_URL)
+        self.assertIn("prefix", data)
+        self.assertIn("project", data)
+
+    def test_14_config_get(self):
+        res = self.run_locutus(["config", "get", "redis_url"])
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout.strip(), REDIS_URL)
+
+        res_p = self.run_locutus(["config", "get", "project"])
+        self.assertEqual(res_p.returncode, 0)
+        self.assertEqual(res_p.stdout.strip(), "test_project")
+
+        # Unknown key returns error
+        res_err = self.run_locutus(["config", "get", "non_existent_key_xyz"])
+        self.assertNotEqual(res_err.returncode, 0)
+        self.assertIn("Unknown configuration key", res_err.stderr)
+
+    def test_15_config_cli_overrides(self):
+        custom_url = "rediss://custom-redis-host:6380"
+        res = self.run_locutus(["--redis-url", custom_url, "config", "get", "redis_url"])
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout.strip(), custom_url)
+
+        # Cluster mode auto-applies hash tags
+        res_c = self.run_locutus(["--cluster", "--prefix", "myapp:", "config", "get", "prefix"])
+        self.assertEqual(res_c.returncode, 0)
+        self.assertIn("{myapp:test_project}:", res_c.stdout)
+
+    def test_16_config_file_and_profiles(self):
+        tmp_dir = tempfile.mkdtemp(prefix="locutus_cfg_test_")
+        try:
+            cfg_path = os.path.join(tmp_dir, ".locutus.toml")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write(
+                    'redis_url = "redis://workspace-default:6379"\n'
+                    'prefix = "ws_default:"\n'
+                    'project = "ws_proj"\n'
+                    '\n'
+                    '[profiles.staging]\n'
+                    'redis_url = "rediss://staging.cluster:6380"\n'
+                    'prefix = "ws_staging:"\n'
+                    'encrypt = true\n'
+                )
+
+            # Test loading in workspace directory
+            # Empty env overrides to test file resolution
+            clean_env = {
+                "LOCUTUS_REDIS_URL": "",
+                "LOCUTUS_REDIS_PREFIX": "",
+                "LOCUTUS_PROJECT": "",
+            }
+            res_ws = self.run_locutus(["config", "get", "redis_url"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_ws.returncode, 0)
+            self.assertEqual(res_ws.stdout.strip(), "redis://workspace-default:6379")
+
+            # Test profile switching via --profile
+            res_prof = self.run_locutus(["--profile", "staging", "config", "get", "redis_url"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_prof.returncode, 0)
+            self.assertEqual(res_prof.stdout.strip(), "rediss://staging.cluster:6380")
+
+            res_enc = self.run_locutus(["--profile", "staging", "config", "get", "encrypt"], env_overrides=clean_env, cwd=tmp_dir)
+            self.assertEqual(res_enc.returncode, 0)
+            self.assertEqual(res_enc.stdout.strip(), "true")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_17_config_paths_and_init(self):
+        res_paths = self.run_locutus(["config", "path"])
+        self.assertEqual(res_paths.returncode, 0)
+        self.assertIn("System config", res_paths.stdout)
+        self.assertIn("User config", res_paths.stdout)
+        self.assertIn("Workspace config", res_paths.stdout)
+
+        tmp_dir = tempfile.mkdtemp(prefix="locutus_init_test_")
+        try:
+            res_init = self.run_locutus(["config", "init"], cwd=tmp_dir)
+            self.assertEqual(res_init.returncode, 0)
+            created_file = os.path.join(tmp_dir, ".locutus.toml")
+            self.assertTrue(os.path.isfile(created_file))
+            with open(created_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("redis_url", content)
+            self.assertIn("[profiles.staging]", content)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
+
