@@ -201,10 +201,81 @@ When the session ends or user asks to disconnect:
 locutus close
 ```
 
+---
+
+## 4. Playbooks & Coordination Recipes
+
+Minimal, production-ready recipes for common multi-agent workflows:
+
+### Playbook 1: Safe Concurrent File Editing
+*Goal: Prevent concurrent overwrites when multiple agents or terminals work in the same repo.*
+```bash
+# 1. Acquire 60s lease on target file (returns 0 on success, 1 on conflict):
+locutus lock file:src/router.ts 60
+
+# 2. Inspect, modify, test, or format the file safely...
+
+# 3. Release lease immediately upon completion:
+locutus unlock file:src/router.ts
+```
+
+### Playbook 2: Distributing Batch Tasks Across a Worker Pool
+*Goal: Farm out independent sub-tasks across a pool of interchangeable worker assistants.*
+```bash
+# Producer (Orchestrator): Push tasks onto shared queue
+locutus enqueue test_suite --subject "Run Unit Tests" --body "tests/auth_test.go"
+locutus enqueue test_suite --subject "Run Integration Tests" --body "tests/api_test.go"
+
+# Workers (Run concurrently across terminal tabs or subagents):
+# Blocks silently until a task is available; guarantees exactly-once delivery:
+task=$(locutus work test_suite)
+```
+
+### Playbook 3: Synchronous RPC Delegation (Ask a Specialist)
+*Goal: Delegate a specialized calculation, schema review, or query and block for the clean result.*
+```bash
+# Caller: Dispatches task and blocks up to 30s; --raw outputs clean response body for piping
+res=$(locutus request --to db-expert --subject "Query Plan" --body "SELECT * FROM users" --timeout 30 --raw)
+
+# Specialist (Responder): Answers directly with locutus reply
+locutus reply --to orchestrator --subject "Re: Query Plan" --body "Add composite index on (created_at, user_id)" --reply-to <req_id> --listen
+```
+
+### Playbook 4: Team Discovery & Live Focus Broadcasting
+*Goal: Check active teammates before dispatching work, and broadcast current focus.*
+```bash
+# 1. Discover who is online across the project or cluster:
+locutus who -a --json
+
+# 2. Broadcast what you are actively working on:
+locutus status busy "Refactoring auth middleware"
+
+# 3. Signal completion when ready for new tasks:
+locutus status idle "Awaiting next task"
+```
+
+### Playbook 5: Real-Time Event Fan-Out (Pub/Sub Telemetry)
+*Goal: Broadcast transient events without saving backlog in Redis queues.*
+```bash
+# Subscriber: Wait up to 60s for event stream
+locutus sub build_events 60
+
+# Publisher: Broadcast event to all currently attached subscribers
+locutus pub build_events '{"commit": "348d001", "status": "passed"}'
+```
+
+### Playbook 6: Unbreakable Background Ear Execution
+*Goal: Keep an active ear on the bus without getting dropped during multi-turn coding.*
+- **Strategy A (Subagent Runtimes)**: Launch a dedicated background ear subagent running `locutus listen <agent>` in a continuous loop, forwarding incoming message payloads to the parent agent.
+- **Strategy B (Single-Agent Runtimes)**: Always append `--listen` (`-l`) to replies or sends:
+  ```bash
+  locutus reply --to orchestrator --subject "Done" --body "Merged PR" --listen
+  ```
+  Locutus automatically skips duplicate listeners if one is already active.
 
 ---
 
-## 4. Fallback Modes
+## 5. Fallback Modes
 
 If the compiled `locutus` binary is not in PATH:
 1. **Run via Nim directly**: `nim r src/locutus.nim [args...]`

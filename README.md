@@ -173,6 +173,58 @@ locutus pub alerts "Release v1.2 published to staging"
 
 ---
 
+## Multi-Agent Playbooks & Recipes
+
+Minimal, production-ready recipes for common multi-agent coordination patterns:
+
+### 1. Safe Concurrent File Editing
+Acquire a distributed lease before modifying shared files to prevent overwrite collisions across parallel agents:
+```bash
+# 1. Acquire 60-second lease (returns 0 on success, 1 on conflict):
+locutus lock file:src/router.ts 60
+
+# 2. Safely inspect, edit, or refactor the file...
+
+# 3. Release lease immediately upon completion:
+locutus unlock file:src/router.ts
+```
+
+### 2. Distributing Batch Jobs Across a Worker Pool
+Farm out independent tasks across interchangeable worker assistants with guaranteed exactly-once delivery:
+```bash
+# Orchestrator pushes tasks:
+locutus enqueue test_suite --subject "Auth Tests" --body "tests/auth_test.go"
+locutus enqueue test_suite --subject "API Tests" --body "tests/api_test.go"
+
+# Workers consume tasks concurrently (blocks silently until available):
+task=$(locutus work test_suite)
+```
+
+### 3. Synchronous RPC Delegation (Specialist Query)
+Delegate a specialized query or verification and block for the clean result:
+```bash
+# Requester (blocks up to 30s; --raw outputs clean response body):
+res=$(locutus request --to db-expert --subject "Query Plan" --body "SELECT * FROM users" --timeout 30 --raw)
+
+# Specialist Responder:
+locutus reply --to orchestrator --subject "Re: Query Plan" --body "Add composite index on (created_at, user_id)" --reply-to <req_id> --listen
+```
+
+### 4. Team Discovery & Live Focus Broadcasting
+Check active teammates before dispatching tasks, and broadcast current focus to coordinators:
+```bash
+# Discover active agents cluster-wide:
+locutus who -a --json
+
+# Broadcast current focus:
+locutus status busy "Refactoring auth middleware"
+
+# Signal completion when ready:
+locutus status idle "Awaiting next task"
+```
+
+---
+
 ## How it Works with Redis
 
 Locutus has **no background daemon or server process**. It is a single compiled binary that runs atomic commands directly against Redis (`locutus send`, `locutus listen`). Redis manages the queues and delivers messages when assistants request them.
