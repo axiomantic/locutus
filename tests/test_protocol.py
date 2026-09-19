@@ -15,8 +15,12 @@ Tests:
 import json
 import os
 import subprocess
+import sys
 import time
 import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from tests.schema import A2AMessage
 
 A2A_REDIS_URL = os.environ.get("A2A_REDIS_URL", os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
 A2A_REDIS_PREFIX = os.environ.get("A2A_REDIS_PREFIX", os.environ.get("A2A_PREFIX", "a2a_test:"))
@@ -105,18 +109,18 @@ class TestRedisA2AProtocol(unittest.TestCase):
         # Charlie (devops) must NOT have received it
         self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:charlie"), "0")
 
-        # Alice must have received exact payload
-        alice_msgs = json.loads(run_redis("RPOP", f"{PREFIX}inbox:alice"))
-        self.assertEqual(alice_msgs["id"], "msg_mcast_qa_100")
-        self.assertEqual(alice_msgs["from"], "lead")
-        self.assertEqual(alice_msgs["to"], "@qa")
-        self.assertEqual(alice_msgs["subject"], "Run QA Regression")
-        self.assertEqual(alice_msgs["body"], "Execute test suite against staging branch.")
+        # Alice must have received exact payload validated against schema
+        alice_msg = A2AMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_msg.id, "msg_mcast_qa_100")
+        self.assertEqual(alice_msg.from_agent, "lead")
+        self.assertEqual(alice_msg.to_agent, "@qa")
+        self.assertEqual(alice_msg.subject, "Run QA Regression")
+        self.assertEqual(alice_msg.body, "Execute test suite against staging branch.")
 
-        # Bob must have received exact same payload
-        bob_msgs = json.loads(run_redis("RPOP", f"{PREFIX}inbox:bob"))
-        self.assertEqual(bob_msgs["id"], "msg_mcast_qa_100")
-        self.assertEqual(bob_msgs["body"], "Execute test suite against staging branch.")
+        # Bob must have received exact same payload validated against schema
+        bob_msg = A2AMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:bob"))
+        self.assertEqual(bob_msg.id, "msg_mcast_qa_100")
+        self.assertEqual(bob_msg.body, "Execute test suite against staging branch.")
 
     def test_03_broadcast_to_all_active_agents(self):
         """Test multicast with tag '*' reaches every active agent."""
@@ -130,7 +134,8 @@ class TestRedisA2AProtocol(unittest.TestCase):
             "to": "*",
             "type": "status",
             "subject": "System Announcement",
-            "body": "Deployment completed successfully."
+            "body": "Deployment completed successfully.",
+            "timestamp": "2026-09-18T23:35:00Z"
         })
 
         delivered = run_eval(LUA_MULTICAST, 0, PREFIX, "*", broadcast_msg, "604800")
@@ -139,9 +144,9 @@ class TestRedisA2AProtocol(unittest.TestCase):
         for agent in ["agent1", "agent2", "agent3"]:
             raw = run_redis("RPOP", f"{PREFIX}inbox:{agent}")
             self.assertIsNotNone(raw)
-            parsed = json.loads(raw)
-            self.assertEqual(parsed["id"], "bcast_001")
-            self.assertEqual(parsed["subject"], "System Announcement")
+            parsed = A2AMessage.model_validate_json(raw)
+            self.assertEqual(parsed.id, "bcast_001")
+            self.assertEqual(parsed.subject, "System Announcement")
 
     def test_04_offline_queuing_and_ordered_backlog(self):
         """Test that messages sent to an offline/unregistered agent are queued and drained in FIFO order."""
@@ -199,14 +204,22 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertIn("alice", run_redis("SMEMBERS", f"{PREFIX}tag:qa"))
 
         # Send second multicast to 'qa'
-        msg2 = json.dumps({"id": "qa_round_2", "from": "lead", "to": "@qa", "body": "second check"})
+        msg2 = json.dumps({
+            "id": "qa_round_2",
+            "from": "lead",
+            "to": "@qa",
+            "type": "task",
+            "subject": "Second Check",
+            "body": "second check",
+            "timestamp": "2026-09-18T23:35:00Z"
+        })
         delivered2 = run_eval(LUA_MULTICAST, 0, PREFIX, "qa", msg2, "604800")
         self.assertIn(delivered2, ["2", "(integer) 2"])
 
         # Alice now receives the new message!
         self.assertEqual(run_redis("LLEN", f"{PREFIX}inbox:alice"), "1")
-        alice_received = json.loads(run_redis("RPOP", f"{PREFIX}inbox:alice"))
-        self.assertEqual(alice_received["id"], "qa_round_2")
+        alice_received = A2AMessage.model_validate_json(run_redis("RPOP", f"{PREFIX}inbox:alice"))
+        self.assertEqual(alice_received.id, "qa_round_2")
 
     def test_06_roundtrip_request_reply_threading(self):
         """Test full round-trip: Alice sends task -> Bob executes -> Bob replies with reply_to -> Alice verifies."""
@@ -222,37 +235,39 @@ class TestRedisA2AProtocol(unittest.TestCase):
             "type": "task",
             "reply_to": None,
             "subject": "Multiply",
-            "body": "12 * 12"
+            "body": "12 * 12",
+            "timestamp": "2026-09-18T23:35:00Z"
         }
         run_eval(LUA_SEND_O2O, 0, PREFIX, "bob", json.dumps(task_payload), "604800")
 
         # 2. Bob receives task
         raw_task = run_redis("RPOP", f"{PREFIX}inbox:bob")
-        incoming_task = json.loads(raw_task)
-        self.assertEqual(incoming_task["id"], task_id)
-        self.assertEqual(incoming_task["body"], "12 * 12")
+        incoming_task = A2AMessage.model_validate_json(raw_task)
+        self.assertEqual(incoming_task.id, task_id)
+        self.assertEqual(incoming_task.body, "12 * 12")
 
         # 3. Bob computes result (144) and replies to Alice
         reply_id = "rep_171000_bob_888"
         reply_payload = {
             "id": reply_id,
             "from": "bob",
-            "to": incoming_task["from"],
+            "to": incoming_task.from_agent,
             "type": "reply",
-            "reply_to": incoming_task["id"],
-            "subject": f"Re: {incoming_task['subject']}",
-            "body": "144"
+            "reply_to": incoming_task.id,
+            "subject": f"Re: {incoming_task.subject}",
+            "body": "144",
+            "timestamp": "2026-09-18T23:35:05Z"
         }
         run_eval(LUA_SEND_O2O, 0, PREFIX, "alice", json.dumps(reply_payload), "604800")
 
         # 4. Alice receives reply and verifies correlation
         raw_reply = run_redis("RPOP", f"{PREFIX}inbox:alice")
-        received_reply = json.loads(raw_reply)
-        self.assertEqual(received_reply["from"], "bob")
-        self.assertEqual(received_reply["to"], "alice")
-        self.assertEqual(received_reply["type"], "reply")
-        self.assertEqual(received_reply["reply_to"], task_id)
-        self.assertEqual(received_reply["body"], "144")
+        received_reply = A2AMessage.model_validate_json(raw_reply)
+        self.assertEqual(received_reply.from_agent, "bob")
+        self.assertEqual(received_reply.to_agent, "alice")
+        self.assertEqual(received_reply.type, "reply")
+        self.assertEqual(received_reply.reply_to, task_id)
+        self.assertEqual(received_reply.body, "144")
 
     def test_07_inbox_ttl_hygiene(self):
         """Test that sending a message sets an expiration TTL on the inbox key to avoid leaking RAM."""

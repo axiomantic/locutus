@@ -13,6 +13,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from tests.schema import A2AMessage
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
@@ -142,38 +145,26 @@ def main():
     print(f"\nRaw Message Received:\n{raw_msg}")
 
     try:
-        msg = json.loads(raw_msg)
-    except json.JSONDecodeError as e:
-        print(f"FAILURE: Message is not valid JSON: {e}")
+        msg = A2AMessage.model_validate_json(raw_msg)
+        print("✓ Pydantic A2AMessage schema validation passed (id, types, envelope, timestamp)!")
+    except Exception as e:
+        print(f"FAILURE: Message violates Pydantic A2AMessage schema: {e}")
         return 1
 
-    # 1. Verify Sender and Recipient
-    assert msg.get("from") == "alice", f"Expected from='alice', got '{msg.get('from')}'"
+    # Semantic Content Validation
+    assert msg.from_agent == "alice", f"Expected from='alice', got '{msg.from_agent}'"
     print("✓ Sender is 'alice'")
-    assert msg.get("to") == "bob", f"Expected to='bob', got '{msg.get('to')}'"
+    assert msg.to_agent == "bob", f"Expected to='bob', got '{msg.to_agent}'"
     print("✓ Recipient is 'bob'")
-
-    # 2. Verify Protocol Message Type
-    assert msg.get("type") == "task", f"Expected type='task', got '{msg.get('type')}'"
+    assert msg.type == "task", f"Expected type='task', got '{msg.type}'"
     print("✓ Protocol type is 'task'")
+    assert "Math Task" in msg.subject or "math" in msg.subject.lower(), f"Subject unexpected: '{msg.subject}'"
+    print(f"✓ Subject matches: '{msg.subject}'")
+    assert "25" in msg.body and "4" in msg.body, f"Body unexpected: '{msg.body}'"
+    print(f"✓ Body contains expected task calculation: '{msg.body}'")
+    print(f"✓ Envelope metadata valid (id='{msg.id}', timestamp='{msg.timestamp}')")
 
-    # 3. Verify Subject and Body Content
-    subject = msg.get("subject", "")
-    assert "Math Task" in subject or "math" in subject.lower(), f"Subject unexpected: '{subject}'"
-    print(f"✓ Subject matches: '{subject}'")
-
-    body = msg.get("body", "")
-    assert "25" in body and "4" in body, f"Body does not contain expected calculation (25 * 4): '{body}'"
-    print(f"✓ Body contains expected task instructions: '{body}'")
-
-    # 4. Verify Envelope Metadata
-    msg_id = msg.get("id")
-    assert msg_id and len(msg_id) > 0, "Message ID is missing"
-    timestamp = msg.get("timestamp")
-    assert timestamp and len(timestamp) > 0, "Timestamp is missing"
-    print(f"✓ Envelope metadata valid (id='{msg_id}', timestamp='{timestamp}')")
-
-    print("\nALL CONTENT AND ENVELOPE CHECKS PASSED!")
+    print("\nALL CONTENT AND ENVELOPE CHECKS PASSED VIA PYDANTIC!")
     return 0
 
 if __name__ == "__main__":
