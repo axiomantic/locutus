@@ -1288,6 +1288,78 @@ secret = "my_inline_secret_test_555"
 
         self.run_locutus(["close", dave])
 
+    def test_42_listener_exit_does_not_delete_foreign_lock(self):
+        """Verify that an exiting listener does not delete a replacement listener's lock if PID/host differ."""
+        agent = "preempt_listener_test"
+        self.run_locutus(["open", agent, "dev"])
+
+        import socket
+        host = socket.gethostname()
+
+        # 1. Start listener in background with 2s timeout
+        def bg_listen():
+            self.run_locutus(["listen", agent, "2"])
+
+        t = threading.Thread(target=bg_listen)
+        t.start()
+        time.sleep(0.4)
+
+        # 2. Simulate preemption or replacement: overwrite lock with another PID (e.g. 88888)
+        foreign_lock = json.dumps({"pid": 88888, "host": host, "started": int(time.time())})
+        subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "SET", f"{TEST_PREFIX}listener:{agent}", foreign_lock, "EX", "150"],
+            check=True
+        )
+
+        # 3. Wait for original listener to exit after its 2s timeout
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+
+        # 4. Crucial: The replacement lock with PID 88888 MUST still be present in Redis!
+        chk = subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "GET", f"{TEST_PREFIX}listener:{agent}"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        self.assertIn("88888", chk.stdout, "Exiting listener erroneously deleted foreign listener lock!")
+
+        self.run_locutus(["close", agent])
+
+    def test_43_worker_heartbeat_renewal(self):
+        """Verify that 'locutus work' registers and refreshes worker heartbeat while waiting on queue."""
+        worker = "queue_worker_bot"
+        queue = "long_wait_queue"
+        self.run_locutus(["open", worker, "workers"])
+
+        received = []
+        def worker_loop():
+            # Wait for up to 3 seconds
+            res = self.run_locutus(["work", queue, "3"], env_overrides={"LOCUTUS_AGENT_NAME": worker})
+            if res.returncode == 0 and res.stdout.strip():
+                received.append(json.loads(res.stdout.strip()))
+
+        t = threading.Thread(target=worker_loop)
+        t.start()
+        time.sleep(0.5)
+
+        # Verify worker is ACTIVE in directory while waiting on work queue
+        res_who = self.run_locutus(["who", "-a", "--json"])
+        self.assertEqual(res_who.returncode, 0)
+        agents = json.loads(res_who.stdout.strip())
+        match = [a for a in agents if a["agent"] == worker]
+        self.assertEqual(len(match), 1, f"Expected {worker} to be active in who output while working")
+        self.assertEqual(match[0]["status"], "ACTIVE")
+
+        # Send work task to complete the test
+        self.run_locutus(["enqueue", queue, "--subject", "Job 1", "--body", "Payload 1"])
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["subject"], "Job 1")
+
+        self.run_locutus(["close", worker])
+
 
 if __name__ == "__main__":
     unittest.main()

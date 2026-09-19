@@ -16,4 +16,5 @@ local now = redis.call('TIME')[1]
 
 redis.call('SET', prefix .. 'heartbeat:' .. name, '1', 'EX', ttl)
 redis.call('HSET', prefix .. 'agent:' .. name, 'state', state, 'activity', activity, 'last_seen', now)
+redis.call('SADD', prefix .. 'active_agents', name)
 return "OK"

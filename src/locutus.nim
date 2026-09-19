@@ -141,7 +141,9 @@ proc computeHmacSha256*(secret, data: string): string =
   var md: array[64, uint8]
   var mdLen: cuint = 0
   let mdPtr = EVP_sha256()
-  discard HMAC(mdPtr, secret.cstring, secret.len.cint, data.cstring, data.len.csize_t, md[0].addr, mdLen.addr)
+  let hmacRes = HMAC(mdPtr, secret.cstring, secret.len.cint, data.cstring, data.len.csize_t, md[0].addr, mdLen.addr)
+  if hmacRes == nil:
+    raise newException(ValueError, "OpenSSL HMAC-SHA256 computation failed")
   result = newStringOfCap(mdLen.int * 2)
   for i in 0 ..< mdLen.int:
     result.add(toHex(md[i].int, 2).toLowerAscii)
@@ -632,15 +634,29 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
         quit(exitCode)
 
       if outStr.strip().len == 0 or outStr.strip() == "(nil)":
-        # Internal chunk timeout: renew heartbeat & listener lock silently in Redis
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
         if not isForever:
           let elapsed = int(getTime().toUnix() - startTime)
           remaining = max(0, effectiveTimeout - elapsed)
           if remaining == 0:
             return # Silent zero-token exit
+
+        # Internal chunk timeout: renew heartbeat & listener lock silently in Redis only if still owner
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
+        let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
+        if code == 0:
+          var isMyLock = false
+          if currentVal.strip().len == 0 or currentVal.strip() == "(nil)":
+            isMyLock = true
+          else:
+            try:
+              let node = parseJson(currentVal.strip())
+              if node.getOrDefault("pid").getInt(0) == myPid and node.getOrDefault("host").getStr("") == myHost:
+                isMyLock = true
+            except Exception:
+              discard
+          if isMyLock:
+            discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
         continue
 
       let firstNl = outStr.find('\n')
@@ -694,7 +710,14 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
       echo $parsed
       return
   finally:
-    discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+    let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
+    if code == 0 and currentVal.strip().len > 0 and currentVal.strip() != "(nil)":
+      try:
+        let node = parseJson(currentVal.strip())
+        if node.getOrDefault("pid").getInt(0) == myPid and node.getOrDefault("host").getStr("") == myHost:
+          discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+      except Exception:
+        discard
 
 proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): string =
   let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
@@ -763,13 +786,24 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
   let startTime = getTime().toUnix()
   var remaining = effectiveTimeout
 
+  let workerName = getActiveAgentName(cfg, "")
+  let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
+  let pollChunk = min(60, max(1, hbTtl div 2))
+
+  if workerName.len > 0:
+    discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+
   while isForever or remaining > 0:
-    let waitSec = if isForever: 60 else: remaining
+    let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
     var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $waitSec])
     if exitCode != 0:
       stderr.writeLine("Redis error: " & outStr.strip())
       quit(exitCode)
     if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+      if workerName.len > 0:
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
       if not isForever:
         let elapsed = int(getTime().toUnix() - startTime)
         remaining = max(0, effectiveTimeout - elapsed)

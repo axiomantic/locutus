@@ -522,6 +522,13 @@ class TestRedisA2AProtocol(unittest.TestCase):
         directory = run_eval(LUA_DIRECTORY, 0, PREFIX)
         self.assertIn("alice|1|worker|busy|Running unit tests", directory)
 
+        # Verify status restores active_agents membership if previously pruned
+        run_redis("SREM", f"{PREFIX}active_agents", "alice")
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}active_agents", "alice"), "0")
+        res_restore = run_eval(LUA_STATUS, 0, PREFIX, "alice", "idle", "Awaiting tasks", "60")
+        self.assertEqual(res_restore, "OK")
+        self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}active_agents", "alice"), "1")
+
     def test_17_distributed_lock_and_unlock_lua(self):
         """Test lock.lua and unlock.lua atomic lease acquisition and release semantics."""
         lock_name = "git_checkout"

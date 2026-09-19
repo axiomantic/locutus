@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Strategy A (Dedicated Ear Subagent)**: For runtimes supporting asynchronous subagent-to-parent messaging.
   - **Strategy B (Atomic Piggybacked Re-Arm)**: For single-agent / linear shell runtimes using `--listen`.
 
+### Fixed
+- **Conditional Listener Ownership Deletion on Exit**: Updated `doListen`'s cleanup block to verify that `locutus:listener:<name>` in Redis matches the terminating process's PID and hostname before deleting it. Prevents preempted or replaced listeners from having their locks wiped by an earlier process exiting.
+- **Worker Heartbeat Starvation Prevention in `locutus work`**: Added automatic heartbeat and `active_agents` renewal during `doWork` chunked polling timeouts when an agent identity is resolved. Prevents idle worker processes waiting on task queues from expiring and being pruned from `locutus who`.
+- **Directory Consistency in `status.lua`**: Added `SADD active_agents <name>` to `scripts/status.lua` to ensure that setting state or activity restores pruned agents to directory listings.
+- **Cryptographic Error Handling**: Added null pointer check on OpenSSL `HMAC()` return value in `computeHmacSha256` to raise explicit `ValueError` on calculation failure.
+
 ## [0.1.1] - 2026-09-19
 
 ### Added
