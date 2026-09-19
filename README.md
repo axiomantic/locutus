@@ -22,8 +22,13 @@ It enables multiple coding assistants (Claude Code, Antigravity, Cursor, Windsur
 - **Offline Backlog Delivery**: Tasks sent to offline or disconnected agents queue safely in Redis (7-day default TTL) and are delivered in FIFO order via `scripts/drain.lua` upon reconnect.
 - **Automatic Dead-Agent Pruning**: Expired agent heartbeats are automatically pruned during multicast fan-out, eliminating dead-queue bloat.
 - **Dual-Mode Structured Sending**: Messages can be sent either as raw JSON or via structured arguments where Redis automatically generates the envelope using native `cjson.encode`.
+- **Cryptographic Security & Prompt-Injection Firewall**:
+  - Out-of-band secret key management (`~/.config/locutus/secret`, `0600` permissions) with zero exposure to LLM context, Git, or Redis.
+  - Mandatory HMAC-SHA256 authentication: unauthenticated or forged messages are dropped at the host shell level by `scripts/listen.sh` before entering the assistant's context window.
+  - Optional End-to-End Encryption (E2EE): `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies via OpenSSL AES-256-CBC PBKDF2.
 - **Operator Slash Command**: Built-in human-facing slash command `/locutus` (`open`, `send`, `broadcast`, `who`, `tag`, `close`).
-- **Rigorous Test Suite**: Deterministic unit tests, single-agent Ollama tool-calling tests, and multi-agent autonomous ping-pong tests with Pydantic schema validation.
+- **Rigorous Test Suite**: Deterministic unit tests, HMAC security & prompt injection firewall tests, single-agent Ollama tool-calling tests, and multi-agent autonomous ping-pong tests with Pydantic schema validation.
+
 
 ---
 
@@ -94,6 +99,9 @@ All server-side coordination is executed atomically via Lua scripts located in `
 | [`drain.lua`](scripts/drain.lua) | Atomic batch RPOP to drain offline backlog on startup/reconnect. | `prefix, name, max_count` |
 | [`directory.lua`](scripts/directory.lua) | Lists active agents, liveness status, and tags with optional project filter. | `prefix, [filter_tag]` |
 | [`unregister.lua`](scripts/unregister.lua) | Clean logout, tag set cleanup, and heartbeat removal. | `prefix, name` |
+| [`security.sh`](scripts/security.sh) | Cryptographic HMAC-SHA256 signing, verification, and AES-256 PBKDF2 encryption. | `get-secret`, `sign`, `verify`, `encrypt`, `decrypt` |
+| [`send.sh`](scripts/send.sh) | Secure authenticated dispatcher: signs payload and routes to Redis Lua scripts. | `--to / --broadcast`, `--type`, `--subject`, `--body` |
+| [`listen.sh`](scripts/listen.sh) | Air-gapped prompt-injection firewall background listener. Intercepts BRPOP and drops forged messages. | `[agent_name] [timeout_sec]` |
 
 ---
 
@@ -153,13 +161,16 @@ export LOCUTUS_SCRIPTS_DIR="$(pwd)/scripts"
 A Python virtual environment with `pydantic` is used for validation:
 
 ```bash
-# 1. Run all 12 protocol unit tests (deterministic, zero-token, live Redis):
+# 1. Run all 15 protocol unit tests (deterministic, zero-token, live Redis):
 .venv/bin/python3 -m unittest tests/test_protocol.py
 
-# 2. Run single-agent autonomous Ollama test (validates LLM tool-calling + Pydantic schema):
+# 2. Run HMAC security & prompt-injection firewall tests (deterministic, live Redis):
+.venv/bin/python3 -m unittest tests/test_security.py
+
+# 3. Run single-agent autonomous Ollama test (validates LLM tool-calling + Pydantic schema):
 .venv/bin/python3 tests/test_ollama_agent.py
 
-# 3. Run multi-agent autonomous ping-pong integration test (Alice & Bob live interaction):
+# 4. Run multi-agent autonomous ping-pong integration test (Alice & Bob live interaction):
 .venv/bin/python3 tests/test_multi_agent_pingpong.py
 ```
 

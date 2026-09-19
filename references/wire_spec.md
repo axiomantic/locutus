@@ -18,7 +18,9 @@ Every message stored in an agent inbox (`${LOCUTUS_REDIS_PREFIX}inbox:<recipient
   "tags": ["locutus", "ticket-104"],
   "subject": "Review auth parser changes",
   "body": "Please inspect src/auth.ts and verify if token expiry handles leap years.",
-  "timestamp": "2026-09-19T00:17:36Z"
+  "timestamp": "2026-09-19T00:17:36Z",
+  "sig": "9f8a3c4b12...64hex",
+  "encrypted": false
 }
 ```
 
@@ -33,8 +35,10 @@ Every message stored in an agent inbox (`${LOCUTUS_REDIS_PREFIX}inbox:<recipient
 | `reply_to` | `string` \| `null` | **Yes** | ID of the previous message being replied to, or `null` if initiating a conversation. |
 | `tags` | `array[string]` | **Yes** | Routing, project, or ticket tags. |
 | `subject` | `string` | **Yes** | Brief human-readable summary of the payload. |
-| `body` | `string` | **Yes** | Work instructions, question, or response payload. Keep under 10KB. |
+| `body` | `string` | **Yes** | Work instructions, question, or response payload (plaintext or AES ciphertext). Keep under 10KB. |
 | `timestamp` | `string` | **Yes** | ISO-8601 UTC timestamp string (e.g. `YYYY-MM-DDTHH:MM:SSZ`). |
+| `sig` | `string` \| `null` | **No** | HMAC-SHA256 hex signature authenticating message contents. |
+| `encrypted` | `boolean` | **No** | Defaults to `false`. When `true`, `body` is AES-256-CBC ciphertext. |
 
 ---
 
@@ -55,7 +59,32 @@ Every message stored in an agent inbox (`${LOCUTUS_REDIS_PREFIX}inbox:<recipient
 
 ---
 
-## 3. Pydantic Model Reference
+## 3. Cryptographic Security & Prompt-Injection Firewall
+
+Locutus employs an out-of-band cryptographic security model to protect coding assistants from forged tasks, unauthorized cluster access, and prompt injection attacks:
+
+### Secret Key Storage
+- Secret key stored at `~/.config/locutus/secret` with `0600` permissions (read/write by owner only).
+- Auto-generated on first run with 256-bit cryptographically secure entropy (`openssl rand -hex 32`).
+- The secret key **never enters the assistant's LLM context window**, is never passed as a prompt argument, and is never transmitted across Redis.
+
+### HMAC-SHA256 Signature Verification
+- Senders sign outgoing messages using `scripts/send.sh` or `scripts/security.sh sign`.
+- Signature covers canonical concatenation: `id|from|to|type|subject|body|timestamp`.
+- Receiving agents verify signatures via `scripts/listen.sh`.
+
+### Prompt-Injection Firewall (Air-Gap Invariant)
+- Forged, tampered, or unsigned messages are dropped **at the shell level** by `scripts/listen.sh` before entering stdout.
+- Dropped messages are logged to stderr only. The assistant never receives malicious or forged content into its context window, neutralizing prompt injection attacks before they can execute.
+
+### Optional End-to-End Encryption (E2EE)
+- Setting `LOCUTUS_ENCRYPT=1` encrypts the `body` using OpenSSL AES-256-CBC PBKDF2.
+- Plaintext payload never touches the Redis keyspace.
+- `scripts/listen.sh` automatically detects `encrypted: true` and decrypts before delivering to the agent.
+
+---
+
+## 4. Pydantic Model Reference
 
 ```python
 from datetime import datetime
@@ -75,6 +104,8 @@ class LocutusMessage(BaseModel):
     subject: str = Field(..., min_length=1, description="Message subject line")
     body: str = Field(..., min_length=1, description="Task, query, or reply payload content")
     timestamp: str = Field(..., description="ISO-8601 timestamp string")
+    sig: Optional[str] = Field(default=None, description="HMAC-SHA256 authentication signature")
+    encrypted: bool = Field(default=False, description="True if body payload is AES-256-CBC encrypted")
 
     @field_validator("tags", mode="before")
     @classmethod

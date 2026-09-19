@@ -34,18 +34,29 @@ When the user invokes `/locutus <subcommand>`:
      - Project    : <LOCUTUS_PROJECT>
      - Tags       : <tags>
      - Redis URL  : <LOCUTUS_REDIS_URL> (prefix: <LOCUTUS_REDIS_PREFIX>)
+     - Security   : HMAC-SHA256 authenticated (Air-Gap Prompt Firewall)
      - Status     : Active & Listening on inbox
      ====================================================
      ```
-   - Dispatch background listener: `redis-cli -u "$LOCUTUS_REDIS_URL" BRPOP "${LOCUTUS_REDIS_PREFIX}inbox:<name>" 90`.
+   - Dispatch background listener using the secure firewall wrapper:
+     ```bash
+     "$LOCUTUS_SCRIPTS_DIR/listen.sh" "<name>" 90
+     ```
 3. For `/locutus send`:
-   - Execute `send_o2o.lua` using structured parameters or JSON payload matching the `LocutusMessage` schema.
+   - Execute secure authenticated dispatcher:
+     ```bash
+     "$LOCUTUS_SCRIPTS_DIR/send.sh" --to "<to>" --type "task" --subject "<subject>" --body "<body>"
+     ```
 4. For `/locutus broadcast`:
    - If tags not specified, scope to `"${LOCUTUS_PROJECT}"`. If specified, scope to `"${LOCUTUS_PROJECT},${tags}"` unless `*` or `@all` is passed.
-   - Execute `multicast.lua`.
+   - Execute secure broadcast:
+     ```bash
+     "$LOCUTUS_SCRIPTS_DIR/send.sh" --broadcast --tags "${tags:-$LOCUTUS_PROJECT}" --subject "<subject>" --body "<body>"
+     ```
 5. For `/locutus who`:
    - Execute `directory.lua` passing filter (defaults to `$LOCUTUS_PROJECT`).
 6. For `/locutus tag`:
    - Execute `tag.lua` passing action and tags.
 7. For `/locutus unregister` (or `/locutus close`):
    - Execute `unregister.lua`: `redis-cli -u "$LOCUTUS_REDIS_URL" EVAL "$(cat "$LOCUTUS_SCRIPTS_DIR/unregister.lua")" 0 "$LOCUTUS_REDIS_PREFIX" "<name>"`.
+

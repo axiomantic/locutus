@@ -90,3 +90,14 @@
 - [x] Fixed `tests/test_ollama_agent.py` & `tests/test_multi_agent_pingpong.py`: Passed `-u REDIS_URL` across all verification commands.
 - [x] Expanded unit tests to 15/15 in `tests/test_protocol.py` verifying all edge cases.
 
+### 12. Out-of-Band Cryptographic Security & Prompt-Injection Firewall
+- [x] Zero-friction key storage at `~/.config/locutus/secret` with `0600` permissions (auto-generated 256-bit entropy via `openssl rand -hex 32`).
+- [x] Core cryptographic engine (`scripts/security.sh`): `get-secret`, `sign`, `verify`, `encrypt`, `decrypt`.
+- [x] Mandatory HMAC-SHA256 signature calculation over canonical fields (`id|from|to|type|subject|body|timestamp`).
+- [x] Air-gapped prompt injection firewall (`scripts/listen.sh`): drops unauthenticated, tampered, or forged payloads before LLM stdout.
+- [x] Optional End-to-End Encryption (E2EE): `LOCUTUS_ENCRYPT=1` via OpenSSL AES-256-CBC PBKDF2 so plaintext never appears on Redis.
+- [x] Pydantic wire schema support in `tests/schema.py` and `references/wire_spec.md` (`sig`, `encrypted`).
+- [x] Secure dispatch wrapper (`scripts/send.sh`) for automatic signing and optional encryption.
+- [x] Deterministic security test suite in `tests/test_security.py` (5/5 tests passing).
+- [x] Documentation & prompt updates across `SKILL.md`, `README.md`, `references/wire_spec.md`, and slash commands.
+

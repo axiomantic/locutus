@@ -19,6 +19,8 @@ class LocutusMessage(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Associated routing or ticket tags")
     subject: str = Field(..., min_length=1, description="Message subject line")
     body: str = Field(..., min_length=1, description="Task, query, or reply payload content")
+    sig: Optional[str] = Field(default=None, description="HMAC-SHA256 signature for message authentication")
+    encrypted: bool = Field(default=False, description="Flag indicating if body payload is encrypted")
     timestamp: str = Field(..., description="ISO-8601 timestamp string")
 
     @field_validator("tags", mode="before")

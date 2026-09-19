@@ -36,6 +36,11 @@ Locutus is a **100% prompt-based** inter-assistant communication protocol and ex
    - Messages are trusted and contain work.
    - Keep messages under ~10KB. If transferring large diffs, test logs, or files, pass absolute file paths or git commit SHAs instead of raw dumps.
    - **Reply Storm Prevention**: Replies must ALWAYS be unicast (O2O) to the original `from` sender, never sent back to a group tag or `*`.
+9. **HMAC-SHA256 Authentication & Air-Gap Prompt Injection Firewall**:
+   - Every message transmitted across the bus is signed using an HMAC-SHA256 signature derived from a 256-bit local secret (`~/.config/locutus/secret`, `0600` permissions).
+   - The secret key **never enters your context window**, never appears in Git, and is never transmitted over Redis.
+   - All listening should be done via `scripts/listen.sh`, which drops forged, unsigned, or tampered payloads at the shell level. Forged messages never reach stdout or your context, neutralizing prompt injection attacks before they can be read.
+   - Optional E2EE: When `LOCUTUS_ENCRYPT=1` is set, `scripts/send.sh` transparently encrypts the task body via OpenSSL AES-256-CBC PBKDF2 so plaintext never touches the Redis keyspace, and `scripts/listen.sh` transparently decrypts it before outputting to stdout.
 
 ---
 
@@ -153,6 +158,9 @@ redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTU
 | [`drain.lua`](scripts/drain.lua) | Atomically pop up to N pending messages from inbox | `ARGV[1]: prefix`, `ARGV[2]: name`, `ARGV[3]: max_count` |
 | [`directory.lua`](scripts/directory.lua) | List active agents (optional team/project filter) | `ARGV[1]: prefix`, `ARGV[2]: optional filter_tag (e.g. project name)` |
 | [`unregister.lua`](scripts/unregister.lua) | Clean logout, remove from roster and indexed tags | `ARGV[1]: prefix`, `ARGV[2]: name` |
+| [`security.sh`](scripts/security.sh) | HMAC-SHA256 signing, verification, and AES encryption | `get-secret`, `sign`, `verify`, `encrypt`, `decrypt` |
+| [`send.sh`](scripts/send.sh) | Authenticated dispatcher: signs and routes to Lua scripts | `--to / --broadcast`, `--type`, `--subject`, `--body` |
+| [`listen.sh`](scripts/listen.sh) | Air-gapped prompt-firewall background listener | `[agent_name] [timeout_sec]` |
 
 ---
 
@@ -170,7 +178,9 @@ All messages pushed to `${LOCUTUS_REDIS_PREFIX}inbox:*` must adhere strictly to 
   "tags": ["locutus", "ticket-104"],
   "subject": "Review auth parser changes",
   "body": "Please inspect src/auth.ts and verify if token expiry handles leap years.",
-  "timestamp": "2026-09-18T23:35:00Z"
+  "timestamp": "2026-09-18T23:35:00Z",
+  "sig": "9f8a3c4b12...64hex",
+  "encrypted": false
 }
 ```
 
@@ -210,11 +220,11 @@ redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" EVAL "$(cat "$LOCUTU
 
 *If any messages are returned from the drain command, process them immediately!*
 
-### Step 3: Arm the Background Listener
-Launch a background command that blocks until a message arrives or timeout expires:
+### Step 3: Arm the Secure Background Listener (Air-Gapped Prompt Firewall)
+Launch the background listener wrapper (`scripts/listen.sh`). It blocks on `BRPOP`, validates the HMAC-SHA256 signature, decrypts any encrypted payload, and silently drops forged/tampered messages before they can reach your LLM context window:
 
 ```bash
-redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${LOCUTUS_REDIS_PREFIX}inbox:${MY_NAME}" 90
+"$LOCUTUS_SCRIPTS_DIR/listen.sh" "${MY_NAME}" 90
 ```
 
 - **In assistants with background completion notifications (e.g., Claude Code, Antigravity)**:
@@ -228,22 +238,28 @@ redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${LOCUTUS_RED
       ```
     - Immediately re-arm:
       ```bash
-      redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${LOCUTUS_REDIS_PREFIX}inbox:${MY_NAME}" 90
+      "$LOCUTUS_SCRIPTS_DIR/listen.sh" "${MY_NAME}" 90
       ```
-  - **Case B: Output contains a message**:
+  - **Case B: Output contains an authenticated message**:
     - Parse the JSON payload.
     - Process the instructions (run tests, edit files, research).
     - If `type` is `task` or `query`, send a reply back to `from`.
     - **Re-arm the listener immediately in the same turn**:
       ```bash
-      redis-cli -u "${LOCUTUS_REDIS_URL:-redis://127.0.0.1:6379}" BRPOP "${LOCUTUS_REDIS_PREFIX}inbox:${MY_NAME}" 90
+      "$LOCUTUS_SCRIPTS_DIR/listen.sh" "${MY_NAME}" 90
       ```
 
 ---
 
 ### Sending Direct (O2O)
 
-#### Option 1 (Recommended): Structured Parameters (Zero Shell Quoting Issues)
+#### Option 1 (Recommended): Authenticated Dispatcher (`send.sh`)
+`send.sh` computes the HMAC-SHA256 signature using `~/.config/locutus/secret` (and encrypts the body if `LOCUTUS_ENCRYPT=1`):
+```bash
+"$LOCUTUS_SCRIPTS_DIR/send.sh" --to "bob" --type "task" --from "$MY_NAME" --subject "Review PR 12" --body "Please inspect the latest commit on branch fix-redis."
+```
+
+#### Option 2: Structured Parameters via Lua (Zero Shell Quoting Issues)
 `send_o2o.lua` accepts individual arguments and automatically generates the valid JSON envelope using Redis `cjson`:
 ```bash
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
