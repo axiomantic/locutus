@@ -496,7 +496,7 @@ proc formatDirectory*(raw: string): string =
       let alive = if parts[1] == "1": "ACTIVE" else: "EXPIRED"
       let tags = parts[2]
       let state = if parts.len > 3 and parts[3].len > 0: parts[3].toUpperAscii else: "IDLE"
-      let activity = if parts.len > 4: parts[4] else: ""
+      let activity = if parts.len > 4: parts[4..^1].join("|") else: ""
       rows.add((name, alive, state, tags, activity))
     elif line.strip().len > 0:
       rows.add((line.strip(), "", "", "", ""))
@@ -526,7 +526,7 @@ proc formatDirectoryJson*(raw: string): string =
             if trimmed.len > 0: tagArr.add(%trimmed)
         obj["tags"] = tagArr
         obj["state"] = %(if parts.len > 3 and parts[3].len > 0: parts[3].toUpperAscii else: "IDLE")
-        obj["activity"] = %(if parts.len > 4: parts[4] else: "")
+        obj["activity"] = %(if parts.len > 4: parts[4..^1].join("|") else: "")
         list.add(obj)
   return $list
 

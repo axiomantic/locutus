@@ -5,9 +5,16 @@
 --   leader_chan: prefix .. "channel:leader:" .. role (PubSub)
 
 local prefix = ARGV[1]
-local action = ARGV[2]
-local role = ARGV[3]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
 
+local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
+local role = ARGV[3]
 if not role or role == "" then
     return redis.error_reply("ERR: Missing role")
 end

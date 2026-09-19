@@ -6,8 +6,20 @@
 -- ARGV[4]: comma-separated tags to add, remove, or set
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local name = ARGV[2]
+if not name or name == "" then
+    return redis.error_reply("ERR: Missing agent name")
+end
+
 local action = ARGV[3] or "add"
+if action ~= "add" and action ~= "remove" and action ~= "set" then
+    return redis.error_reply("ERR: Unknown action '" .. tostring(action) .. "'")
+end
+
 local tags_arg = ARGV[4] or ""
 
 if redis.call('SISMEMBER', prefix .. 'active_agents', name) == 0 then

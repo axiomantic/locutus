@@ -5,9 +5,16 @@
 --   workflow_chan: prefix .. "channel:workflow:" .. flow_id (PubSub)
 
 local prefix = ARGV[1]
-local action = ARGV[2]
-local flow_id = ARGV[3]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
 
+local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
+local flow_id = ARGV[3]
 if not flow_id or flow_id == "" then
     return redis.error_reply("ERR: Missing flow_id")
 end

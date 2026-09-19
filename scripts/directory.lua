@@ -6,6 +6,10 @@
 -- ARGV[2]: optional filter tag (e.g. "locutus", or "*" / nil for all)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local filter = ARGV[2]
 local agents = {}
 

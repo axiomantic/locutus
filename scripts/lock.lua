@@ -7,8 +7,20 @@
 -- ARGV[5]: with_fencing ("1" or "0", optional)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local lock_name = ARGV[2]
+if not lock_name or lock_name == "" then
+    return redis.error_reply("ERR: Missing lock name")
+end
+
 local owner = ARGV[3]
+if not owner or owner == "" then
+    return redis.error_reply("ERR: Missing lock owner")
+end
+
 local ttl = tonumber(ARGV[4]) or 30
 local with_fencing = ARGV[5] == "1"
 

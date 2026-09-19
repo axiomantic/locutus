@@ -5,7 +5,15 @@
 -- ARGV[3]: max count to pop (default 50)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local name = ARGV[2]
+if not name or name == "" then
+    return redis.error_reply("ERR: Missing agent name")
+end
+
 local count = tonumber(ARGV[3]) or 50
 local messages = {}
 

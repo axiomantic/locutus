@@ -7,8 +7,16 @@
 -- ARGV[4]: inbox TTL seconds (default 300)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local target_str = ARGV[2] or "*"
 local msg_json = ARGV[3]
+if not msg_json or msg_json == "" then
+    return redis.error_reply("ERR: Missing message payload")
+end
+
 local inbox_ttl = tonumber(ARGV[4]) or 300
 
 local targets = {}

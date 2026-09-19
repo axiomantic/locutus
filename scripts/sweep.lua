@@ -9,6 +9,10 @@
 --   listeners: prefix .. "listener:*" (String)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local action = ARGV[2] or "audit"
 local dry_run = ARGV[3] == "1" or action == "audit"
 

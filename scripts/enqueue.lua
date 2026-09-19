@@ -6,8 +6,20 @@
 -- ARGV[4]: queue TTL seconds (default 604800)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local qname = ARGV[2]
+if not qname or qname == "" then
+    return redis.error_reply("ERR: Missing queue name")
+end
+
 local msg_json = ARGV[3]
+if not msg_json or msg_json == "" then
+    return redis.error_reply("ERR: Missing message payload")
+end
+
 local ttl = tonumber(ARGV[4]) or 604800
 
 local key

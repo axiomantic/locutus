@@ -5,9 +5,16 @@
 --   channels: prefix .. "channel:cancellations", prefix .. "channel:cancel:" .. run_id
 
 local prefix = ARGV[1]
-local action = ARGV[2]
-local run_id = ARGV[3]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
 
+local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
+local run_id = ARGV[3]
 if not run_id or run_id == "" then
     return redis.error_reply("ERR: Missing run_id")
 end

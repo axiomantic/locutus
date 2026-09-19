@@ -9,7 +9,15 @@
 -- ARGV[7]: force (pass)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
 local room = ARGV[3] or "default"
 local agent = ARGV[4] or ""
 

@@ -20,8 +20,16 @@
 --   ARGV[11]: inbox TTL seconds (default 604800)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local target_tags_csv = ARGV[2] or "*"
 local arg3 = ARGV[3]
+if not arg3 or arg3 == "" then
+    return redis.error_reply("ERR: Missing message payload")
+end
+
 local msg_json
 local inbox_ttl = 604800
 

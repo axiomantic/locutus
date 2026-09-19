@@ -8,6 +8,11 @@
 
 local prefix = ARGV[1]
 local name = ARGV[2]
+
+if not prefix or prefix == "" or not name or name == "" then
+    return redis.error_reply("ERR: Missing prefix or agent name")
+end
+
 local tags_csv = ARGV[3] or ""
 local ttl = tonumber(ARGV[4]) or 150
 local now = redis.call('TIME')[1]

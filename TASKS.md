@@ -327,90 +327,90 @@ Every test must be upgraded from shallow status/presence checks (Level 1–2) to
 ---
 
 ### Group 2.4: `tests/test_protocol.py` (29 Tests)
-- [ ] **TASK-GM-064: `test_01_registration_and_directory`**
+- [x] **TASK-GM-064: `test_01_registration_and_directory`**
   - **Mirage Risk**: Checks string formatting of directory line; does not validate delimiter escaping.
-  - **Tripwire Migration**: Test agents with special characters in name and activity; assert proper escaping.
-- [ ] **TASK-GM-065: `test_02_multicast_multi_agent_with_content_verification`**
+  - **Tripwire Migration**: Added argument validation negative controls (missing prefix/name); verified TTL and metadata hash in Redis; tested special characters and complex activities with pipe delimiters (`compiling | testing | deploying`), updating `locutus.nim` and `register.lua`/`directory.lua` for full delimiter safety; verified tag-filtered queries and non-existent agent negative control. (Verified: 1 passed in 0.24s).
+- [x] **TASK-GM-065: `test_02_multicast_multi_agent_with_content_verification`**
   - **Mirage Risk**: Checks message count; does not verify payload content byte-for-byte on each inbox.
-  - **Tripwire Migration**: Assert exact payload match across all recipient inboxes.
-- [ ] **TASK-GM-066: `test_03_broadcast_to_all_active_agents`**
+  - **Tripwire Migration**: Added argument validation negative controls (missing prefix/payload); tested delivery failure to non-existent tags; asserted inbox TTL hygiene (~604800s); verified non-targeted agent received strictly 0 messages and ghost inboxes do not exist; verified byte-for-byte identical payload match across all recipient inboxes; validated schemas with `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`; and verified clean post-drain inbox empty state. (Verified: 1 passed in 0.21s).
+- [x] **TASK-GM-066: `test_03_broadcast_to_all_active_agents`**
   - **Mirage Risk**: Checks active agents; does not assert pruned agents do not receive broadcast.
-  - **Tripwire Migration**: Assert pruned agents receive 0 messages.
-- [ ] **TASK-GM-067: `test_04_offline_queuing_and_ordered_backlog`**
+  - **Tripwire Migration**: Proved broadcast to `*` and `@all` delivers strictly to live agents; asserted pruned/dead agent received 0 messages and was cleanly swept from `active_agents`, tag indices, and metadata; asserted unregistered agent received 0 messages; verified byte-for-byte exact payload delivery on each live inbox; and validated wire envelopes with `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`. (Verified: 1 passed in 0.32s).
+- [x] **TASK-GM-067: `test_04_offline_queuing_and_ordered_backlog`**
   - **Mirage Risk**: Checks 2 messages received; does not assert FIFO order when 20 messages are buffered.
-  - **Tripwire Migration**: Buffer 20 messages; assert exact arrival order.
-- [ ] **TASK-GM-068: `test_05_disconnect_pruning_and_reconnect_recovery`**
+  - **Tripwire Migration**: Added argument validation negative controls on `send_o2o.lua` and `drain.lua`; buffered 20 distinct sequential tasks to offline agent; drained across multiple batches (10 then 15) proving strict FIFO arrival order (1..10 then 11..20); validated wire envelopes with `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`; verified remaining backlog counter at each step; and proved negative controls on innocent inboxes and empty draining. (Verified: 1 passed in 0.35s).
+- [x] **TASK-GM-068: `test_05_disconnect_pruning_and_reconnect_recovery`**
   - **Mirage Risk**: Checks pruning; does not test state restoration upon reconnect.
-  - **Tripwire Migration**: Assert agent removed from directory, reconnects, and state is restored.
-- [ ] **TASK-GM-069: `test_06_roundtrip_request_reply_threading`**
+  - **Tripwire Migration**: Simulated disconnect and proved immediate automatic pruning from directory, `active_agents`, and tag reverse index sets with metadata hash deletion; proved offline agent receives strictly 0 multicast messages while online peer receives expected message; proved complete state restoration upon reconnect (re-registration, state/activity restoration, and re-appearance in directory); and validated subsequent multicast delivery and wire envelopes on both agents. (Verified: 1 passed in 0.29s).
+- [x] **TASK-GM-069: `test_06_roundtrip_request_reply_threading`**
   - **Mirage Risk**: Checks reply received; does not assert thread ID correlation.
-  - **Tripwire Migration**: Assert `reply_to` thread correlation ID on every hop.
-- [ ] **TASK-GM-070: `test_07_inbox_ttl_hygiene`**
+  - **Tripwire Migration**: Proved 4-hop roundtrip request-reply conversation (Task 1 -> Reply 1 -> Followup Task 2 -> Reply 2) asserting strict `reply_to` correlation across hops; validated wire envelopes with `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`; and proved negative control asserting bystander inboxes received strictly 0 messages. (Verified: 1 passed in 0.24s).
+- [x] **TASK-GM-070: `test_07_inbox_ttl_hygiene`**
   - **Mirage Risk**: Checks TTL set; does not verify key auto-deletion when TTL expires.
-  - **Tripwire Migration**: Set short TTL; assert key vanishes from Redis after expiration.
-- [ ] **TASK-GM-071: `test_08_unregister_and_cleanup`**
+  - **Tripwire Migration**: Set short 1s TTL on inbox key; proved actual natural expiration and key auto-deletion from Redis (`EXISTS == 0`, `TTL == -2`, `LLEN == 0`); tested sliding window TTL refresh extending key survival past initial TTL window; and verified clean keyspace teardown. (Verified: 1 passed in 3.89s).
+- [x] **TASK-GM-071: `test_08_unregister_and_cleanup`**
   - **Mirage Risk**: Checks active agent removed; does not assert inbox and metadata hashes are cleaned.
-  - **Tripwire Migration**: Assert complete key cleanup in Redis.
-- [ ] **TASK-GM-072: `test_09_multi_tag_and_filtering_with_project_isolation`**
+  - **Tripwire Migration**: Added argument validation negative controls; verified complete keyspace cleanup upon unregister (purging heartbeat, active roster, all tag reverse index sets, metadata hash, and inbox queue); confirmed absence from directory; and verified idempotent re-unregistering. (Verified: 1 passed in 0.27s).
+- [x] **TASK-GM-072: `test_09_multi_tag_and_filtering_with_project_isolation`**
   - **Mirage Risk**: Checks tag filter; does not assert cross-project tag collision isolation.
-  - **Tripwire Migration**: Create identical tags in 2 projects; assert project isolation.
-- [ ] **TASK-GM-073: `test_10_dynamic_tag_management`**
+  - **Tripwire Migration**: Configured 6 agents across two projects (alpha, beta) sharing identical sub-tags (backend, frontend, python, react, golang); proved project-isolated multicast targeting excludes foreign project peers with zero leakage; proved 3-tag AND-intersection isolates specific specialists; and verified un-prefixed cross-project global role multicast. (Verified: 1 passed in 0.33s).
+- [x] **TASK-GM-073: `test_10_dynamic_tag_management`**
   - **Mirage Risk**: Checks tag added; does not assert tag removal updates reverse index set.
-  - **Tripwire Migration**: Assert `tag:<name>` set shrinks when tag is removed.
-- [ ] **TASK-GM-074: `test_11_team_directory_project_filtering`**
+  - **Tripwire Migration**: Added negative controls (missing args, invalid action, unregistered agent); proved dynamic `add`, `remove`, and `set` operations update agent metadata; verified reverse index set cardinality (`SCARD`) shrinks to 0 upon tag removal and set overwrite; and proved pending inbox backlog is preserved undisturbed with wire envelope validation. (Verified: 1 passed in 0.31s).
+- [x] **TASK-GM-074: `test_11_team_directory_project_filtering`**
   - **Mirage Risk**: Checks project filter; does not test `@all` cross-project discovery.
-  - **Tripwire Migration**: Assert project filter restricts view while `@all` discovers all.
-- [ ] **TASK-GM-075: `test_12_structured_field_invocation_and_cjson_encoding`**
+  - **Tripwire Migration**: Proved project-scoped directory filtering strictly restricts visibility across 3 projects (team_alpha, team_beta, team_gamma); proved cluster-wide discovery across all projects via `*`, `@all`, and empty string queries with exact agent count assertions; and verified negative control on non-existent projects. (Verified: 1 passed in 0.18s).
+- [x] **TASK-GM-075: `test_12_structured_field_invocation_and_cjson_encoding`**
   - **Mirage Risk**: Checks JSON decode; does not test unicode, escaped quotes, or null bytes.
-  - **Tripwire Migration**: Test JSON encoding across complex unicode and escape strings.
-- [ ] **TASK-GM-076: `test_13_register_tag_cleanup_on_reregistration`**
+  - **Tripwire Migration**: Tested server-side cjson encoding in Mode B (individual parameters) across complex Unicode, Japanese characters, single/double quotes, backslashes, tabs, newlines, and emojis for both direct O2O and multicast fanout; and validated raw wire envelopes with `LocutusPlugin.validate_wire_envelope` and `LocutusMessage`. (Verified: 1 passed in 0.26s).
+- [x] **TASK-GM-076: `test_13_register_tag_cleanup_on_reregistration`**
   - **Mirage Risk**: Checks old tags removed; does not assert new tags retained.
-  - **Tripwire Migration**: Assert old tag sets cleared and new tag sets populated.
-- [ ] **TASK-GM-077: `test_14_tag_unregistered_agent_rejection`**
+  - **Tripwire Migration**: Proved re-registration clears obsolete solo tag reverse sets to 0 while populating new tag sets; verified multi-agent shared tag sets decrement cardinality correctly without disturbing co-tenant agents; validated that subsequent multicast routing strictly respects updated tags; and validated received wire envelope with `LocutusPlugin.validate_wire_envelope`. (Verified: 1 passed in 0.52s).
+- [x] **TASK-GM-077: `test_14_tag_unregistered_agent_rejection`**
   - **Mirage Risk**: Checks error return; does not assert Redis keys unaffected.
-  - **Tripwire Migration**: Assert no keys created when tagging unregistered agent.
-- [ ] **TASK-GM-078: `test_15_multicast_dead_agent_hash_cleanup`**
+  - **Tripwire Migration**: Proved tag operations (`add`, `remove`, `set`) against unregistered agents are strictly rejected with `ERR: agent not registered`; asserted zero side-effects on Redis keyspace via pre- and post-keyspace set snapshots; asserted non-existence of tag reverse index sets and agent metadata hashes; and tested negative controls on missing prefix, agent name, and tag arguments. (Verified: 1 passed in 0.18s).
+- [x] **TASK-GM-078: `test_15_multicast_dead_agent_hash_cleanup`**
   - **Mirage Risk**: Checks dead agent pruned during multicast; does not assert living agents receive message.
-  - **Tripwire Migration**: Assert dead agent pruned AND living agent receives message in single operation.
-- [ ] **TASK-GM-079: `test_16_status_lua`**
+  - **Tripwire Migration**: Proved dead agent (`bob`) is pruned from `active_agents`, all reverse tag sets, and `agent:bob` hash deleted without receiving message; proved living agent (`carol`) in the same target tag receives multicast message with exact byte-for-byte delivery and schema validation via `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`; proved negative controls on unrelated bystander agent (`dan`) receiving 0 messages and multicast to non-existent tag returning 0 delivered. (Verified: 1 passed in 0.35s).
+- [x] **TASK-GM-079: `test_16_status_lua`**
   - **Mirage Risk**: Checks status returned OK; does not assert `active_agents` set membership restored.
-  - **Tripwire Migration**: Assert `SISMEMBER active_agents` is 1 after status call.
-- [ ] **TASK-GM-080: `test_17_distributed_lock_and_unlock_lua`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix and missing agent name); verified status updates state, activity description, last_seen timestamp, and refreshes heartbeat with custom TTL; verified directory reflects exact formatted state and activity; and proved that calling status on a pruned/expired agent restores `active_agents` set membership and heartbeat. (Verified: 1 passed in 0.28s).
+- [x] **TASK-GM-080: `test_17_distributed_lock_and_unlock_lua`**
   - **Mirage Risk**: Checks unlock returns 1; does not assert non-owner unlock returns 0.
-  - **Tripwire Migration**: Assert non-owner unlock fails and lock remains held.
-- [ ] **TASK-GM-081: `test_18_enqueue_work_queue_lua`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, lock name, and owner) on both `lock.lua` and `unlock.lua`; verified atomic lease acquisition with TTL window; proved non-owner acquisition failure with unchanged ownership; proved non-owner unlock attempts return 0 while preserving existing lock; proved owner unlock succeeds and idempotent repeated unlocks return 0; and verified immediate re-acquisition by competitor. (Verified: 1 passed in 0.28s).
+- [x] **TASK-GM-081: `test_18_enqueue_work_queue_lua`**
   - **Mirage Risk**: Checks enqueue returns ID; does not assert queue TTL set.
-  - **Tripwire Migration**: Assert queue key has valid TTL and item is at tail.
-- [ ] **TASK-GM-082: `test_19_directory_auto_pruning`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, queue name, and payload) on `enqueue.lua`; verified queue TTL window, list key type, and LPUSH lengths; proved DLQ hash tag routing (`dlq:{qname}`) and DLQ TTL enforcement; verified strict FIFO consumption ordering via RPOP with exact payload match; and validated wire envelope schemas using `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`. (Verified: 1 passed in 0.23s).
+- [x] **TASK-GM-082: `test_19_directory_auto_pruning`**
   - **Mirage Risk**: Checks agent pruned; does not verify heartbeat expiry causes prune.
-  - **Tripwire Migration**: Test exact heartbeat TTL boundary condition.
-- [ ] **TASK-GM-083: `test_20_scatter_lua_protocol`**
+  - **Tripwire Migration**: Proved natural heartbeat TTL expiration boundary condition (1s TTL naturally expires without manual DEL); proved lazy auto-pruning execution during directory query removes expired agent from directory output, `active_agents`, tag reverse sets, and deletes metadata hash; asserted living agent remains alive and untouched; and tested negative control on querying non-existent tag. (Verified: 1 passed in 1.45s).
+- [x] **TASK-GM-083: `test_20_scatter_lua_protocol`**
   - **Mirage Risk**: Checks return count; does not assert target inboxes contain payload.
-  - **Tripwire Migration**: Assert each targeted inbox receives exact JSON payload.
-- [ ] **TASK-GM-084: `test_21_reliable_queue_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix and payload) on `scatter.lua`; verified fan-out by tag (`@workers`) and explicit agent name lists; asserted exact byte-for-byte delivery and schema validity via `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`; proved negative controls on unrelated bystanders and non-existent tags; and proved dead agent pruning with delivery to surviving living agents. (Verified: 1 passed in 0.29s).
+- [x] **TASK-GM-084: `test_21_reliable_queue_lua_protocol`**
   - **Mirage Risk**: Checks claim returns task; does not assert lease sorted set score matches expiration timestamp.
-  - **Tripwire Migration**: Assert sorted set score equals `now + lease_sec`.
-- [ ] **TASK-GM-085: `test_22_blackboard_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls on `claim.lua` and `ack.lua`; verified that claim produces exact wire envelope payload and sets active task data; asserted sorted set score on cluster key `{PREFIX}leases:{{{q}}}` strictly matches `now + lease_sec`; validated wire envelopes with `LocutusPlugin.validate_wire_envelope`, `LocutusMessage`, and `A2AMessage`; proved ack deletes lease score, active task, and attempts entry; and verified idempotent duplicate ack returns 0. (Verified: 1 passed in 0.23s).
+- [x] **TASK-GM-085: `test_22_blackboard_lua_protocol`**
   - **Mirage Risk**: Checks get after set; does not test OCC revision token increment on edit.
-  - **Tripwire Migration**: Assert revision counter increments and outdated revision update is rejected.
-- [ ] **TASK-GM-086: `test_23_floor_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, action, and key) on `blackboard.lua`; implemented and verified OCC revision tracking (`rev` action); asserted stale revision update rejection (`ERR: OCC revision mismatch`) with value and revision preservation; proved valid revision update succeeds and increments revision counter; verified list append, key deletion, room clearing, and validated snapshot output against `LocutusPlugin.validate_json_schema("blackboard", ...)`. (Verified: 1 passed in 0.26s).
+- [x] **TASK-GM-086: `test_23_floor_lua_protocol`**
   - **Mirage Risk**: Checks floor status; does not assert empty waiters serialized as `[]`.
-  - **Tripwire Migration**: Assert empty waiters array schema strictly matches `[]`.
-- [ ] **TASK-GM-087: `test_24_cancel_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix and action) on `floor.lua`; asserted strict raw JSON schema serialization of empty waiters array as `'[]'` (preventing `{}` distortion); verified mutual exclusion on concurrent requests; verified waiter FIFO queueing; proved unauthorized pass/yield rejection (`ERR: Floor is held by <holder>`); and verified seamless yield/pass handoff through the waiter ring until release. (Verified: 1 passed in 0.28s).
+- [x] **TASK-GM-087: `test_24_cancel_lua_protocol`**
   - **Mirage Risk**: Checks cancel returns OK; does not assert cancellation timestamp recorded.
-  - **Tripwire Migration**: Assert cancellation hash contains timestamp and reason.
-- [ ] **TASK-GM-088: `test_25_ballot_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, action, run_id, and unknown action); verified cancellation token stores exact reason, agent, timestamp, and signature in Redis with custom TTL; verified both explicit timestamp and auto-timestamp fallback; verified clear action and complete keyspace deletion; and proved negative control on bystander check. (Verified: 1 passed in 0.22s).
+- [x] **TASK-GM-088: `test_25_ballot_lua_protocol`**
   - **Mirage Risk**: Checks tally count; does not assert unlisted voter rejected when voter list restricted.
-  - **Tripwire Migration**: Assert unlisted voter rejected with explicit error.
-- [ ] **TASK-GM-089: `test_26_leader_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, action, ballot_id, options, voter, choice) on `ballot.lua`; asserted strict rejection of unlisted voters (`ERR: Voter '<name>' is not eligible for this ballot`) when voter roster is restricted; verified rejection of invalid voting choices; proved vote persistence in Redis hash with signatures; verified tally calculations with winner resolution; and proved post-close voting rejection. (Verified: 1 passed in 0.29s).
+- [x] **TASK-GM-089: `test_26_leader_lua_protocol`**
   - **Mirage Risk**: Checks leader renew; does not assert non-leader cannot renew or resign.
-  - **Tripwire Migration**: Assert non-leader renew returns `ERR: Not leader`.
-- [ ] **TASK-GM-090: `test_27_workflow_dag_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, action, role, agent, and unknown action); verified initial vacant status and renew rejection on vacant role (`ERR: No active leader`); asserted non-leader renew rejection (`ERR: Not leader`) and non-leader resign rejection (`ERR: Not leader`); verified direct Redis payload inspection and TTL bounds; verified leader lease renewal and graceful resignation; and proved competitor immediate acquisition upon vacancy. (Verified: 1 passed in 0.28s).
+- [x] **TASK-GM-090: `test_27_workflow_dag_lua_protocol`**
   - **Mirage Risk**: Checks step resolution; does not verify status preserved as failed on subsequent step resolve.
-  - **Tripwire Migration**: Assert failure status preserved across subsequent resolutions.
-- [ ] **TASK-GM-091: `test_28_sweep_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, action, flow_id, step name, and unknown action); verified multi-step DAG topological progression (`next` and `resolve` unlocking dependent steps); proved failure state preservation across multiple subsequent step resolutions even when all remaining steps complete; and verified DAG cycle validation (mutual cycle and self-loop) and dangling parent step rejection. (Verified: 1 passed in 0.32s).
+- [x] **TASK-GM-091: `test_28_sweep_lua_protocol`**
   - **Mirage Risk**: Checks pruned dead agent; does not assert living agent heartbeat and tags untouched.
-  - **Tripwire Migration**: Assert dead agent removed from all tags and metadata deleted, living agent intact.
-- [ ] **TASK-GM-092: `test_29_lock_fencing_token_lua_protocol`**
+  - **Tripwire Migration**: Proved argument validation negative control (missing prefix) on `sweep.lua`; proved dry-run audit detects dead agent while enforcing absolute keyspace immutability across all keys and sets; proved prune run completely purges dead agent from active roster, all associated tag reverse sets, and deletes metadata hash; asserted living agent remains completely intact with positive heartbeat TTL; and verified cursor-based SCAN discovery across listener keys. (Verified: 1 passed in 0.43s).
+- [x] **TASK-GM-092: `test_29_lock_fencing_token_lua_protocol`**
   - **Mirage Risk**: Checks fencing token returned; does not verify token is not decremented or reset on unlock.
-  - **Tripwire Migration**: Unlock and re-lock; assert fencing counter continues monotonically.
+  - **Tripwire Migration**: Proved argument validation negative controls (missing prefix, lock name, owner) on `lock.lua`; verified monotonic sequence generation across repeated acquire and release cycles (1 -> 2 -> 4); proved non-owner unlock attempts return 0 and preserve lock state; proved unlock deletes lock key while strictly preserving the fencing counter in Redis; proved failed contention attempts do not advance the counter; and verified both fenced and unfenced locking modes. (Verified: 1 passed in 0.36s).

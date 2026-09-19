@@ -5,9 +5,16 @@
 --   ballot_votes: prefix .. "ballot:votes:" .. ballot_id (Hash: voter -> choice)
 
 local prefix = ARGV[1]
-local action = ARGV[2]
-local ballot_id = ARGV[3]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
 
+local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
+local ballot_id = ARGV[3]
 if not ballot_id or ballot_id == "" then
     return redis.error_reply("ERR: Missing ballot_id")
 end

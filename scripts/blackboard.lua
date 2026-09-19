@@ -8,19 +8,46 @@
 -- ARGV[6]: ttl (default 604800 = 7 days)
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local action = ARGV[2]
+if not action or action == "" then
+    return redis.error_reply("ERR: Missing action")
+end
+
 local room = ARGV[3] or "default"
 local key = ARGV[4] or ""
 local val = ARGV[5] or ""
 local ttl = tonumber(ARGV[6]) or 604800
+local expected_rev = ARGV[7]
 
 local kv_key = prefix .. "blackboard:{" .. room .. "}:kv"
 local lists_index = prefix .. "blackboard:{" .. room .. "}:lists"
+local rev_key = prefix .. "blackboard:{" .. room .. "}:rev"
 
 if action == "set" then
+    if not key or key == "" then
+        return redis.error_reply("ERR: Missing key")
+    end
+    if expected_rev and expected_rev ~= "" then
+        local current_rev = tonumber(redis.call('HGET', rev_key, key) or "0")
+        if tonumber(expected_rev) ~= current_rev then
+            return redis.error_reply("ERR: OCC revision mismatch: expected " .. tostring(expected_rev) .. " but current is " .. tostring(current_rev))
+        end
+    end
     redis.call('HSET', kv_key, key, val)
+    redis.call('HINCRBY', rev_key, key, 1)
     redis.call('EXPIRE', kv_key, ttl)
+    redis.call('EXPIRE', rev_key, ttl)
     return "OK"
+
+elseif action == "rev" or action == "revision" then
+    if not key or key == "" then
+        return redis.error_reply("ERR: Missing key")
+    end
+    return redis.call('HGET', rev_key, key) or "0"
 
 elseif action == "get" then
     local v = redis.call('HGET', kv_key, key)
@@ -35,6 +62,9 @@ elseif action == "get" then
     return nil
 
 elseif action == "append" then
+    if not key or key == "" then
+        return redis.error_reply("ERR: Missing key")
+    end
     local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     local len = redis.call('RPUSH', list_key, val)
     redis.call('EXPIRE', list_key, ttl)
@@ -44,6 +74,7 @@ elseif action == "append" then
 
 elseif action == "delete" or action == "del" then
     redis.call('HDEL', kv_key, key)
+    redis.call('HDEL', rev_key, key)
     local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     redis.call('DEL', list_key)
     redis.call('SREM', lists_index, key)
@@ -56,6 +87,7 @@ elseif action == "clear" then
     end
     redis.call('DEL', lists_index)
     redis.call('DEL', kv_key)
+    redis.call('DEL', rev_key)
     return "OK"
 
 elseif action == "snapshot" then

@@ -5,8 +5,19 @@
 -- ARGV[3]: task_id
 
 local prefix = ARGV[1]
+if not prefix or prefix == "" then
+    return redis.error_reply("ERR: Missing prefix")
+end
+
 local qname = ARGV[2]
+if not qname or qname == "" then
+    return redis.error_reply("ERR: Missing queue name")
+end
+
 local task_id = ARGV[3]
+if not task_id or task_id == "" then
+    return redis.error_reply("ERR: Missing task ID")
+end
 
 local leases_key = prefix .. "leases:{" .. qname .. "}"
 local active_key = prefix .. "active:{" .. qname .. "}:" .. task_id
