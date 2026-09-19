@@ -21,42 +21,33 @@ Dispatches inter-agent communication operations over the Redis Locutus bus.
 ## Execution Protocol for Assistants
 
 When the user invokes `/locutus <subcommand>`:
-1. Ensure `LOCUTUS_REDIS_URL`, `LOCUTUS_REDIS_PREFIX`, `LOCUTUS_PROJECT`, and `LOCUTUS_SCRIPTS_DIR` are resolved per the `locutus` skill.
+1. All coordination is performed directly via the native `locutus` binary.
 2. For `/locutus open`:
-   - Pick `<name>` if omitted: `"${LOCUTUS_PROJECT}-worker-$RANDOM"`.
-   - Tags: `"${LOCUTUS_PROJECT},${tags}"`.
-   - Run `register.lua` and `drain.lua`.
-   - **Print the registration banner**:
-     ```text
-     ====================================================
-     [LOCUTUS BUS] Registered Successfully
-     - Agent Name : <name>
-     - Project    : <LOCUTUS_PROJECT>
-     - Tags       : <tags>
-     - Redis URL  : <LOCUTUS_REDIS_URL> (prefix: <LOCUTUS_REDIS_PREFIX>)
-     - Security   : HMAC-SHA256 authenticated (Air-Gap Prompt Firewall)
-     - Status     : Active & Listening on inbox
-     ====================================================
-     ```
-   - Dispatch background listener using the secure firewall wrapper:
-     ```bash
-     "$LOCUTUS_SCRIPTS_DIR/listen.sh" "<name>" 90
-     ```
+   ```bash
+   locutus open "<name>" "<tags>"
+   ```
+   Then dispatch background listener:
+   ```bash
+   locutus listen "<name>" 90
+   ```
 3. For `/locutus send`:
-   - Execute secure authenticated dispatcher:
-     ```bash
-     "$LOCUTUS_SCRIPTS_DIR/send.sh" --to "<to>" --type "task" --subject "<subject>" --body "<body>"
-     ```
+   ```bash
+   locutus send --to "<to>" --type "task" --subject "<subject>" --body "<body>"
+   ```
 4. For `/locutus broadcast`:
-   - If tags not specified, scope to `"${LOCUTUS_PROJECT}"`. If specified, scope to `"${LOCUTUS_PROJECT},${tags}"` unless `*` or `@all` is passed.
-   - Execute secure broadcast:
-     ```bash
-     "$LOCUTUS_SCRIPTS_DIR/send.sh" --broadcast --tags "${tags:-$LOCUTUS_PROJECT}" --subject "<subject>" --body "<body>"
-     ```
+   ```bash
+   locutus broadcast --tags "${tags:-$LOCUTUS_PROJECT}" --subject "<subject>" --body "<body>"
+   ```
 5. For `/locutus who`:
-   - Execute `directory.lua` passing filter (defaults to `$LOCUTUS_PROJECT`).
+   ```bash
+   locutus who [filter]
+   ```
 6. For `/locutus tag`:
-   - Execute `tag.lua` passing action and tags.
+   ```bash
+   locutus tag <add|remove|set> <tags>
+   ```
 7. For `/locutus unregister` (or `/locutus close`):
-   - Execute `unregister.lua`: `redis-cli -u "$LOCUTUS_REDIS_URL" EVAL "$(cat "$LOCUTUS_SCRIPTS_DIR/unregister.lua")" 0 "$LOCUTUS_REDIS_PREFIX" "<name>"`.
+   ```bash
+   locutus close "<name>"
+   ```
 

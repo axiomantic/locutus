@@ -47,7 +47,6 @@ if [ -z "${LOCUTUS_VERSION:-}" ]; then
   VERSION=$(echo "${LATEST_JSON}" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
   if [ -z "${VERSION}" ]; then
     VERSION="v1.0.0"
-    echo "Notice: Could not fetch latest release tag from GitHub API, falling back to ${VERSION}"
   else
     echo "Latest release: ${VERSION}"
   fi
@@ -57,6 +56,38 @@ else
     VERSION="v${VERSION}"
   fi
   echo "Requested version: ${VERSION}"
+fi
+
+# 4. Check for Native Platform Package Managers
+# A. macOS with Homebrew
+if [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
+  echo "Detected Homebrew on macOS. Installing via Homebrew tap..."
+  brew install axiomantic/tap/locutus
+  echo "✓ Locutus successfully installed via Homebrew."
+  exit 0
+fi
+
+# B. Debian / Ubuntu with dpkg/apt
+if [ "${OS}" = "linux" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian_version ]); then
+  DEB_PKG="locutus_${VERSION#v}_${ARCH}.deb"
+  DEB_URL="${GITHUB_URL}/releases/download/${VERSION}/${DEB_PKG}"
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "${TMP_DIR}"' EXIT
+  echo "Detected Debian/Ubuntu system. Downloading package: ${DEB_PKG}..."
+  if curl -fSL --progress-bar -o "${TMP_DIR}/${DEB_PKG}" "${DEB_URL}"; then
+    echo "Installing ${DEB_PKG} via dpkg/apt..."
+    if [ "$EUID" -eq 0 ]; then
+      apt-get install -y "${TMP_DIR}/${DEB_PKG}" 2>/dev/null || dpkg -i "${TMP_DIR}/${DEB_PKG}"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get install -y "${TMP_DIR}/${DEB_PKG}" 2>/dev/null || sudo dpkg -i "${TMP_DIR}/${DEB_PKG}"
+    else
+      dpkg -i "${TMP_DIR}/${DEB_PKG}"
+    fi
+    echo "✓ Locutus successfully installed from Debian package."
+    exit 0
+  else
+    echo "Notice: ${DEB_PKG} not found on release, proceeding with standalone binary..."
+  fi
 fi
 
 # 4. Prepare Download URL and Temp Directory

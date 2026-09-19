@@ -2,11 +2,11 @@
 
 # Locutus
 
-**Zero-Glue Cross-Assistant Communication Bus over Redis**
+**Daemonless, Cryptographically-Authenticated Inter-Process Communication (IPC) Protocol and Message Router for Heterogeneous Autonomous Coding Agents over Key-Value Datastores with Redis Cluster Hash-Slot Affinity (ISO/IEC 19514 / ISO/IEC 2382)**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-32%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-25%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
@@ -21,13 +21,23 @@
 
 **Locutus** connects multiple AI coding assistants (Claude Code, Antigravity, Cursor, Windsurf, Aider, Ollama) across different terminals, projects, or servers using pure Redis primitives and an ultra-fast compiled binary.
 
+### What Does "Zero-Glue" Mean?
+
+In multi-agent architectures, "glue" refers to the intermediate integration middleware that operators are typically forced to deploy and maintain: HTTP/WebSocket proxy daemons, background broker microservices, polling sidecars, and custom adapter SDKs.
+
+**Locutus is strictly Zero-Glue:**
+1. **Zero Background Daemons**: No Locutus broker daemon or background server process runs on your machine. Assistants communicate directly with the key-value store.
+2. **Zero Middleware Code**: Assistants execute single atomic CLI calls (`locutus send`, `locutus listen`) with built-in discovery, HMAC signing, prompt-firewall filtering, and optional AES-256 decryption.
+3. **Zero State Invalidation Glue**: Atomic Redis Lua scripts executed with `EVALSHA` caching provide ACID transactions directly inside Redis memory.
+4. **Zero Runtime Dependencies**: The distributed binary is a standalone executable (Mach-O, ELF, PE `.exe`). Installing via Homebrew, APT, Scoop, or shell script does **not** require installing Nim or any runtime frameworks.
+
 ### Why Locutus?
 
 | Traditional Agent Frameworks | Locutus Architecture |
 | :--- | :--- |
 | ❌ Heavy Python/Node background server daemons | ⚡ **Zero background processes**: Pure atomic Redis lists + sets |
-| ❌ Fragile WebSocket / HTTP bridges requiring open ports | ⚡ **Standard Redis**: Works over local or hosted Redis (AWS, Upstash) |
-| ❌ 500ms+ startup latency & high RAM overhead | ⚡ **Sub-millisecond latency**: 289 KB standalone Nim binary (1ms cold start) |
+| ❌ Fragile WebSocket / HTTP bridges requiring open ports | ⚡ **Standard Redis**: Works over local or hosted Redis (AWS, Upstash, Redis Cluster) |
+| ❌ 500ms+ startup latency & high RAM overhead | ⚡ **Sub-millisecond latency**: 289 KB standalone native binary (1ms cold start) |
 | ❌ Vulnerable to prompt injection from untrusted messages | ⚡ **Air-Gap Prompt Firewall**: Drops unauthenticated payloads at process boundary |
 | ❌ Idle listeners consume continuous LLM tokens | ⚡ **Zero-token idle**: Blocking `BRPOP` consumes 0 LLM tokens while waiting |
 
@@ -233,9 +243,35 @@ Incoming Redis Data ──► [Host OS: locutus listen]
 1. **Host-Level Verification**: Messages are cryptographically validated by `locutus listen` at the process boundary *before* reaching standard output.
 2. **Untrusted Data Dropped**: Unauthenticated, forged, or tampered payloads are completely dropped before they can enter an LLM's context window.
 3. **Zero Secret Leakage**: The cluster secret (`~/.config/locutus/secret`, `0600`) never enters LLM prompts, Git commits, or Redis keys.
-4. **Optional End-to-End Encryption (E2EE)**: While HMAC-SHA256 authentication is mandatory by default to prevent forgery and prompt injection, full payload encryption is optional. Setting `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies with OpenSSL AES-256-CBC PBKDF2 (10,000 iterations), ensuring raw plaintext never touches Redis memory or persistence files.
+4. **Optional End-to-End Encryption (E2EE)**: While HMAC-SHA256 authentication is mandatory by default to prevent forgery and prompt injection, full payload encryption is optional. Setting `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies with AES-256-CBC PBKDF2 (10,000 iterations), ensuring raw plaintext never touches Redis memory or persistence files.
 
 ---
+
+## TTL Lifecycle & Keyspace Hygiene
+
+Locutus enforces automatic keyspace hygiene to prevent unbounded memory growth on long-running Redis instances:
+
+- **Inbox Lists (`inbox:<agent>`)**: Automatically armed with an expiring TTL (default: **7 days** / 604,800 seconds). Each new message pushed to an inbox atomically resets the 7-day TTL window. Offline agents that remain disconnected for more than 7 days have their stale inboxes automatically pruned by Redis.
+- **Heartbeats (`heartbeat:<agent>`)**: Armed with a strict **150-second TTL** (2.5 minutes). Active listeners (`locutus listen`) continually refresh this heartbeat.
+- **Dead-Agent Sweeper**: When routing multicast or directory queries, Locutus checks agent heartbeat existence. Agents whose heartbeats have expired are atomically pruned from active rosters and tag indices.
+
+---
+
+## Redis Cluster Compatibility (Hash Tags)
+
+In a **Redis Cluster**, keys are automatically distributed across 16,384 hash slots across multiple shards. Multi-key operations (`SINTER`, `SMEMBERS`, `LPUSH`) and atomic Lua transactions will fail with `CROSSSLOT Keys in request don't hash to the same slot` if keys belong to different slots.
+
+Locutus supports native **Redis Cluster Hash Tags `{...}`**:
+- When `LOCUTUS_CLUSTER=1` or `LOCUTUS_REDIS_CLUSTER=1` is set, Locutus automatically encapsulates the project namespace in curly braces:
+  `{locutus:<project>}:inbox:<name>`
+  `{locutus:<project>}:active_agents`
+  `{locutus:<project>}:tag:<t>`
+  `{locutus:<project>}:heartbeat:<name>`
+- Redis only hashes the substring inside `{...}` to compute the slot number, guaranteeing that **all keys for the project reside on the exact same cluster shard**.
+- Alternatively, you can specify custom hash tags directly in `LOCUTUS_REDIS_PREFIX`:
+  ```bash
+  export LOCUTUS_REDIS_PREFIX="{my-cluster-team}:"
+  ```
 
 ## Assistant Integration (Skill & Slash Commands)
 

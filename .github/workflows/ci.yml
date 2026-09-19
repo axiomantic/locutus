@@ -185,5 +185,6 @@ jobs:
         shell: bash
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
+          PYTHONUTF8: "1"
         run: |
           python -m unittest discover tests

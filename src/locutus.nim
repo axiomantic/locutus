@@ -201,6 +201,11 @@ proc resolveConfig*(): LocutusConfig =
     project = getEnv("A2A_PROJECT", getCurrentDir().splitPath.tail)
 
   let enc = getEnv("LOCUTUS_ENCRYPT", "0") in ["1", "true", "TRUE"]
+  let clusterMode = getEnv("LOCUTUS_CLUSTER", getEnv("LOCUTUS_REDIS_CLUSTER", "0")) in ["1", "true", "TRUE"]
+  if clusterMode and not (prefix.contains('{') and prefix.contains('}')):
+    let base = if prefix.endsWith(":"): prefix[0 .. ^2] else: prefix
+    prefix = "{" & base & ":" & project & "}:"
+
   return LocutusConfig(redisUrl: redisUrl, prefix: prefix, project: project, encrypt: enc)
 
 # Redis CLI Execution with EVALSHA & Docker fallback
@@ -454,7 +459,7 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
     try:
       parsed = parseJson(payloadStr)
     except JsonParsingError:
-      stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping non-JSON payload from inbox")
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping non-JSON payload from inbox")
       let elapsed = int(getTime().toUnix() - startTime)
       remaining = max(0, timeoutSec - elapsed)
       continue
@@ -472,7 +477,7 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
     # Validate HMAC
     let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
     if not verifyHmac(secret, canonical, sig):
-      stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping unauthenticated/tampered message (ID: " & id & ")")
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message (ID: " & id & ")")
       let elapsed = int(getTime().toUnix() - startTime)
       remaining = max(0, timeoutSec - elapsed)
       continue
@@ -484,7 +489,7 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
         parsed["body"] = %decryptedBody
         parsed["encrypted"] = %false
       except ValueError as e:
-        stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
         let elapsed = int(getTime().toUnix() - startTime)
         remaining = max(0, timeoutSec - elapsed)
         continue

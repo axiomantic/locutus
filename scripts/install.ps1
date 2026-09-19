@@ -42,7 +42,15 @@ elseif (-not ($Version.StartsWith("v"))) {
     $Version = "v$Version"
 }
 
-# 3. Setup Paths
+# 3. Check for Scoop Package Manager
+if (Get-Command scoop -ErrorAction SilentlyContinue) {
+    Write-Host "Detected Scoop package manager. Installing via Scoop..." -ForegroundColor Green
+    scoop install "https://raw.githubusercontent.com/$Repo/main/packaging/scoop/locutus.json"
+    Write-Host "✓ Locutus successfully installed via Scoop." -ForegroundColor Green
+    exit 0
+}
+
+# 4. Standalone Binary Installation
 $zipFile = "locutus-windows-amd64.zip"
 $downloadUrl = "$GitHubUrl/releases/download/$Version/$zipFile"
 $tempDir = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName())

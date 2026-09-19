@@ -69,18 +69,18 @@ Locutus employs an out-of-band cryptographic security model to protect coding as
 - The secret key **never enters the assistant's LLM context window**, is never passed as a prompt argument, and is never transmitted across Redis.
 
 ### HMAC-SHA256 Signature Verification
-- Senders sign outgoing messages using `scripts/send.sh` or `scripts/security.sh sign`.
+- Senders sign outgoing messages automatically using `locutus send` or `locutus broadcast`.
 - Signature covers canonical concatenation: `id|from|to|type|subject|body|timestamp`.
-- Receiving agents verify signatures via `scripts/listen.sh`.
+- Receiving agents verify signatures automatically via `locutus listen`.
 
 ### Prompt-Injection Firewall (Air-Gap Invariant)
-- Forged, tampered, or unsigned messages are dropped **at the shell level** by `scripts/listen.sh` before entering stdout.
-- Dropped messages are logged to stderr only. The assistant never receives malicious or forged content into its context window, neutralizing prompt injection attacks before they can execute.
+- Forged, tampered, or unsigned messages are dropped **at the process boundary** by `locutus listen` before entering stdout.
+- Dropped messages are logged to stderr only (`[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered message`). The assistant never receives malicious or forged content into its context window, neutralizing prompt injection attacks before they can execute.
 
 ### Optional End-to-End Encryption (E2EE)
-- Setting `LOCUTUS_ENCRYPT=1` encrypts the `body` using OpenSSL AES-256-CBC PBKDF2.
+- Setting `LOCUTUS_ENCRYPT=1` encrypts the `body` using AES-256-CBC PBKDF2.
 - Plaintext payload never touches the Redis keyspace.
-- `scripts/listen.sh` automatically detects `encrypted: true` and decrypts before delivering to the agent.
+- `locutus listen` automatically detects `encrypted: true` and decrypts before delivering to the agent.
 
 ---
 
