@@ -38,6 +38,9 @@ if [ -z "$NAME" ]; then
 fi
 
 while true; do
+    # Refresh heartbeat so active listener never expires
+    redis-cli -u "$REDIS_URL" SET "${PREFIX}heartbeat:${NAME}" "1" EX 150 >/dev/null 2>&1 || true
+
     RAW=$(redis-cli -u "$REDIS_URL" BRPOP "${PREFIX}inbox:${NAME}" "$TIMEOUT" 2>/dev/null || true)
 
     if [ -z "$RAW" ] || [ "$RAW" = "(nil)" ]; then

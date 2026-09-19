@@ -272,10 +272,49 @@ proc doUnregister*(cfg: LocutusConfig, name: string): string =
 proc doTag*(cfg: LocutusConfig, name, action, tags: string): string =
   return runLuaScript(cfg.redisUrl, tagLua, tagSha, [cfg.prefix, name, action, tags])
 
+proc cleanupOldTmpFiles*() =
+  let tmpDir = getHomeDir() / ".config" / "locutus" / "tmp"
+  if dirExists(tmpDir):
+    let nowUnix = getTime().toUnix()
+    for kind, path in walkDir(tmpDir):
+      if kind == pcFile and path.endsWith(".tmp"):
+        try:
+          let info = getFileInfo(path)
+          if nowUnix - info.lastWriteTime.toUnix() > 3600:
+            removeFile(path)
+        except OSError:
+          discard
+
+proc formatDirectory*(raw: string): string =
+  if raw.strip().len == 0:
+    return "No agents found."
+  var lines = raw.strip().splitLines()
+  var rows: seq[(string, string, string)] = @[]
+  for line in lines:
+    let parts = line.strip().split('|')
+    if parts.len >= 3:
+      let name = parts[0]
+      let alive = if parts[1] == "1": "ACTIVE" else: "EXPIRED"
+      let tags = parts[2]
+      rows.add((name, alive, tags))
+    elif line.strip().len > 0:
+      rows.add((line.strip(), "", ""))
+
+  if rows.len == 0:
+    return "No agents found."
+
+  result = "AGENT               STATUS     TAGS\n"
+  result.add("----------------------------------------------------\n")
+  for (name, status, tags) in rows:
+    result.add(name.alignLeft(20) & status.alignLeft(11) & tags & "\n")
+  result = result.strip()
+
 proc doDirectory*(cfg: LocutusConfig, filterTag: string = ""): string =
-  return runLuaScript(cfg.redisUrl, directoryLua, directorySha, [cfg.prefix, filterTag])
+  let raw = runLuaScript(cfg.redisUrl, directoryLua, directorySha, [cfg.prefix, filterTag])
+  return formatDirectory(raw)
 
 proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
+  cleanupOldTmpFiles()
   randomize()
   let name = if optName.len > 0: optName else: cfg.project & "-worker-" & $rand(1000..9999)
   let tags = if optTags.len > 0:
@@ -373,6 +412,9 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
   let inboxKey = cfg.prefix & "inbox:" & name
   let startTime = getTime().toUnix()
   var remaining = timeoutSec
+
+  # Keep heartbeat alive while actively listening
+  discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", "150"])
 
   while remaining > 0:
     var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $remaining])
