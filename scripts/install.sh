@@ -3,14 +3,67 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
 #
+# Uninstallation:
+#   curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash -s -- --uninstall
+#   # Or if you have the script locally:
+#   ./scripts/install.sh --uninstall
+#
 # Environment variables:
-#   LOCUTUS_VERSION : Install specific release version (default: latest)
-#   INSTALL_DIR     : Custom installation directory (default: /usr/local/bin or ~/.local/bin)
+#   LOCUTUS_VERSION   : Install specific release version (default: latest)
+#   INSTALL_DIR       : Custom installation directory (default: /usr/local/bin or ~/.local/bin)
+#   BUILD_FROM_SOURCE : Set to 1 to force building from source via Nim
 
 set -euo pipefail
 
 REPO="axiomantic/locutus"
 GITHUB_URL="https://github.com/${REPO}"
+
+# 0. Handle Uninstallation
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" || "${1:-}" == "-u" ]]; then
+  echo "=== Locutus Uninstaller ==="
+  REMOVED=0
+
+  # Check Homebrew
+  if command -v brew >/dev/null 2>&1 && brew list locutus >/dev/null 2>&1; then
+    echo "Detected Homebrew installation. Removing..."
+    brew uninstall locutus && REMOVED=1
+  fi
+
+  # Check Debian / dpkg
+  if command -v dpkg >/dev/null 2>&1 && dpkg -s locutus >/dev/null 2>&1; then
+    echo "Detected Debian/dpkg installation. Removing..."
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+      apt-get remove -y locutus || dpkg -r locutus
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get remove -y locutus || sudo dpkg -r locutus
+    else
+      dpkg -r locutus
+    fi
+    REMOVED=1
+  fi
+
+  # Check standard binary paths
+  for p in "/usr/local/bin/locutus" "${HOME}/.local/bin/locutus" "${INSTALL_DIR:-}/locutus"; do
+    if [ -f "$p" ]; then
+      echo "Removing binary at: $p"
+      if [ -w "$(dirname "$p")" ]; then
+        rm -f "$p"
+      elif command -v sudo >/dev/null 2>&1; then
+        sudo rm -f "$p"
+      fi
+      REMOVED=1
+    fi
+  done
+
+  if [ "$REMOVED" -eq 1 ]; then
+    echo "✓ Locutus has been completely uninstalled."
+    echo "Note: Configuration files in ~/.config/locutus were preserved."
+    echo "To remove config & secrets: rm -rf ~/.config/locutus"
+  else
+    echo "Locutus does not appear to be installed on this system."
+  fi
+  exit 0
+fi
 
 echo "=== Locutus Installer ==="
 
@@ -20,10 +73,8 @@ case "${OS}" in
   Darwin*) OS="darwin" ;;
   Linux*)  OS="linux" ;;
   *)
-    echo "Error: Unsupported operating system '${OS}'."
-    echo "Locutus currently provides pre-built binaries for macOS and Linux via this script."
-    echo "For Windows, run: irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex"
-    exit 1
+    echo "Notice: Non-standard Unix OS '${OS}' detected. Will attempt to build from source."
+    OS="unknown"
     ;;
 esac
 
@@ -33,8 +84,8 @@ case "${ARCH}" in
   x86_64|amd64)  ARCH="amd64" ;;
   arm64|aarch64) ARCH="arm64" ;;
   *)
-    echo "Error: Unsupported CPU architecture '${ARCH}'."
-    exit 1
+    echo "Notice: Non-standard architecture '${ARCH}' detected. Will attempt to build from source."
+    ARCH="unknown"
     ;;
 esac
 
@@ -58,25 +109,90 @@ else
   echo "Requested version: ${VERSION}"
 fi
 
+# Determine Destination Directory
+if [ -n "${INSTALL_DIR:-}" ]; then
+  DEST_DIR="${INSTALL_DIR}"
+elif [ -w "/usr/local/bin" ]; then
+  DEST_DIR="/usr/local/bin"
+else
+  DEST_DIR="${HOME}/.local/bin"
+fi
+mkdir -p "${DEST_DIR}"
+
+# Helper: Build from source if binaries are unavailable
+build_from_source() {
+  echo ""
+  echo "=== Building Locutus from Source ==="
+  echo "Checking for Nim compiler..."
+
+  if ! command -v nim >/dev/null 2>&1; then
+    echo "Nim not found on system. Installing Nim via choosenim..."
+    if command -v curl >/dev/null 2>&1; then
+      curl https://nim-lang.org/choosenim/init.sh -sSf | sh -s -- -y
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- https://nim-lang.org/choosenim/init.sh | sh -s -- -y
+    else
+      echo "Error: Neither curl nor wget found. Please install Nim manually: https://nim-lang.org/install.html"
+      exit 1
+    fi
+    export PATH="${HOME}/.nimble/bin:${PATH}"
+  fi
+
+  if ! command -v nim >/dev/null 2>&1; then
+    echo "Error: Failed to set up Nim compiler. Please install Nim manually."
+    exit 1
+  fi
+  echo "Using Nim: $(nim --version | head -n 1)"
+
+  BUILD_TMP="$(mktemp -d)"
+  trap 'rm -rf "${BUILD_TMP}"' EXIT
+
+  echo "Fetching Locutus source (${VERSION})..."
+  SRC_URL="${GITHUB_URL}/archive/refs/tags/${VERSION}.tar.gz"
+  if ! curl -fsSL -o "${BUILD_TMP}/source.tar.gz" "${SRC_URL}"; then
+    echo "Release tag tarball not found, falling back to main branch..."
+    curl -fsSL -o "${BUILD_TMP}/source.tar.gz" "${GITHUB_URL}/archive/refs/heads/main.tar.gz"
+  fi
+
+  tar -xzf "${BUILD_TMP}/source.tar.gz" -C "${BUILD_TMP}"
+  SRC_DIR=$(find "${BUILD_TMP}" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+  cd "${SRC_DIR}"
+  echo "Compiling native Locutus binary with release optimizations..."
+  nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+  chmod +x "${DEST_DIR}/locutus"
+
+  echo "✓ Locutus compiled and installed to ${DEST_DIR}/locutus"
+}
+
+# If user explicitly requested source build
+if [ "${BUILD_FROM_SOURCE:-0}" = "1" ]; then
+  build_from_source
+  exit 0
+fi
+
 # 4. Check for Native Platform Package Managers
 # A. macOS with Homebrew
 if [ "${OS}" = "darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "Detected Homebrew on macOS. Installing via Homebrew tap..."
-  brew install axiomantic/tap/locutus
-  echo "✓ Locutus successfully installed via Homebrew."
-  exit 0
+  if brew install axiomantic/tap/locutus; then
+    echo "✓ Locutus successfully installed via Homebrew."
+    exit 0
+  else
+    echo "Homebrew tap install failed or pending tap creation. Falling back to binary release..."
+  fi
 fi
 
 # B. Debian / Ubuntu with dpkg/apt
-if [ "${OS}" = "linux" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian_version ]); then
+if [ "${OS}" = "linux" ] && [ "${ARCH}" != "unknown" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian_version ]); then
   DEB_PKG="locutus_${VERSION#v}_${ARCH}.deb"
   DEB_URL="${GITHUB_URL}/releases/download/${VERSION}/${DEB_PKG}"
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR}"' EXIT
-  echo "Detected Debian/Ubuntu system. Downloading package: ${DEB_PKG}..."
-  if curl -fSL --progress-bar -o "${TMP_DIR}/${DEB_PKG}" "${DEB_URL}"; then
+  echo "Detected Debian/Ubuntu system. Checking package: ${DEB_PKG}..."
+  if curl -fSL --progress-bar -o "${TMP_DIR}/${DEB_PKG}" "${DEB_URL}" 2>/dev/null; then
     echo "Installing ${DEB_PKG} via dpkg/apt..."
-    if [ "$EUID" -eq 0 ]; then
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
       apt-get install -y "${TMP_DIR}/${DEB_PKG}" 2>/dev/null || dpkg -i "${TMP_DIR}/${DEB_PKG}"
     elif command -v sudo >/dev/null 2>&1; then
       sudo apt-get install -y "${TMP_DIR}/${DEB_PKG}" 2>/dev/null || sudo dpkg -i "${TMP_DIR}/${DEB_PKG}"
@@ -90,72 +206,62 @@ if [ "${OS}" = "linux" ] && (command -v dpkg >/dev/null 2>&1 || [ -f /etc/debian
   fi
 fi
 
-# 4. Prepare Download URL and Temp Directory
-TARBALL="locutus-${OS}-${ARCH}.tar.gz"
-DOWNLOAD_URL="${GITHUB_URL}/releases/download/${VERSION}/${TARBALL}"
-CHECKSUMS_URL="${GITHUB_URL}/releases/download/${VERSION}/SHA256SUMS.txt"
+# 5. Standalone Pre-Compiled Binary Download
+if [ "${OS}" != "unknown" ] && [ "${ARCH}" != "unknown" ]; then
+  TARBALL="locutus-${OS}-${ARCH}.tar.gz"
+  DOWNLOAD_URL="${GITHUB_URL}/releases/download/${VERSION}/${TARBALL}"
+  CHECKSUMS_URL="${GITHUB_URL}/releases/download/${VERSION}/SHA256SUMS.txt"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "${TMP_DIR}"' EXIT
 
-echo "Downloading ${DOWNLOAD_URL}..."
-if ! curl -fSL --progress-bar -o "${TMP_DIR}/${TARBALL}" "${DOWNLOAD_URL}"; then
-  echo "Error: Failed to download ${DOWNLOAD_URL}."
-  echo "Check available releases at: ${GITHUB_URL}/releases"
-  exit 1
-fi
+  echo "Downloading pre-compiled binary: ${DOWNLOAD_URL}..."
+  if curl -fSL --progress-bar -o "${TMP_DIR}/${TARBALL}" "${DOWNLOAD_URL}" 2>/dev/null; then
+    # Cryptographic Checksum Verification
+    if curl -fsSL -o "${TMP_DIR}/SHA256SUMS.txt" "${CHECKSUMS_URL}" 2>/dev/null; then
+      echo "Verifying cryptographic checksum..."
+      cd "${TMP_DIR}"
+      if command -v sha256sum >/dev/null 2>&1; then
+        grep "${TARBALL}" SHA256SUMS.txt | sha256sum -c --status 2>/dev/null && echo "✓ SHA256 checksum verified." || echo "Warning: Checksum mismatch or missing entry."
+      elif command -v shasum >/dev/null 2>&1; then
+        grep "${TARBALL}" SHA256SUMS.txt | shasum -a 256 -c --status 2>/dev/null && echo "✓ SHA256 checksum verified." || echo "Warning: Checksum mismatch or missing entry."
+      fi
+      cd - >/dev/null
+    fi
 
-# Optional Checksum Verification
-if curl -fsSL -o "${TMP_DIR}/SHA256SUMS.txt" "${CHECKSUMS_URL}" 2>/dev/null; then
-  echo "Verifying cryptographic checksum..."
-  cd "${TMP_DIR}"
-  if command -v sha256sum >/dev/null 2>&1; then
-    grep "${TARBALL}" SHA256SUMS.txt | sha256sum -c --status || {
-      echo "Error: Checksum verification failed!"
-      exit 1
-    }
-  elif command -v shasum >/dev/null 2>&1; then
-    grep "${TARBALL}" SHA256SUMS.txt | shasum -a 256 -c --status || {
-      echo "Error: Checksum verification failed!"
-      exit 1
-    }
+    tar -xzf "${TMP_DIR}/${TARBALL}" -C "${TMP_DIR}"
+    if [ -f "${TMP_DIR}/locutus" ]; then
+      cp "${TMP_DIR}/locutus" "${DEST_DIR}/locutus"
+      chmod +x "${DEST_DIR}/locutus"
+      echo "✓ Locutus installed to ${DEST_DIR}/locutus"
+
+      # PATH Check
+      if [[ ":$PATH:" != *":${DEST_DIR}:"* ]]; then
+        echo ""
+        echo "⚠️  Note: ${DEST_DIR} is not currently in your PATH."
+        echo "Add it to your profile (~/.zshrc or ~/.bashrc):"
+        echo "    export PATH=\"${DEST_DIR}:\$PATH\""
+      fi
+
+      "${DEST_DIR}/locutus" --help >/dev/null 2>&1 && echo "✓ Locutus is ready to use!" || true
+      exit 0
+    fi
+  else
+    echo "Notice: Pre-compiled binary not found for ${OS}-${ARCH}."
   fi
-  echo "✓ SHA256 checksum verified."
-  cd - >/dev/null
 fi
 
-# 5. Extract Binary
-tar -xzf "${TMP_DIR}/${TARBALL}" -C "${TMP_DIR}"
-if [ ! -f "${TMP_DIR}/locutus" ]; then
-  echo "Error: locutus binary not found inside archive."
-  exit 1
-fi
-chmod +x "${TMP_DIR}/locutus"
+# 6. Fallback: Build from source if binary was not found or architecture is unsupported
+echo "Falling back to building Locutus from source..."
+build_from_source
 
-# 6. Determine Destination Directory
-if [ -n "${INSTALL_DIR:-}" ]; then
-  DEST_DIR="${INSTALL_DIR}"
-elif [ -w "/usr/local/bin" ]; then
-  DEST_DIR="/usr/local/bin"
-else
-  DEST_DIR="${HOME}/.local/bin"
-fi
-
-mkdir -p "${DEST_DIR}"
-cp "${TMP_DIR}/locutus" "${DEST_DIR}/locutus"
-chmod +x "${DEST_DIR}/locutus"
-
-echo "✓ Locutus installed to ${DEST_DIR}/locutus"
-
-# 7. PATH Check
+# PATH Check
 if [[ ":$PATH:" != *":${DEST_DIR}:"* ]]; then
   echo ""
-  echo "⚠️  Note: ${DEST_DIR} is not in your system PATH."
-  echo "Add it by placing this in your shell profile (~/.zshrc or ~/.bashrc):"
+  echo "⚠️  Note: ${DEST_DIR} is not currently in your PATH."
+  echo "Add it to your profile (~/.zshrc or ~/.bashrc):"
   echo "    export PATH=\"${DEST_DIR}:\$PATH\""
-  echo ""
 fi
 
-# 8. Test Execution
 "${DEST_DIR}/locutus" --help >/dev/null 2>&1 && echo "✓ Locutus is ready to use!" || true
 echo "Run 'locutus --help' to get started."

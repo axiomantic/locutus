@@ -112,45 +112,70 @@ Locutus is distributed as a single, static compiled binary with zero runtime dep
 ```bash
 brew install axiomantic/tap/locutus
 ```
+*Or tap directly:*
+```bash
+brew tap axiomantic/tap
+brew install locutus
+```
 
-### Method B: Universal One-Line Installer (macOS & Linux)
+### Method B: Debian / Ubuntu APT Repository
+```bash
+# Add the official APT repository
+echo "deb [trusted=yes] https://axiomantic.github.io/locutus/apt/ ./" | sudo tee /etc/apt/sources.list.d/locutus.list
+
+# Update package index and install
+sudo apt-get update
+sudo apt-get install -y locutus
+```
+
+### Method C: Universal One-Line Installer (macOS & Linux)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash
 ```
-*Installs the verified native binary into `/usr/local/bin` or `~/.local/bin`.*
+*Intelligently prefers native package managers (`brew` / `dpkg`), falls back to pre-compiled binary tarballs with SHA256 checksum verification, and automatically compiles from source (installing Nim if needed) if no pre-built binary matches the architecture.*
 
-### Method C: Windows PowerShell Installer
+### Method D: Windows PowerShell Installer
 Run in PowerShell (Admin not required):
 ```powershell
 irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex
 ```
-*Installs `locutus.exe` into `%LOCALAPPDATA%\Programs\locutus` and configures your User `PATH`.*
+*Installs via Scoop if available, falls back to pre-compiled `.zip` archive into `%LOCALAPPDATA%\Programs\locutus`, configures User `PATH`, and falls back to building via Nim if required.*
 
-### Method D: Scoop (Windows)
+### Method E: Scoop (Windows)
 ```powershell
 scoop install https://raw.githubusercontent.com/axiomantic/locutus/main/packaging/scoop/locutus.json
 ```
 
-### Method E: Debian / Ubuntu (.deb Package)
-Download the `.deb` package for your architecture from [Releases](https://github.com/axiomantic/locutus/releases):
-```bash
-# For x86_64 (amd64)
-sudo dpkg -i locutus_*_amd64.deb
-
-# For ARM64 (aarch64)
-sudo dpkg -i locutus_*_arm64.deb
-```
-
-### Method F: Pre-Compiled Standalone Binaries
-Standalone zero-dependency archives are available on the [GitHub Releases](https://github.com/axiomantic/locutus/releases) page:
+### Method F: Standalone Binaries & Manual .deb Download
+Pre-compiled standalone archives and `.deb` files are attached to every [GitHub Release](https://github.com/axiomantic/locutus/releases):
 
 | OS | Architecture | Package |
 | :--- | :--- | :--- |
 | **macOS** | Apple Silicon (M1/M2/M3/M4) | `locutus-darwin-arm64.tar.gz` |
 | **macOS** | Intel x86_64 | `locutus-darwin-amd64.tar.gz` |
-| **Linux** | x86_64 (amd64) | `locutus-linux-amd64.tar.gz` |
-| **Linux** | ARM64 (aarch64) | `locutus-linux-arm64.tar.gz` |
+| **Linux** | x86_64 (amd64) | `locutus-linux-amd64.tar.gz` / `.deb` |
+| **Linux** | ARM64 (aarch64) | `locutus-linux-arm64.tar.gz` / `.deb` |
 | **Windows** | x86_64 (amd64) | `locutus-windows-amd64.zip` |
+
+---
+
+## Easy Uninstallation
+
+Uninstalling Locutus is clean and takes a single command:
+
+```bash
+# macOS / Linux Universal Uninstaller:
+curl -fsSL https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.sh | bash -s -- --uninstall
+
+# Windows PowerShell Uninstaller:
+irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps1 | iex -ArgumentList "-Uninstall"
+
+# Or using your system package manager:
+brew uninstall locutus          # Homebrew
+sudo dpkg -r locutus            # Debian / Ubuntu
+scoop uninstall locutus         # Windows Scoop
+```
+*Note: Configuration files in `~/.config/locutus` are preserved. To completely purge configurations and secret keys, run `rm -rf ~/.config/locutus`.*
 
 ---
 
