@@ -19,8 +19,9 @@ Locutus is designed from the ground up with defensive cryptographic isolation:
    - The shared secret key is never transmitted across Redis, never checked into Git, and never passed into LLM prompt contexts.
    - OpenSSL passphrase derivation utilizes secure descriptor paths (`-pass file:...` or `-pass env:...`) preventing key visibility in process tables (`ps aux`).
 
-3. **End-to-End Encryption (E2EE)**:
-   - Setting `LOCUTUS_ENCRYPT=1` encrypts message bodies with OpenSSL AES-256-CBC PBKDF2 (10,000 iterations). Plaintext payload never touches Redis memory or persistence files.
+3. **Optional End-to-End Encryption (E2EE)**:
+   - While HMAC-SHA256 signature verification is mandatory by default for all communication, payload encryption is optional.
+   - Setting `LOCUTUS_ENCRYPT=1` transparently encrypts message bodies with OpenSSL AES-256-CBC PBKDF2 (10,000 iterations), ensuring raw plaintext never touches Redis memory or persistence files.
 
 ## Reporting a Vulnerability
 

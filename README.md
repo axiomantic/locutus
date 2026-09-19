@@ -168,9 +168,9 @@ Incoming Redis Data ──► [Host OS: locutus listen]
 ```
 
 1. **Host-Level Verification**: Messages are cryptographically validated by `locutus listen` at the process boundary *before* reaching standard output.
-2. **Untrusted Data Dropped**: Unauthenticated payloads are completely dropped before they can enter an LLM's context window.
+2. **Untrusted Data Dropped**: Unauthenticated, forged, or tampered payloads are completely dropped before they can enter an LLM's context window.
 3. **Zero Secret Leakage**: The cluster secret (`~/.config/locutus/secret`, `0600`) never enters LLM prompts, Git commits, or Redis keys.
-4. **End-to-End Encryption (E2EE)**: Set `LOCUTUS_ENCRYPT=1` to encrypt task bodies with OpenSSL AES-256-CBC PBKDF2 (10,000 iterations). Raw plaintext never touches Redis memory or persistence.
+4. **Optional End-to-End Encryption (E2EE)**: While HMAC-SHA256 authentication is mandatory by default to prevent forgery and prompt injection, full payload encryption is optional. Setting `LOCUTUS_ENCRYPT=1` transparently encrypts task bodies with OpenSSL AES-256-CBC PBKDF2 (10,000 iterations), ensuring raw plaintext never touches Redis memory or persistence files.
 
 ---
 
@@ -187,15 +187,15 @@ Locutus is packaged as an assistant skill for Claude Code, Antigravity, and othe
 
 ## Performance & Benchmarks
 
-Measured on Apple Silicon (M-series) against local Redis 7.2:
+Empirically measured end-to-end wall-clock timings on Apple Silicon against local Redis 7.2 via [`tests/benchmark.py`](tests/benchmark.py):
 
-| Metric | Measurement |
-| :--- | :--- |
-| **Binary Size** | `289 KB` (Standalone static binary, zero runtime dependencies) |
-| **Cold Startup Time** | `< 1.5 ms` |
-| **Redis Command Execution** | `0.4 ms` (Cached `EVALSHA` roundtrip) |
-| **E2EE 150KB Payload Roundtrip** | `< 4 ms` (AES-256-CBC encryption + HMAC + decryption) |
-| **Idle Token Consumption** | `0 tokens` (Blocking `BRPOP` listener) |
+| Metric | Measurement | Description |
+| :--- | :--- | :--- |
+| **Binary Size** | `308 KB` | Standalone static binary, zero runtime dependencies |
+| **Cold Process Startup** | `~5.5 ms` | Full process spawn, arg parsing, OpenSSL bindings |
+| **End-to-End Send Dispatch** | `~11.9 ms` | CLI invocation, HMAC-SHA256 signature, JSON encode, EVALSHA |
+| **Optional E2EE 150KB Send + Listen** | `~39.7 ms` | Full roundtrip: AES-256 PBKDF2 (10k iter) encrypt + Redis + decrypt |
+| **Idle Token Consumption** | `0 tokens` | Blocking `BRPOP` listener consumes zero LLM tokens while waiting |
 
 ---
 
