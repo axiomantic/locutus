@@ -1,6 +1,6 @@
 -- scripts/drain.lua
 -- Atomically pops up to N messages from an agent's inbox (oldest first).
--- ARGV[1]: prefix (e.g. "a2a:")
+-- ARGV[1]: prefix (e.g. "locutus:")
 -- ARGV[2]: agent name (e.g. "alice")
 -- ARGV[3]: max count to pop (default 50)
 

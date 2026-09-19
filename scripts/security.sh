@@ -31,16 +31,16 @@ case "${1:-}" in
         get_secret
         ;;
     sign)
-        # Usage: security.sh sign <id> <from> <to> <type> <body> <ts>
+        # Usage: security.sh sign <id> <from> <to> <type> <subject> <body> <ts>
         secret=$(get_secret)
-        data="${2}:${3}:${4}:${5}:${6}:${7}"
+        data="${2}|${3}|${4}|${5}|${6}|${7}|${8}"
         compute_hmac "$secret" "$data"
         ;;
     verify)
-        # Usage: security.sh verify <sig> <id> <from> <to> <type> <body> <ts>
+        # Usage: security.sh verify <sig> <id> <from> <to> <type> <subject> <body> <ts>
         expected_sig="$2"
         secret=$(get_secret)
-        data="${3}:${4}:${5}:${6}:${7}:${8}"
+        data="${3}|${4}|${5}|${6}|${7}|${8}|${9}"
         actual_sig=$(compute_hmac "$secret" "$data")
         if [ "$actual_sig" = "$expected_sig" ]; then
             exit 0
@@ -52,13 +52,13 @@ case "${1:-}" in
         # Usage: security.sh encrypt <body>
         secret=$(get_secret)
         body="$2"
-        printf "%s" "$body" | openssl enc -aes-256-cbc -pbkdf2 -pass "pass:$secret" -base64 -A
+        printf "%s" "$body" | openssl enc -aes-256-cbc -pbkdf2 -iter 10000 -pass "pass:$secret" -base64 -A
         ;;
     decrypt)
         # Usage: security.sh decrypt <ciphertext>
         secret=$(get_secret)
         ciphertext="$2"
-        printf "%s" "$ciphertext" | openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$secret" -base64 -A
+        printf "%s" "$ciphertext" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000 -pass "pass:$secret" -base64 -A
         ;;
     *)
         echo "Usage: $0 {get-secret|sign|verify|encrypt|decrypt} [args...]" >&2

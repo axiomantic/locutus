@@ -3,7 +3,7 @@
 # Embeds Lua scripts at compile time and utilizes EVALSHA caching with automatic EVAL fallback.
 
 import std/[
-  os, osproc, strutils, json, openssl, parseopt,
+  os, osproc, strutils, json, openssl,
   times, random, streams
 ]
 
@@ -45,13 +45,14 @@ proc getSecret*(): string =
   let envSecret = getEnv("LOCUTUS_SECRET", "")
   if envSecret.len > 0:
     return envSecret
+  let secretFileEnv = getEnv("LOCUTUS_SECRET_FILE", "")
   let home = getHomeDir()
   let configDir = home / ".config" / "locutus"
-  let secretFile = configDir / "secret"
+  let secretFile = if secretFileEnv.len > 0: secretFileEnv else: configDir / "secret"
   if fileExists(secretFile):
     return readFile(secretFile).strip()
 
-  createDir(configDir)
+  createDir(secretFile.splitPath.head)
   var bytes: array[32, uint8]
   discard RAND_bytes(bytes[0].addr, 32)
   var hexSecret = ""
@@ -91,8 +92,10 @@ proc decryptAes*(ciphertext, secret: string): string =
   p.inputStream.write(ciphertext)
   p.inputStream.close()
   result = p.outputStream.readAll().strip()
-  discard p.waitForExit()
+  let exitCode = p.waitForExit()
   p.close()
+  if exitCode != 0:
+    raise newException(ValueError, "Decryption failed (bad key or corrupted ciphertext)")
 
 # Environment & Config Resolution
 type LocutusConfig* = object
@@ -177,6 +180,38 @@ proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[
     return evalOut.strip()
   return shaOut.strip()
 
+# Agent Identity Persistence
+proc currentAgentPath*(): string =
+  getHomeDir() / ".config" / "locutus" / "current_agent"
+
+proc saveCurrentAgent*(name: string) =
+  let p = currentAgentPath()
+  createDir(p.splitPath.head)
+  writeFile(p, name.strip())
+  setFilePermissions(p, {fpUserRead, fpUserWrite})
+
+proc loadCurrentAgent*(): string =
+  let p = currentAgentPath()
+  if fileExists(p):
+    return readFile(p).strip()
+  return ""
+
+proc clearCurrentAgent*() =
+  let p = currentAgentPath()
+  if fileExists(p):
+    removeFile(p)
+
+proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string): string =
+  if explicitName.len > 0:
+    return explicitName
+  let envName = getEnv("LOCUTUS_AGENT_NAME", getEnv("MY_NAME", ""))
+  if envName.len > 0:
+    return envName
+  let saved = loadCurrentAgent()
+  if saved.len > 0:
+    return saved
+  return cfg.project & "-worker"
+
 # Core Operations
 proc doRegister*(cfg: LocutusConfig, name, tags: string, ttl: int = 150): string =
   return runLuaScript(cfg.redisUrl, registerLua, registerSha, [cfg.prefix, name, tags, $ttl])
@@ -185,6 +220,9 @@ proc doDrain*(cfg: LocutusConfig, name: string, count: int = 50): string =
   return runLuaScript(cfg.redisUrl, drainLua, drainSha, [cfg.prefix, name, $count])
 
 proc doUnregister*(cfg: LocutusConfig, name: string): string =
+  let saved = loadCurrentAgent()
+  if saved == name:
+    clearCurrentAgent()
   return runLuaScript(cfg.redisUrl, unregisterLua, unregisterSha, [cfg.prefix, name])
 
 proc doTag*(cfg: LocutusConfig, name, action, tags: string): string =
@@ -201,6 +239,7 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
   else:
     cfg.project
 
+  saveCurrentAgent(name)
   discard doRegister(cfg, name, tags, 150)
   let backlog = doDrain(cfg, name, 50)
 
@@ -256,8 +295,29 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 
   let msgJson = $node
 
-  if isBroadcast:
-    let target = if toAgent.len > 0: toAgent else: cfg.project
+  let isTargetMulticast = isBroadcast or toAgent.startsWith("@") or toAgent == "*"
+  if isTargetMulticast:
+    var target = ""
+    if toAgent.startsWith("@"):
+      let raw = toAgent[1..^1]
+      if raw in ["*", "all", "@all"]: target = "*"
+      elif raw.startsWith(cfg.project): target = raw
+      else: target = cfg.project & "," & raw
+    elif toAgent == "*":
+      target = "*"
+    elif isBroadcast:
+      if tags.len > 0:
+        if "*" in tags or "@all" in tags:
+          target = "*"
+        elif cfg.project in tags:
+          target = tags.join(",")
+        else:
+          target = cfg.project & "," & tags.join(",")
+      else:
+        target = cfg.project
+    else:
+      target = if toAgent.len > 0: toAgent else: cfg.project
+
     let res = runLuaScript(cfg.redisUrl, multicastLua, multicastSha, [cfg.prefix, target, msgJson, "604800"])
     echo res
   else:
@@ -267,54 +327,65 @@ proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: str
 proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = 90) =
   let secret = getSecret()
   let inboxKey = cfg.prefix & "inbox:" & name
+  let startTime = getTime().toUnix()
+  var remaining = timeoutSec
 
-  # BRPOP blocks until message arrives or timeout expires
-  var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $timeoutSec])
-  if exitCode != 0 or outStr.strip().len == 0:
-    echo "(nil)"
+  while remaining > 0:
+    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $remaining])
+    if exitCode != 0 or outStr.strip().len == 0:
+      echo "(nil)"
+      return
+
+    let firstNl = outStr.find('\n')
+    if firstNl < 0:
+      echo "(nil)"
+      return
+
+    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+
+    var parsed: JsonNode
+    try:
+      parsed = parseJson(payloadStr)
+    except JsonParsingError:
+      stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping non-JSON payload from inbox")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, timeoutSec - elapsed)
+      continue
+
+    let id = parsed.getOrDefault("id").getStr("")
+    let fromAgent = parsed.getOrDefault("from").getStr("")
+    let toAgent = parsed.getOrDefault("to").getStr("")
+    let msgType = parsed.getOrDefault("type").getStr("")
+    let subject = parsed.getOrDefault("subject").getStr("")
+    let body = parsed.getOrDefault("body").getStr("")
+    let ts = parsed.getOrDefault("timestamp").getStr("")
+    let sig = parsed.getOrDefault("sig").getStr("")
+    let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
+
+    # Validate HMAC
+    let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
+    if not verifyHmac(secret, canonical, sig):
+      stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping unauthenticated/tampered message (ID: " & id & ")")
+      let elapsed = int(getTime().toUnix() - startTime)
+      remaining = max(0, timeoutSec - elapsed)
+      continue
+
+    # Authenticated! Decrypt if required
+    if isEncrypted:
+      try:
+        let decryptedBody = decryptAes(body, secret)
+        parsed["body"] = %decryptedBody
+        parsed["encrypted"] = %false
+      except ValueError as e:
+        stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping corrupted/undecryptable message: " & e.msg & " (ID: " & id & ")")
+        let elapsed = int(getTime().toUnix() - startTime)
+        remaining = max(0, timeoutSec - elapsed)
+        continue
+
+    echo $parsed
     return
 
-  let lines = outStr.strip().splitLines()
-  if lines.len < 2:
-    echo "(nil)"
-    return
-
-  # In --raw BRPOP, line 1 is key name, lines 2+ is payload
-  let payloadStr = lines[1..^1].join("\n").strip()
-
-  var parsed: JsonNode
-  try:
-    parsed = parseJson(payloadStr)
-  except JsonParsingError:
-    stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping non-JSON payload from inbox")
-    echo "(nil)"
-    return
-
-  let id = parsed.getOrDefault("id").getStr("")
-  let fromAgent = parsed.getOrDefault("from").getStr("")
-  let toAgent = parsed.getOrDefault("to").getStr("")
-  let msgType = parsed.getOrDefault("type").getStr("")
-  let subject = parsed.getOrDefault("subject").getStr("")
-  let body = parsed.getOrDefault("body").getStr("")
-  let ts = parsed.getOrDefault("timestamp").getStr("")
-  let sig = parsed.getOrDefault("sig").getStr("")
-  let isEncrypted = parsed.getOrDefault("encrypted").getBool(false)
-
-  # Validate HMAC
-  let canonical = id & "|" & fromAgent & "|" & toAgent & "|" & msgType & "|" & subject & "|" & body & "|" & ts
-  if not verifyHmac(secret, canonical, sig):
-    stderr.writeLine("[LOCUTUS SECURITY] ⚠️ Dropping unauthenticated/tampered message (ID: " & id & ")")
-    # Loop/exit with nil to maintain air-gap
-    echo "(nil)"
-    return
-
-  # Authenticated! Decrypt if required
-  if isEncrypted:
-    let decryptedBody = decryptAes(body, secret)
-    parsed["body"] = %decryptedBody
-    parsed["encrypted"] = %false
-
-  echo $parsed
+  echo "(nil)"
 
 # Main Entrypoint / CLI Router
 proc main() =
@@ -343,27 +414,26 @@ proc main() =
     doOpen(cfg, name, tags)
 
   of "listen":
-    var name = ""
+    var explicitName = ""
     var timeout = 90
     if args.len > 1:
       try:
         timeout = parseInt(args[1])
       except ValueError:
-        name = args[1]
+        explicitName = args[1]
     if args.len > 2:
       try:
         timeout = parseInt(args[2])
       except ValueError:
         discard
-    if name == "":
-      name = cfg.project & "-worker"
+    let name = getActiveAgentName(cfg, explicitName)
     doListen(cfg, name, timeout)
 
   of "send", "broadcast":
     let isBroadcast = (subcmd == "broadcast")
     var toAgent = ""
     var msgType = "task"
-    var fromAgent = cfg.project & "-worker"
+    var fromAgent = getActiveAgentName(cfg, "")
     var subject = ""
     var body = ""
     var tags: seq[string] = @[]
@@ -416,16 +486,19 @@ proc main() =
       return
     let action = args[1]
     let tags = args[2]
-    let name = if args.len > 3: args[3] else: cfg.project & "-worker"
+    let explicitName = if args.len > 3: args[3] else: ""
+    let name = getActiveAgentName(cfg, explicitName)
     echo doTag(cfg, name, action, tags)
 
   of "drain":
     let count = if args.len > 1: parseInt(args[1]) else: 50
-    let name = if args.len > 2: args[2] else: cfg.project & "-worker"
+    let explicitName = if args.len > 2: args[2] else: ""
+    let name = getActiveAgentName(cfg, explicitName)
     echo doDrain(cfg, name, count)
 
   of "close", "unregister":
-    let name = if args.len > 1: args[1] else: cfg.project & "-worker"
+    let explicitName = if args.len > 1: args[1] else: ""
+    let name = getActiveAgentName(cfg, explicitName)
     echo doUnregister(cfg, name)
 
   of "get-secret":

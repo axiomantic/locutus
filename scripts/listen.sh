@@ -10,12 +10,31 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REDIS_URL="${LOCUTUS_REDIS_URL:-${REDIS_URL:-redis://127.0.0.1:6379}}"
 PREFIX="${LOCUTUS_REDIS_PREFIX:-locutus:}"
 
-NAME="${1:-${MY_NAME:-}}"
-TIMEOUT="${2:-90}"
+NAME=""
+TIMEOUT=90
+
+if [ $# -ge 1 ]; then
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+        TIMEOUT="$1"
+    else
+        NAME="$1"
+        if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+            TIMEOUT="$2"
+        fi
+    fi
+fi
 
 if [ -z "$NAME" ]; then
-    echo "Usage: $0 <agent_name> [timeout_seconds]" >&2
-    exit 1
+    NAME="${LOCUTUS_AGENT_NAME:-${MY_NAME:-}}"
+    AGENT_FILE="$HOME/.config/locutus/current_agent"
+    if [ -z "$NAME" ] && [ -f "$AGENT_FILE" ]; then
+        NAME="$(cat "$AGENT_FILE" 2>/dev/null || true)"
+    fi
+fi
+
+if [ -z "$NAME" ]; then
+    PROJECT="${LOCUTUS_PROJECT:-$(basename "$PWD")}"
+    NAME="${PROJECT}-worker"
 fi
 
 while true; do
@@ -50,6 +69,7 @@ msg_id = data.get("id", "")
 from_agent = data.get("from", "")
 to_agent = data.get("to", "")
 msg_type = data.get("type", "")
+subject = data.get("subject", "")
 body = data.get("body", "")
 ts = data.get("timestamp", "")
 is_enc = data.get("encrypted", False)
@@ -59,7 +79,7 @@ if not sig:
 
 verify_res = subprocess.run([
     f"{script_dir}/security.sh", "verify",
-    sig, msg_id, from_agent, to_agent, msg_type, body, ts
+    sig, msg_id, from_agent, to_agent, msg_type, subject, body, ts
 ], capture_output=True)
 
 if verify_res.returncode != 0:

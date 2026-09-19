@@ -1,7 +1,7 @@
 -- scripts/directory.lua
 -- Lists registered agents, their liveness heartbeat (1 or 0), and tags.
 -- Can optionally filter by project or tag (e.g. only agents matching "locutus").
--- ARGV[1]: prefix (e.g. "a2a:")
+-- ARGV[1]: prefix (e.g. "locutus:")
 -- ARGV[2]: optional filter tag (e.g. "locutus", or "*" / nil for all)
 
 local prefix = ARGV[1]

@@ -51,6 +51,9 @@ def run_bash(cmd: str, role: str = "AGENT") -> str:
     try:
         env = dict(os.environ)
         env.setdefault("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
+        bin_dir = os.path.abspath("bin")
+        local_bin = os.path.expanduser("~/.local/bin")
+        env["PATH"] = f"{bin_dir}:{local_bin}:{env.get('PATH', '')}"
         env.setdefault("LOCUTUS_REDIS_PREFIX", "locutus:")
         env.setdefault("LOCUTUS_PROJECT", "locutus")
         env.setdefault("LOCUTUS_SCRIPTS_DIR", os.path.abspath("scripts"))

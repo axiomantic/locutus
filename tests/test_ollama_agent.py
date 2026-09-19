@@ -58,6 +58,9 @@ def run_bash(cmd: str) -> str:
         env = dict(os.environ)
         env.setdefault("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
         env.setdefault("REDIS_URL", "redis://127.0.0.1:6379")
+        bin_dir = os.path.abspath("bin")
+        local_bin = os.path.expanduser("~/.local/bin")
+        env["PATH"] = f"{bin_dir}:{local_bin}:{env.get('PATH', '')}"
         env.setdefault("LOCUTUS_REDIS_PREFIX", "locutus:")
         env.setdefault("LOCUTUS_PROJECT", "locutus")
         env.setdefault("LOCUTUS_SCRIPTS_DIR", os.path.abspath("scripts"))
@@ -113,8 +116,8 @@ def main():
             "content": (
                 "You are agent 'alice' in project 'locutus'.\n"
                 "Execute the following tasks by calling the `execute_bash` tool:\n"
-                "1. Register as 'alice' with tag 'calc' using register.lua.\n"
-                "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4' using send_o2o.lua. Construct valid JSON using heredoc (cat << EOF) with ISO-8601 timestamp as specified in the skill instructions.\n"
+                "1. Register as 'alice' with tag 'calc' using `locutus open alice calc`.\n"
+                "2. Send a direct task message to 'bob' with subject 'Math Task' asking him to compute '25 * 4' using `locutus send --to bob --subject \"Math Task\" --body \"Please compute 25 * 4\"`.\n"
                 "Call the execute_bash tool to perform these actions."
             )
         }

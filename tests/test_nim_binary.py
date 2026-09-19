@@ -144,6 +144,162 @@ class TestLocutusNimBinary(unittest.TestCase):
 
         self.run_locutus(["close", agent])
 
+    def test_06_cross_runtime_bash_to_nim(self):
+        scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        agent = "nim_receiver_bash_sender"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Send using Bash scripts/send.sh
+        send_sh = os.path.join(scripts_dir, "send.sh")
+        send_cmd = [
+            send_sh,
+            "--to", agent,
+            "--type", "task",
+            "--subject", "Bash to Nim",
+            "--body", "Interoperability message from Bash",
+        ]
+        res = subprocess.run(send_cmd, capture_output=True, text=True, env=self.env, check=True)
+        self.assertEqual(res.returncode, 0)
+
+        # Receive using Nim binary
+        listen_res = self.run_locutus(["listen", agent, "2"])
+        self.assertEqual(listen_res.returncode, 0)
+        payload = json.loads(listen_res.stdout.strip())
+        msg = LocutusMessage.model_validate(payload)
+        self.assertEqual(msg.subject, "Bash to Nim")
+        self.assertEqual(msg.body, "Interoperability message from Bash")
+        self.assertIsNotNone(msg.sig)
+
+        self.run_locutus(["close", agent])
+
+    def test_07_cross_runtime_nim_to_bash(self):
+        scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        agent = "bash_receiver_nim_sender"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Send using Nim binary
+        send_res = self.run_locutus([
+            "send",
+            "--to", agent,
+            "--type", "task",
+            "--subject", "Nim to Bash",
+            "--body", "Interoperability message from Nim",
+        ])
+        self.assertEqual(send_res.returncode, 0)
+
+        # Receive using Bash scripts/listen.sh
+        listen_sh = os.path.join(scripts_dir, "listen.sh")
+        listen_cmd = [listen_sh, agent, "2"]
+        res = subprocess.run(listen_cmd, capture_output=True, text=True, env=self.env, check=True)
+        self.assertEqual(res.returncode, 0)
+        payload = json.loads(res.stdout.strip())
+        msg = LocutusMessage.model_validate(payload)
+        self.assertEqual(msg.subject, "Nim to Bash")
+        self.assertEqual(msg.body, "Interoperability message from Nim")
+        self.assertIsNotNone(msg.sig)
+
+        self.run_locutus(["close", agent])
+
+    def test_08_active_agent_persistence(self):
+        # When opening without name, generates project-worker-XXXX
+        open_res = self.run_locutus(["open"])
+        self.assertEqual(open_res.returncode, 0)
+        self.assertIn("Agent Name :", open_res.stdout)
+
+        # Send a message to ourselves using default active agent
+        # First extract agent name from stdout
+        for line in open_res.stdout.splitlines():
+            if "Agent Name :" in line:
+                active_agent = line.split(":", 1)[1].strip()
+                break
+        self.assertTrue(active_agent.startswith("test_project-worker-"))
+
+        # Send to active agent without explicit --from
+        self.run_locutus([
+            "send",
+            "--to", active_agent,
+            "--subject", "Self Ping",
+            "--body", "Testing persistence",
+        ])
+
+        # Listen without specifying name (should pick up active agent)
+        listen_res = self.run_locutus(["listen", "2"])
+        self.assertEqual(listen_res.returncode, 0)
+        payload = json.loads(listen_res.stdout.strip())
+        self.assertEqual(payload["to"], active_agent)
+        self.assertEqual(payload["body"], "Testing persistence")
+
+        # Close without specifying name
+        close_res = self.run_locutus(["close"])
+        self.assertEqual(close_res.returncode, 0)
+
+    def test_09_multicast_broadcast_with_tags_routing(self):
+        # Open agent 1 with qa,backend
+        self.run_locutus(["open", "agent_qa", "qa"])
+        # Open agent 2 with dev,backend
+        self.run_locutus(["open", "agent_dev", "dev"])
+
+        # Broadcast targeting 'qa'
+        self.run_locutus([
+            "broadcast",
+            "--tags", "qa",
+            "--subject", "QA Notice",
+            "--body", "Only for QA",
+        ])
+
+        # agent_qa should receive it
+        res_qa = self.run_locutus(["listen", "agent_qa", "1"])
+        self.assertEqual(res_qa.returncode, 0)
+        self.assertIn("QA Notice", res_qa.stdout)
+
+        # agent_dev should NOT receive it ((nil))
+        res_dev = self.run_locutus(["listen", "agent_dev", "1"])
+        self.assertEqual(res_dev.returncode, 0)
+        self.assertEqual(res_dev.stdout.strip(), "(nil)")
+
+        self.run_locutus(["close", "agent_qa"])
+        self.run_locutus(["close", "agent_dev"])
+
+    def test_10_corrupted_encrypted_payload_dropped(self):
+        agent = "agent_corrupt_test"
+        self.run_locutus(["open", agent, "worker"])
+
+        # Construct an encrypted payload but with invalid ciphertext
+        import hashlib, hmac
+        secret = self.run_locutus(["get-secret"]).stdout.strip()
+        msg_id = "msg_corrupt_1"
+        ts = "2026-09-19T00:00:00Z"
+        corrupted_ciphertext = "NOT_VALID_BASE64_AES_CIPHERTEXT"
+        canonical = f"{msg_id}|sender|{agent}|task|Corrupt|{corrupted_ciphertext}|{ts}"
+        sig = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+        corrupt_payload = json.dumps({
+            "id": msg_id,
+            "from": "sender",
+            "to": agent,
+            "type": "task",
+            "reply_to": None,
+            "tags": ["test_project"],
+            "subject": "Corrupt",
+            "body": corrupted_ciphertext,
+            "timestamp": ts,
+            "sig": sig,
+            "encrypted": True
+        })
+
+        subprocess.run(
+            ["redis-cli", "-u", REDIS_URL, "LPUSH", f"{TEST_PREFIX}inbox:{agent}", corrupt_payload],
+            check=True
+        )
+
+        # Listen should drop the message because decryption fails
+        listen_res = self.run_locutus(["listen", agent, "1"])
+        self.assertEqual(listen_res.returncode, 0)
+        self.assertEqual(listen_res.stdout.strip(), "(nil)")
+        self.assertIn("Dropping corrupted/undecryptable message", listen_res.stderr)
+
+        self.run_locutus(["close", agent])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -79,24 +79,29 @@ class TestLocutusSecurity(unittest.TestCase):
         from_agent = "alice"
         to_agent = "bob"
         msg_type = "task"
+        subject = "Safe Operation"
         body = "Execute safe operation"
         ts = "2026-09-19T00:00:00Z"
 
         # Compute valid HMAC via security helper
-        cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "sign", msg_id, from_agent, to_agent, msg_type, body, ts]
+        cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "sign", msg_id, from_agent, to_agent, msg_type, subject, body, ts]
         sig = subprocess.run(cmd, capture_output=True, text=True, env=env, check=True).stdout.strip()
         self.assertTrue(len(sig) >= 32)
 
         # Verification with identical fields must succeed
-        verify_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, body, ts]
+        verify_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, subject, body, ts]
         self.assertEqual(subprocess.run(verify_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
+        # Verification with tampered subject must fail
+        tampered_subj_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, "MALICIOUS SUBJECT", body, ts]
+        self.assertNotEqual(subprocess.run(tampered_subj_cmd, capture_output=True, text=True, env=env).returncode, 0)
+
         # Verification with tampered body must fail
-        tampered_body_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, "MALICIOUS INJECTION", ts]
+        tampered_body_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, from_agent, to_agent, msg_type, subject, "MALICIOUS INJECTION", ts]
         self.assertNotEqual(subprocess.run(tampered_body_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
         # Verification with forged sender must fail
-        tampered_from_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, "evil_impersonator", to_agent, msg_type, body, ts]
+        tampered_from_cmd = [os.path.join(SCRIPTS_DIR, "security.sh"), "verify", sig, msg_id, "evil_impersonator", to_agent, msg_type, subject, body, ts]
         self.assertNotEqual(subprocess.run(tampered_from_cmd, capture_output=True, text=True, env=env).returncode, 0)
 
     def test_03_send_and_listen_authenticated_flow(self):
