@@ -1,6 +1,6 @@
 ---
 name: locutus
-description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
+description: "Multi-agent coordination, inter-terminal messaging bus, distributed file/mutex locking, and worker queues over Redis. Use when coordinating work between multiple AI assistants or terminal sessions, acquiring distributed mutex locks before editing shared files or running migrations/deployments, dispatching tasks or RPC queries to peer agents, producing/consuming from competing-consumer work queues, reliably claiming tasks with leases and ack/DLQ handling, scattering tasks to a pool for quorum aggregation, sharing scratchpad memory, managing floor control in roundtable brainstorming, setting and checking run cancellation tokens, running blind consensus ballots without anchoring bias, electing resilient mesh leaders with automated lease failover, or discovering active teammates and their status. Triggers: 'coordinate with the other terminal/agent', 'talk to agent', 'send task to', 'ask the other assistant', 'inter-agent chat', 'lock file', 'lock resource', 'mutex lock', 'prevent concurrent edits', 'work queue', 'enqueue task', 'claim task', 'ack task', 'reliable queue', 'dead letter queue', 'dlq', 'blackboard', 'scratchpad', 'shared memory', 'floor control', 'speaker ring', 'moderated roundtable', 'pass floor', 'yield floor', 'cancel task', 'cancel run', 'cancellation token', 'abort run', 'ballot', 'vote', 'consensus', 'blind voting', 'leader election', 'acquire leader', 'failover', 'mesh leader', 'scatter', 'gather', 'quorum', 'who is online', 'agent status', 'locutus', 'Redis bus'."
 ---
 
 # Locutus: Redis Inter-Assistant Communication Bus
@@ -69,6 +69,7 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Floor Control (Speaker Ring)** | `locutus floor <request\|yield\|pass\|status> <room> [args...]` |
 | **Run Cancellation Token** | `locutus cancel <run_id> [--reason <reason>] \| check <run_id> \| clear <run_id>` |
 | **Blind Voting & Ballot** | `locutus ballot <open\|cast\|tally\|status> <ballot_id> [args...]` |
+| **Leader Election (Lease)** | `locutus leader <acquire\|renew\|resign\|status> <role> [args...]` |
 | **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
 | **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
@@ -261,6 +262,19 @@ locutus ballot cast db_choice --vote "sqlite"
 locutus ballot tally db_choice --close
 ```
 
+#### L. Leader Election via Lease Preemption (`locutus leader`)
+Eliminate single points of failure with auto-failover coordinator leases:
+```bash
+# Attempt to acquire leader role (with 30s lease):
+locutus leader acquire orchestrator 30
+
+# Leader periodically renews lease in background:
+locutus leader renew orchestrator 30
+
+# Leader gracefully resigns when work is complete:
+locutus leader resign orchestrator
+```
+
 ### Step 4: Graceful Exit
 When the session ends or user asks to disconnect:
 ```bash
@@ -426,6 +440,24 @@ locutus ballot cast arch_debate --vote "monolith" --voter "gemini"
 tally=$(locutus ballot tally arch_debate --close)
 winner=$(echo "$tally" | jq -r '.winner')
 echo "Consensus winner: $winner"
+```
+
+### Playbook 13: Self-Healing Leader Election & Automated Failover
+*Goal: Maintain high availability for orchestrator roles without single points of failure.*
+```bash
+# 1. Primary candidate acquires leadership lease (30s TTL):
+locutus leader acquire cluster_lead 30
+
+# 2. While primary is healthy, periodically renew lease:
+locutus leader renew cluster_lead 30
+
+# 3. Standby candidates monitor leadership:
+leader_status=$(locutus leader status cluster_lead)
+# If primary crashes or drops lease, standby's acquire call automatically succeeds:
+locutus leader acquire cluster_lead 30
+
+# 4. Graceful handoff: primary resigns, instantly waking standbys:
+locutus leader resign cluster_lead
 ```
 
 ---

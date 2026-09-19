@@ -1740,6 +1740,70 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_tally_raw.returncode, 0)
         self.assertEqual(res_tally_raw.stdout.strip(), "sqlite")
 
+    def test_51_leader_election(self):
+        """Test leader election via lease preemption ('locutus leader')."""
+        role = f"role_{int(time.time() * 1000)}"
+
+        # 1. Lead 1 acquires leadership
+        res_acq = self.run_locutus([
+            "leader", "acquire", role,
+            "--agent", "lead1",
+            "--lease", "10"
+        ])
+        self.assertEqual(res_acq.returncode, 0)
+        self.assertIn("ELECTED", res_acq.stdout)
+
+        # 2. Lead 2 attempts to acquire same role: exits with code 1, reports HELD:lead1
+        res_acq_busy = self.run_locutus([
+            "leader", "acquire", role,
+            "--agent", "lead2",
+            "--lease", "10"
+        ])
+        self.assertEqual(res_acq_busy.returncode, 1)
+        self.assertIn("HELD:lead1", res_acq_busy.stdout + res_acq_busy.stderr)
+
+        # 3. Status check
+        res_st = self.run_locutus(["leader", "status", role])
+        self.assertEqual(res_st.returncode, 0)
+        st = json.loads(res_st.stdout.strip())
+        self.assertEqual(st["role"], role)
+        self.assertEqual(st["leader"], "lead1")
+        self.assertEqual(st["status"], "active")
+
+        # 4. Lead 1 renews lease
+        res_ren = self.run_locutus([
+            "leader", "renew", role,
+            "--agent", "lead1",
+            "--lease", "15"
+        ])
+        self.assertEqual(res_ren.returncode, 0)
+        self.assertIn("RENEWED", res_ren.stdout)
+
+        # Lead 2 fails to renew
+        res_ren_bad = self.run_locutus([
+            "leader", "renew", role,
+            "--agent", "lead2",
+            "--lease", "15"
+        ])
+        self.assertEqual(res_ren_bad.returncode, 1)
+
+        # 5. Lead 1 resigns
+        res_res = self.run_locutus([
+            "leader", "resign", role,
+            "--agent", "lead1"
+        ])
+        self.assertEqual(res_res.returncode, 0)
+        self.assertIn("RESIGNED", res_res.stdout)
+
+        # 6. Now Lead 2 can acquire
+        res_acq2 = self.run_locutus([
+            "leader", "acquire", role,
+            "--agent", "lead2",
+            "--lease", "10"
+        ])
+        self.assertEqual(res_acq2.returncode, 0)
+        self.assertIn("ELECTED", res_acq2.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

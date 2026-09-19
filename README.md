@@ -208,6 +208,19 @@ locutus ballot cast db_election --vote "sqlite" --voter "arch"
 locutus ballot tally db_election --close
 ```
 
+#### Leader Election via Lease Preemption (`locutus leader`)
+Eliminate single points of failure with self-healing coordinator leases and instant failover:
+```bash
+# Attempt to acquire leader lease (30s):
+locutus leader acquire orchestrator 30
+
+# Leader heartbeats / renews lease:
+locutus leader renew orchestrator 30
+
+# Leader hands off role:
+locutus leader resign orchestrator
+```
+
 #### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
 Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
 ```bash
@@ -374,6 +387,22 @@ locutus ballot cast framework_choice --vote "react" --voter "gemini"
 
 # 3. Reveal tally and determine winner:
 locutus ballot tally framework_choice --close
+```
+
+### 11. Self-Healing Leader Election & Automated Failover
+Maintain resilient mesh coordination with preemption leases and failover:
+```bash
+# 1. Acquire leadership lease (30s):
+locutus leader acquire cluster_lead 30
+
+# 2. While running, periodically heartbeat/renew:
+locutus leader renew cluster_lead 30
+
+# 3. Check current leader:
+locutus leader status cluster_lead
+
+# 4. Release leadership to standby nodes:
+locutus leader resign cluster_lead
 ```
 
 ---
@@ -605,6 +634,7 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 | `locutus floor <cmd> <room> ...` | Turn-taking floor control for roundtables (request, yield, pass, status). | `locutus floor request room1 30` |
 | `locutus cancel <run_id> ...` | Global run cancellation tokens (cancel, check, clear). | `locutus cancel run_042 --reason "Aborted"` |
 | `locutus ballot <cmd> <ballot_id> ...` | Blind voting and ballot consensus (open, cast, tally, status). | `locutus ballot open b1 --options "A,B"` |
+| `locutus leader <cmd> <role> ...` | Resilient leader election with failover (acquire, renew, resign, status). | `locutus leader acquire lead 30` |
 | `locutus status <state> [activity]` | Updates agent state (`idle`, `busy`, `error`) and activity text. | `locutus status busy "Compiling tests"` |
 | `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease (NX EX). | `locutus lock deploy_lock 30` |
 | `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |

@@ -73,6 +73,7 @@ const
   floorLua*      = staticRead("../scripts/floor.lua")
   cancelLua*     = staticRead("../scripts/cancel.lua")
   ballotLua*     = staticRead("../scripts/ballot.lua")
+  leaderLua*     = staticRead("../scripts/leader.lua")
   LocutusVersion* = "0.1.2"
 
 # Cryptographic Helpers
@@ -99,6 +100,7 @@ let
   floorSha*      = computeSha1(floorLua)
   cancelSha*     = computeSha1(cancelLua)
   ballotSha*     = computeSha1(ballotLua)
+  leaderSha*     = computeSha1(leaderLua)
 
 
 proc secureFilePermissions*(path: string) =
@@ -1090,6 +1092,35 @@ proc doBallotStatus*(cfg: LocutusConfig, ballotId: string) =
     quit(1)
   echo res
 
+proc doLeaderAcquire*(cfg: LocutusConfig, role, agentName: string, leaseSec: int = 30) =
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts])
+  if res.startsWith("HELD:") or res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doLeaderRenew*(cfg: LocutusConfig, role, agentName: string, leaseSec: int = 30) =
+  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "renew", role, agentName, $leaseSec])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doLeaderResign*(cfg: LocutusConfig, role, agentName: string) =
+  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "resign", role, agentName])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
+proc doLeaderStatus*(cfg: LocutusConfig, role: string) =
+  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "status", role])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
 proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, timeoutSec: int = 30, rawOutput: bool = false) =
   randomize()
   let secret = getSecret(cfg)
@@ -1386,6 +1417,7 @@ proc main() =
     echo "  locutus floor <request|yield|pass|status> <room> [args...]"
     echo "  locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>"
     echo "  locutus ballot <open|cast|tally|status> <ballot_id> [args...]"
+    echo "  locutus leader <acquire|renew|resign|status> <role> [args...]"
     echo "  locutus status <idle|busy|error> [activity_text] [name]"
     echo "  locutus lock <lock_name> [ttl_sec]"
     echo "  locutus unlock <lock_name>"
@@ -2098,6 +2130,50 @@ proc main() =
     else:
       stderr.writeLine("Unknown ballot action: " & action)
       stderr.writeLine("Usage: locutus ballot <open|cast|tally|status> <ballot_id> [args...]")
+      quit(1)
+
+  of "leader":
+    if args.len < 3:
+      stderr.writeLine("Error: Missing leader action or role name.")
+      stderr.writeLine("Usage:")
+      stderr.writeLine("  locutus leader acquire <role> [--lease <sec>] [--agent <name>]")
+      stderr.writeLine("  locutus leader renew <role> [--lease <sec>] [--agent <name>]")
+      stderr.writeLine("  locutus leader resign <role> [--agent <name>]")
+      stderr.writeLine("  locutus leader status <role>")
+      quit(1)
+
+    let action = args[1].toLowerAscii
+    let role = args[2]
+
+    var agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+    var leaseSec = 30
+
+    var i = 3
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--agent="): agentName = a[8..^1]
+      elif a == "--agent" and i + 1 < args.len: agentName = args[i+1]; inc i
+      elif a.startsWith("--lease="):
+        try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+      elif a == "--lease" and i + 1 < args.len:
+        try: leaseSec = parseInt(args[i+1]) except ValueError: discard
+        inc i
+      elif not a.startsWith("-"):
+        try: leaseSec = parseInt(a) except ValueError: discard
+      inc i
+
+    case action
+    of "acquire", "elect":
+      doLeaderAcquire(cfg, role, agentName, leaseSec)
+    of "renew", "heartbeat":
+      doLeaderRenew(cfg, role, agentName, leaseSec)
+    of "resign", "release", "yield":
+      doLeaderResign(cfg, role, agentName)
+    of "status", "show":
+      doLeaderStatus(cfg, role)
+    else:
+      stderr.writeLine("Unknown leader action: " & action)
+      stderr.writeLine("Usage: locutus leader <acquire|renew|resign|status> <role> [args...]")
       quit(1)
 
   of "status":

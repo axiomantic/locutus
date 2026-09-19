@@ -62,6 +62,7 @@ LUA_BLACKBOARD = load_lua("blackboard.lua")
 LUA_FLOOR = load_lua("floor.lua")
 LUA_CANCEL = load_lua("cancel.lua")
 LUA_BALLOT = load_lua("ballot.lua")
+LUA_LEADER = load_lua("leader.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -756,6 +757,41 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertEqual(tally["tally"]["optB"], 1)
         self.assertEqual(tally["winner"], "optA")
         self.assertEqual(tally["status"], "closed")
+
+    def test_26_leader_lua_protocol(self):
+        """Test leader.lua via Redis EVAL."""
+        role = f"role_{int(time.time() * 1000)}"
+
+        # 1. Alice acquires leadership
+        acq = run_eval(LUA_LEADER, 0, PREFIX, "acquire", role, "alice", "10")
+        self.assertEqual(acq, "ELECTED")
+
+        # 2. Bob attempts to acquire same role: should be busy/held
+        busy = run_eval(LUA_LEADER, 0, PREFIX, "acquire", role, "bob", "10")
+        self.assertEqual(busy, "HELD:alice")
+
+        # 3. Status check
+        st_json = run_eval(LUA_LEADER, 0, PREFIX, "status", role)
+        st = json.loads(st_json)
+        self.assertEqual(st["role"], role)
+        self.assertEqual(st["leader"], "alice")
+        self.assertEqual(st["status"], "active")
+
+        # 4. Alice renews lease
+        ren = run_eval(LUA_LEADER, 0, PREFIX, "renew", role, "alice", "15")
+        self.assertEqual(ren, "RENEWED")
+
+        # Bob fails to renew Alice's role
+        bob_ren = run_eval(LUA_LEADER, 0, PREFIX, "renew", role, "bob", "15")
+        self.assertEqual(bob_ren, "ERR: Not leader")
+
+        # 5. Alice resigns
+        res = run_eval(LUA_LEADER, 0, PREFIX, "resign", role, "alice")
+        self.assertEqual(res, "RESIGNED")
+
+        # 6. Now Bob can acquire immediately
+        bob_acq = run_eval(LUA_LEADER, 0, PREFIX, "acquire", role, "bob", "10")
+        self.assertEqual(bob_acq, "ELECTED")
 
 
 if __name__ == "__main__":
