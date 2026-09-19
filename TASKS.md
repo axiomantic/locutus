@@ -69,22 +69,22 @@ No shortcuts, no batching, no hand-waving. Every task must be tackled individual
 ---
 
 ### Group 1.3: Queue Hygiene & Fault Tolerance
-- [ ] **TASK-11: In-Flight Claim Lease Renewal (`locutus claim renew`)**
+- [x] **TASK-11: In-Flight Claim Lease Renewal (`locutus claim renew`)**
   - **Issue**: Tasks taking longer than lease duration are stolen by other workers, leading to duplicate processing.
   - **TDD Requirement**: Write test verifying `locutus claim renew <queue> <task_id> [--lease 120]` extends the lease in Redis and returns the renewed TTL without returning the task to the queue.
   - **Implementation**: Add `scripts/claim_renew.lua` and `doClaimRenew` in `src/locutus.nim`.
 
-- [ ] **TASK-12: Poison Pill Head-of-Line Jamming Prevention in `claim.lua`**
+- [x] **TASK-12: Poison Pill Head-of-Line Jamming Prevention in `claim.lua`**
   - **Issue**: Re-queuing expired tasks via `RPUSH` puts them at the head of `RPOP` queues, repeatedly crashing workers in a tight loop.
   - **TDD Requirement**: Write test verifying that expired reclaimed tasks are pushed to the tail (`LPUSH`) so other pending queue items can make progress before the failed item is retried.
   - **Implementation**: In `scripts/claim.lua`, change re-queueing from `RPUSH` to `LPUSH`.
 
-- [ ] **TASK-13: Worker Cancellation Awareness (`--run-id` for `work` and `claim`)**
+- [x] **TASK-13: Worker Cancellation Awareness (`--run-id` for `work` and `claim`)**
   - **Issue**: Workers blocked on queues cannot receive PubSub cancellation broadcasts.
   - **TDD Requirement**: Write test verifying `locutus work <queue> --run-id <run_id>` and `locutus claim <queue> --run-id <run_id>` check cancellation tokens before and after claiming tasks, exiting cleanly (0) if cancelled.
   - **Implementation**: Add `--run-id` parameter to `doWork` and `doClaim`, checking `cancel:<run_id>` on poll timeouts and post-pop.
 
-- [ ] **TASK-14: Scatter Quorum Clamping Safety in `doScatter`**
+- [x] **TASK-14: Scatter Quorum Clamping Safety in `doScatter`**
   - **Issue**: If `--quorum` exceeds the number of reachable targets, `doScatter` hangs for the full timeout.
   - **TDD Requirement**: Write test verifying `doScatter` clamps `effectiveQuorum = min(quorum, delivered)` when `delivered > 0` and returns as soon as all delivered targets respond.
   - **Implementation**: Update quorum calculation in `src/locutus.nim#doScatter`.

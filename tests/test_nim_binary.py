@@ -1465,6 +1465,51 @@ secret = "my_inline_secret_test_555"
         self.run_locutus(["close", w1])
         self.run_locutus(["close", w2])
 
+    def test_45b_scatter_quorum_clamping(self):
+        """Test that scatter clamps quorum to delivered count when quorum > delivered."""
+        w1 = f"clamp_w1_{int(time.time() * 1000)}"
+        self.run_locutus(["open", w1, "clamp_test"])
+
+        def worker_loop():
+            res = self.run_locutus(["listen", w1, "5"])
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout.strip())
+                reply_to = data.get("reply_to")
+                if reply_to:
+                    self.run_locutus([
+                        "--agent-name=" + w1,
+                        "reply",
+                        "--to", data.get("from", "lead"),
+                        "--reply-to", reply_to,
+                        "--subject", "Done",
+                        "--body", "finished"
+                    ])
+
+        t = threading.Thread(target=worker_loop)
+        t.start()
+        time.sleep(0.3)
+
+        # Scatter to single target w1, but request --quorum 10 and --timeout 6
+        t_start = time.time()
+        res_scatter = self.run_locutus([
+            "--agent-name=lead",
+            "scatter",
+            "--targets", w1,
+            "--subject", "Task",
+            "--body", "Go",
+            "--quorum", "10",
+            "--timeout", "6",
+            "--raw"
+        ])
+        elapsed = time.time() - t_start
+        t.join(timeout=5)
+        self.run_locutus(["close", w1])
+
+        self.assertEqual(res_scatter.returncode, 0)
+        self.assertEqual(res_scatter.stdout.strip(), "finished")
+        # Quorum must have been clamped from 10 down to 1 (delivered), so it exits immediately (< 3s)
+        self.assertLess(elapsed, 3.0, "Scatter did not clamp quorum and hung waiting for phantom targets")
+
     def test_46_reliable_queue_claim_ack_and_dlq(self):
         """Test 'locutus claim' with lease, 'locutus ack', and DLQ auto-reclaim after 3 retries."""
         q = f"reliable_q_{int(time.time() * 1000)}"
@@ -1519,6 +1564,85 @@ secret = "my_inline_secret_test_555"
         self.assertIn("Failing Task", res_dlq.stdout)
 
         self.run_locutus(["close", agent])
+
+    def test_46b_claim_lease_renewal(self):
+        """Test in-flight claim lease extension ('locutus claim renew')."""
+        q = f"renew_q_{int(time.time() * 1000)}"
+        self.run_locutus(["enqueue", q, "--subject", "Long Task", "--body", "heavy_workload"])
+
+        # Claim with short 2s lease
+        res_claim = self.run_locutus(["claim", q, "--lease", "2"])
+        self.assertEqual(res_claim.returncode, 0)
+        task = json.loads(res_claim.stdout.strip())
+        task_id = task["id"]
+
+        # Renew lease for 60s
+        res_renew = self.run_locutus(["claim", "renew", q, task_id, "--lease", "60"])
+        self.assertEqual(res_renew.returncode, 0)
+        renew_data = json.loads(res_renew.stdout.strip())
+        self.assertTrue(renew_data.get("renewed"))
+        self.assertEqual(renew_data.get("lease_sec"), 60)
+
+        # Sleep past initial 2s lease
+        time.sleep(2.5)
+
+        # Another worker attempts to claim; should get nothing because lease was renewed
+        res_other = self.run_locutus(["claim", q, "1"])
+        self.assertEqual(res_other.returncode, 0)
+        self.assertEqual(res_other.stdout.strip(), "")
+
+        # Acknowledge task
+        res_ack = self.run_locutus(["ack", q, task_id])
+        self.assertEqual(res_ack.returncode, 0)
+
+    def test_46c_poison_pill_tail_requeue(self):
+        """Test that expired tasks are re-queued to tail (LPUSH) avoiding head-of-line blocking."""
+        q = f"poison_q_{int(time.time() * 1000)}"
+
+        # Enqueue Task 1 then Task 2
+        self.run_locutus(["enqueue", q, "--subject", "Task 1 Failing", "--body", "data1"])
+        self.run_locutus(["enqueue", q, "--subject", "Task 2 Healthy", "--body", "data2"])
+
+        # Claim Task 1 with 1s lease
+        res_c1 = self.run_locutus(["claim", q, "--lease", "1"])
+        self.assertEqual(res_c1.returncode, 0)
+        self.assertIn("Task 1 Failing", res_c1.stdout)
+
+        # Let lease expire
+        time.sleep(1.2)
+
+        # Claim next: Task 1 should be re-queued to tail (LPUSH), so Task 2 is popped next!
+        res_c2 = self.run_locutus(["claim", q, "--lease", "10"])
+        self.assertEqual(res_c2.returncode, 0)
+        self.assertIn("Task 2 Healthy", res_c2.stdout)
+
+    def test_46d_worker_cancellation_awareness(self):
+        """Test --run-id cancellation interceptor in 'locutus work' and 'locutus claim'."""
+        q = f"cancel_aware_q_{int(time.time() * 1000)}"
+        run_id = f"run_worker_{int(time.time() * 1000)}"
+
+        # Cancel the run
+        res_c = self.run_locutus(["cancel", run_id, "--reason", "Workflow aborted by user"])
+        self.assertEqual(res_c.returncode, 0)
+
+        # Enqueue a task to the queue
+        self.run_locutus(["enqueue", q, "--subject", "Cancelled Work", "--body", "should_not_run"])
+
+        # 'work' with --run-id should detect cancellation and exit cleanly without processing
+        t_start = time.time()
+        res_work = self.run_locutus(["work", q, "10", "--run-id", run_id])
+        elapsed = time.time() - t_start
+        self.assertEqual(res_work.returncode, 0)
+        self.assertLess(elapsed, 3.0, "Worker did not exit immediately upon detecting cancellation")
+        self.assertIn("cancelled", (res_work.stderr + res_work.stdout).lower())
+
+        # 'claim' with --run-id should also detect cancellation and exit cleanly
+        t_start2 = time.time()
+        res_claim = self.run_locutus(["claim", q, "10", "--run-id", run_id])
+        elapsed2 = time.time() - t_start2
+        self.assertEqual(res_claim.returncode, 0)
+        self.assertLess(elapsed2, 3.0, "Claim did not exit immediately upon detecting cancellation")
+        self.assertIn("cancelled", (res_claim.stderr + res_claim.stdout).lower())
 
     def test_47_blackboard_kv_append_and_snapshot(self):
         """Test 'locutus blackboard' (set, get, append, snapshot, delete, clear)."""

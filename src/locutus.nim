@@ -68,6 +68,7 @@ const
   enqueueLua*    = staticRead("../scripts/enqueue.lua")
   scatterLua*    = staticRead("../scripts/scatter.lua")
   claimLua*      = staticRead("../scripts/claim.lua")
+  claimRenewLua* = staticRead("../scripts/claim_renew.lua")
   ackLua*        = staticRead("../scripts/ack.lua")
   blackboardLua* = staticRead("../scripts/blackboard.lua")
   floorLua*      = staticRead("../scripts/floor.lua")
@@ -97,6 +98,7 @@ let
   enqueueSha*    = computeSha1(enqueueLua)
   scatterSha*    = computeSha1(scatterLua)
   claimSha*      = computeSha1(claimLua)
+  claimRenewSha* = computeSha1(claimRenewLua)
   ackSha*        = computeSha1(ackLua)
   blackboardSha* = computeSha1(blackboardLua)
   floorSha*      = computeSha1(floorLua)
@@ -807,7 +809,25 @@ proc doEnqueue*(cfg: LocutusConfig, queueName, msgType, fromAgent, subject, body
   discard runLuaScript(cfg.redisUrl, enqueueLua, enqueueSha, [cfg.prefix, queueName, msgJson, $effectiveTtl])
   return id
 
-proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
+proc isRunCancelled*(cfg: LocutusConfig, runId: string): bool =
+  if runId.len == 0: return false
+  let (res, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "cancel:" & runId])
+  if code == 0 and res.len > 0 and res != "(nil)":
+    try:
+      let parsed = parseJson(res)
+      let secret = getSecret(cfg)
+      let reason = parsed.getOrDefault("reason").getStr("")
+      let byAgent = parsed.getOrDefault("by").getStr("")
+      let ts = parsed.getOrDefault("timestamp").getStr("")
+      let sig = parsed.getOrDefault("sig").getStr("")
+      let canonical = runId & "|" & reason & "|" & byAgent & "|" & ts
+      if sig.len > 0 and verifyHmac(secret, canonical, sig):
+        return true
+    except JsonParsingError:
+      discard
+  return false
+
+proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, runId: string = "") =
   let secret = getSecret(cfg)
   let queueKey = if queueName.startsWith("dlq:"):
                    cfg.prefix & "queue:dlq:{" & queueName[4..^1] & "}"
@@ -827,6 +847,9 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
     discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
 
   while isForever or remaining > 0:
+    if runId.len > 0 and isRunCancelled(cfg, runId):
+      stderr.writeLine("Run " & runId & " was cancelled. Worker exiting.")
+      return
     let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
     var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $waitSec])
     if exitCode != 0:
@@ -894,7 +917,9 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
     echo $parsed
     return
 
-proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, leaseSec: int = 120, rawOutput: bool = false) =
+proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int
+
+proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, leaseSec: int = 120, rawOutput: bool = false, runId: string = "") =
   let secret = getSecret(cfg)
   let workerName = getActiveAgentName(cfg, "")
   let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
@@ -909,6 +934,10 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
     discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
 
   while isForever or remaining > 0 or effectiveTimeout == 0:
+    if runId.len > 0 and isRunCancelled(cfg, runId):
+      stderr.writeLine("Run " & runId & " was cancelled. Worker exiting.")
+      return
+
     let res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
     if res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
       var parsed: JsonNode
@@ -919,6 +948,12 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
         quit(1)
 
       let id = parsed.getOrDefault("id").getStr("")
+
+      if runId.len > 0 and isRunCancelled(cfg, runId):
+        stderr.writeLine("Run " & runId & " was cancelled. Discarding task and exiting.")
+        discard doAck(cfg, queueName, id)
+        return
+
       let fromAgent = parsed.getOrDefault("from").getStr("")
       let toAgent = parsed.getOrDefault("to").getStr("")
       let msgType = parsed.getOrDefault("type").getStr("")
@@ -975,6 +1010,14 @@ proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int =
   else:
     stderr.writeLine("Warning: Task " & taskId & " not found or already acknowledged.")
   return res
+
+proc doClaimRenew*(cfg: LocutusConfig, queueName, taskId: string, leaseSec: int = 120) =
+  let res = runLuaScript(cfg.redisUrl, claimRenewLua, claimRenewSha, [cfg.prefix, queueName, taskId, $leaseSec])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
 
 proc decryptBlackboardValue(raw: string, secret: string, cfg: LocutusConfig, contextMsg: string): string =
   if not raw.startsWith("aes256:"):
@@ -1586,7 +1629,12 @@ proc doScatter*(cfg: LocutusConfig, targets, fromAgent, subject, body: string,
   except ValueError:
     delivered = 0
 
-  let effectiveQuorum = if quorum >= 0: quorum else: max(1, delivered)
+  let effectiveQuorum = if delivered <= 0:
+                          0
+                        elif quorum >= 0:
+                          min(quorum, delivered)
+                        else:
+                          delivered
 
   var collectedReplies: seq[JsonNode] = @[]
   var seenSenders = initHashSet[string]()
@@ -2170,45 +2218,81 @@ proc main() =
   of "work":
     if args.len < 2:
       stderr.writeLine("Error: Missing queue name.")
-      stderr.writeLine("Usage: locutus work <queue_name> [timeout_sec]")
+      stderr.writeLine("Usage: locutus work <queue_name> [timeout_sec] [--run-id <run_id>]")
       quit(1)
     let queueName = args[1]
     var timeout = -1
-    if args.len > 2:
-      try: timeout = parseInt(args[2])
-      except ValueError: discard
-    doWork(cfg, queueName, timeout)
+    var runId = ""
+    var i = 2
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--run-id="):
+        runId = a[9..^1]
+      elif a == "--run-id" and i + 1 < args.len:
+        runId = args[i+1]
+        inc i
+      elif not a.startsWith("-"):
+        try: timeout = parseInt(a) except ValueError: discard
+      inc i
+    doWork(cfg, queueName, timeout, runId)
 
   of "claim":
     if args.len < 2:
       stderr.writeLine("Error: Missing queue name.")
-      stderr.writeLine("Usage: locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]")
+      stderr.writeLine("Usage: locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw] [--run-id <run_id>]")
+      stderr.writeLine("       locutus claim renew <queue_name> <task_id> [--lease 120]")
       quit(1)
-    let queueName = args[1]
-    var timeout = -1
-    var lease = 120
-    var rawOutput = false
 
-    var i = 2
-    while i < args.len:
-      let a = args[i]
-      if a.startsWith("--lease="):
-        try: lease = parseInt(a[8..^1]) except ValueError: discard
-      elif a == "--lease" and i + 1 < args.len:
-        try: lease = parseInt(args[i+1]) except ValueError: discard
+    if args[1] == "renew":
+      if args.len < 4:
+        stderr.writeLine("Error: Missing queue name or task ID for claim renew.")
+        stderr.writeLine("Usage: locutus claim renew <queue_name> <task_id> [--lease 120]")
+        quit(1)
+      let queueName = args[2]
+      let taskId = args[3]
+      var lease = 120
+      var i = 4
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--lease="):
+          try: lease = parseInt(a[8..^1]) except ValueError: discard
+        elif a == "--lease" and i + 1 < args.len:
+          try: lease = parseInt(args[i+1]) except ValueError: discard
+          inc i
         inc i
-      elif a.startsWith("--timeout="):
-        try: timeout = parseInt(a[10..^1]) except ValueError: discard
-      elif a == "--timeout" and i + 1 < args.len:
-        try: timeout = parseInt(args[i+1]) except ValueError: discard
-        inc i
-      elif a == "--raw":
-        rawOutput = true
-      elif not a.startsWith("-"):
-        try: timeout = parseInt(a) except ValueError: discard
-      inc i
+      doClaimRenew(cfg, queueName, taskId, lease)
+    else:
+      let queueName = args[1]
+      var timeout = -1
+      var lease = 120
+      var rawOutput = false
+      var runId = ""
 
-    doClaim(cfg, queueName, timeout, lease, rawOutput)
+      var i = 2
+      while i < args.len:
+        let a = args[i]
+        if a.startsWith("--lease="):
+          try: lease = parseInt(a[8..^1]) except ValueError: discard
+        elif a == "--lease" and i + 1 < args.len:
+          try: lease = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif a.startsWith("--timeout="):
+          try: timeout = parseInt(a[10..^1]) except ValueError: discard
+        elif a == "--timeout" and i + 1 < args.len:
+          try: timeout = parseInt(args[i+1]) except ValueError: discard
+          inc i
+        elif a.startsWith("--run-id="):
+          runId = a[9..^1]
+        elif a == "--run-id" and i + 1 < args.len:
+          runId = args[i+1]
+          inc i
+        elif a == "--raw":
+          rawOutput = true
+        elif not a.startsWith("-"):
+          try: timeout = parseInt(a) except ValueError: discard
+        inc i
+
+      doClaim(cfg, queueName, timeout, lease, rawOutput, runId)
 
   of "ack":
     if args.len < 3:

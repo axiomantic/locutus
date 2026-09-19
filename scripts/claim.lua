@@ -34,9 +34,9 @@ for _, task_id in ipairs(expired) do
             redis.call('LPUSH', dlq_key, task_data)
             redis.call('HDEL', attempts_key, task_id)
         else
-            -- Increment retry count and re-queue at head of queue
+            -- Increment retry count and re-queue at tail of queue (LPUSH prevents head-of-line jamming)
             redis.call('HINCRBY', attempts_key, task_id, 1)
-            redis.call('RPUSH', queue_key, task_data)
+            redis.call('LPUSH', queue_key, task_data)
         end
     end
 end
