@@ -67,20 +67,36 @@ Every agent receives tasks through a single atomic inbox: `${PREFIX}inbox:<agent
 
 ## 30-Second Quickstart
 
-### 1. Install & Build
+### 1. Install Prerequisites (Nim & Redis)
+
+**macOS:**
+```bash
+# Install Nim compiler & Redis server via Homebrew
+brew install nim redis
+
+# Start Redis service
+brew services start redis
+```
+
+**Linux (Ubuntu / Debian):**
+```bash
+# Install Nim compiler & Redis server
+sudo apt update && sudo apt install -y nim redis-server
+
+# Start Redis service
+sudo systemctl start redis-server
+```
+*(Or install the official Nim toolchain universally via `curl https://nim-lang.org/choosenim/init.sh -sSf | sh`)*
+
+### 2. Clone & Build Locutus
 ```bash
 # Clone
 git clone https://github.com/axiomantic/locutus.git
 cd locutus
 
-# Compile standalone binary (under 1 second)
+# Compile standalone native binary (under 1 second)
 nim c -d:release -o:bin/locutus src/locutus.nim
-cp bin/locutus ~/.local/bin/locutus
-```
-
-### 2. Start Redis (if not running)
-```bash
-brew services start redis  # or: docker run -d -p 6379:6379 redis:alpine
+mkdir -p ~/.local/bin && cp bin/locutus ~/.local/bin/locutus
 ```
 
 ### 3. Open Connection in Terminal A (Worker)

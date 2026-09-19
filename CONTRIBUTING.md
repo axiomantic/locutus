@@ -5,8 +5,8 @@ We welcome contributions to Locutus! Whether you are optimizing Lua scripts, imp
 ## Development Setup
 
 ### Prerequisites
-- **Nim**: 2.0+ (`brew install nim` or `apt install nim`)
-- **Redis Server**: 6.2+ (`brew install redis` or Docker)
+- **Nim**: 2.0+ (`brew install nim` on macOS, `sudo apt install nim` on Linux, or `curl https://nim-lang.org/choosenim/init.sh -sSf | sh`)
+- **Redis Server**: 6.2+ (`brew install redis` on macOS, `sudo apt install redis-server` on Linux, or Docker)
 - **OpenSSL**: 1.1+ / 3.0+
 - **Python**: 3.10+ (for integration tests and Pydantic validation)
 
