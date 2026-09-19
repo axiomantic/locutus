@@ -8,7 +8,7 @@ local prefix = ARGV[1]
 local lock_name = ARGV[2]
 local owner = ARGV[3]
 
-local key = prefix .. "lock:" .. lock_name
+local key = prefix .. "lock:{" .. lock_name .. "}"
 local current_owner = redis.call('GET', key)
 if current_owner == owner then
     return redis.call('DEL', key)

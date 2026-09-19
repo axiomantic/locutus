@@ -19,12 +19,14 @@ if action == "cancel" or action == "set" then
     local by_agent = (ARGV[5] and ARGV[5] ~= "") and ARGV[5] or "orchestrator"
     local ttl = tonumber(ARGV[6]) or 3600
     local ts = (ARGV[7] and ARGV[7] ~= "") and ARGV[7] or tostring(redis.call("TIME")[1])
+    local sig = (ARGV[8] and ARGV[8] ~= "") and ARGV[8] or ""
 
     local obj = {
         run_id = run_id,
         reason = reason,
         by = by_agent,
         timestamp = ts,
+        sig = sig,
         cancelled = true
     }
     local payload = cjson.encode(obj)

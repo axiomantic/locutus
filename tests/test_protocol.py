@@ -546,38 +546,37 @@ class TestRedisA2AProtocol(unittest.TestCase):
         # Alice acquires lock
         res_a = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "alice", "10")
         self.assertEqual(res_a, "1")
-        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{lock_name}"), "alice")
+        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{{{lock_name}}}"), "alice")
 
-        # Bob tries to acquire lock -> rejected (0)
+        # Bob attempts to acquire same lock -> should fail (0)
         res_b = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "bob", "10")
         self.assertEqual(res_b, "0")
 
-        # Bob tries to unlock Alice's lock -> rejected (0)
+        # Bob attempts to release Alice's lock -> should fail (0)
         res_un_b = run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "bob")
         self.assertEqual(res_un_b, "0")
-        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{lock_name}"), "alice")
+        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{{{lock_name}}}"), "alice")
 
-        # Alice releases lock -> succeeds (1)
+        # Alice releases her lock -> should succeed (1)
         res_un_a = run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "alice")
         self.assertEqual(res_un_a, "1")
-        self.assertEqual(run_redis("EXISTS", f"{PREFIX}lock:{lock_name}"), "0")
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}lock:{{{lock_name}}}"), "0")
 
     def test_18_enqueue_work_queue_lua(self):
-        """Test enqueue.lua pushes tasks to queue with LPUSH and sets expiration."""
-        qname = "pipeline_tasks"
-        msg1 = json.dumps({"id": "q1", "body": "task1"})
-        msg2 = json.dumps({"id": "q2", "body": "task2"})
+        """Test enqueue.lua pushes tasks to queue with LPUSH."""
+        qname = "test_queue"
+        msg1 = json.dumps({"id": "m1", "task": "render"})
+        msg2 = json.dumps({"id": "m2", "task": "encode"})
 
-        len1 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg1, "300")
+        len1 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg1, "60")
         self.assertEqual(len1, "1")
-
-        len2 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg2, "300")
+        len2 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg2, "60")
         self.assertEqual(len2, "2")
 
-        # Verify FIFO order with RPOP
-        pop1 = run_redis("RPOP", f"{PREFIX}queue:{qname}")
+        # FIFO verification with RPOP
+        pop1 = run_redis("RPOP", f"{PREFIX}queue:{{{qname}}}")
         self.assertEqual(pop1, msg1)
-        pop2 = run_redis("RPOP", f"{PREFIX}queue:{qname}")
+        pop2 = run_redis("RPOP", f"{PREFIX}queue:{{{qname}}}")
         self.assertEqual(pop2, msg2)
 
     def test_19_directory_auto_pruning(self):
@@ -847,6 +846,16 @@ class TestRedisA2AProtocol(unittest.TestCase):
         data_af = json.loads(res_after_fail)
         self.assertEqual(data_af["status"], "failed")
 
+        # 8. Test cycle detection: a:b;b:a must be rejected with error
+        flow_cycle_id = f"flow_cycle_{int(time.time() * 1000)}"
+        res_cycle = run_eval(LUA_WORKFLOW, 0, PREFIX, "define", flow_cycle_id, "a,b", "a:b;b:a")
+        self.assertIn("Cycle detected", res_cycle)
+
+        # 9. Test dangling dependency validation: compile is not declared
+        flow_dangling_id = f"flow_dangling_{int(time.time() * 1000)}"
+        res_dangling = run_eval(LUA_WORKFLOW, 0, PREFIX, "define", flow_dangling_id, "build", "build:compile")
+        self.assertIn("Unknown dependency step 'compile'", res_dangling)
+
     def test_28_sweep_lua_protocol(self):
         """Test sweep.lua auditing and pruning expired heartbeats."""
         dead_agent = f"dead_bot_{int(time.time() * 1000)}"
@@ -887,6 +896,23 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}active_agents", alive_agent).strip(), "1")
         self.assertEqual(run_redis("SISMEMBER", f"{PREFIX}tag:sweeptest", alive_agent).strip(), "1")
 
+        # 4. Listener scan discovery across multiple listener keys
+        l_keys = []
+        for idx in range(5):
+            lk = f"{PREFIX}listener:agent_scan_{idx}"
+            run_redis("SET", lk, json.dumps({"pid": 999000 + idx, "host": "test-host", "started": 12345}))
+            l_keys.append(lk)
+
+        scan_res = run_eval(LUA_SWEEP, 0, PREFIX, "audit", "1")
+        scan_data = json.loads(scan_res)
+        found_agents = [l["agent"] for l in scan_data.get("listeners", [])]
+        for idx in range(5):
+            self.assertIn(f"agent_scan_{idx}", found_agents)
+
+        # Cleanup listeners
+        for lk in l_keys:
+            run_redis("DEL", lk)
+
         # Cleanup
         run_redis("SREM", f"{PREFIX}active_agents", alive_agent)
         run_redis("DEL", f"{PREFIX}agent:{alive_agent}")
@@ -922,7 +948,38 @@ class TestRedisA2AProtocol(unittest.TestCase):
 
         # Cleanup
         run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "charlie")
-        run_redis("DEL", f"{PREFIX}lock:fencing:{lock_name}")
+        run_redis("DEL", f"{PREFIX}lock:fencing:{{{lock_name}}}")
+
+    def test_30_redis_cluster_hash_tag_slot_affinity(self):
+        """Test that all multi-key Lua scripts enclose shared shard roots in {...} for Redis Cluster slot affinity."""
+        import re
+        hash_tag_pattern = re.compile(r"\{[^}]+\}")
+
+        # Check claim.lua keys
+        with open(os.path.join(SCRIPTS_DIR, "claim.lua")) as f:
+            claim_src = f.read()
+        self.assertIn("queue:{" , claim_src)
+        self.assertIn("leases:{" , claim_src)
+
+        # Check floor.lua keys
+        with open(os.path.join(SCRIPTS_DIR, "floor.lua")) as f:
+            floor_src = f.read()
+        self.assertIn("floor:{" , floor_src)
+
+        # Check ballot.lua keys
+        with open(os.path.join(SCRIPTS_DIR, "ballot.lua")) as f:
+            ballot_src = f.read()
+        self.assertIn("ballot:{" , ballot_src)
+
+        # Check workflow.lua keys
+        with open(os.path.join(SCRIPTS_DIR, "workflow.lua")) as f:
+            wf_src = f.read()
+        self.assertIn("workflow:{" , wf_src)
+
+        # Check blackboard.lua keys
+        with open(os.path.join(SCRIPTS_DIR, "blackboard.lua")) as f:
+            bb_src = f.read()
+        self.assertIn("blackboard:{" , bb_src)
 
 
 if __name__ == "__main__":

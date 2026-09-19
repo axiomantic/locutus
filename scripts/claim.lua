@@ -13,17 +13,17 @@ local agent = ARGV[3] or "unknown"
 local lease_sec = tonumber(ARGV[4]) or 120
 local max_retries = tonumber(ARGV[5]) or 3
 
-local queue_key = prefix .. "queue:" .. qname
-local leases_key = prefix .. "leases:" .. qname
-local dlq_key = prefix .. "queue:dlq:" .. qname
-local attempts_key = prefix .. "attempts:" .. qname
+local queue_key = prefix .. "queue:{" .. qname .. "}"
+local leases_key = prefix .. "leases:{" .. qname .. "}"
+local dlq_key = prefix .. "queue:dlq:{" .. qname .. "}"
+local attempts_key = prefix .. "attempts:{" .. qname .. "}"
 
 local now_ts = tonumber(redis.call('TIME')[1])
 
 -- 1. Auto-reclaim expired leases for this queue
 local expired = redis.call('ZRANGEBYSCORE', leases_key, '-inf', now_ts, 'LIMIT', 0, 20)
 for _, task_id in ipairs(expired) do
-    local active_key = prefix .. "active:" .. qname .. ":" .. task_id
+    local active_key = prefix .. "active:{" .. qname .. "}:" .. task_id
     local task_data = redis.call('GET', active_key)
     redis.call('ZREM', leases_key, task_id)
     redis.call('DEL', active_key)
@@ -58,7 +58,7 @@ end
 
 -- 4. Set active lease and expiration
 local expire_ts = now_ts + lease_sec
-local active_key = prefix .. "active:" .. qname .. ":" .. task_id
+local active_key = prefix .. "active:{" .. qname .. "}:" .. task_id
 redis.call('SET', active_key, task_json, 'EX', math.max(lease_sec * 4, 300))
 redis.call('ZADD', leases_key, expire_ts, task_id)
 redis.call('HSETNX', attempts_key, task_id, 1)

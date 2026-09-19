@@ -8,9 +8,9 @@ local prefix = ARGV[1]
 local qname = ARGV[2]
 local task_id = ARGV[3]
 
-local leases_key = prefix .. "leases:" .. qname
-local active_key = prefix .. "active:" .. qname .. ":" .. task_id
-local attempts_key = prefix .. "attempts:" .. qname
+local leases_key = prefix .. "leases:{" .. qname .. "}"
+local active_key = prefix .. "active:{" .. qname .. "}:" .. task_id
+local attempts_key = prefix .. "attempts:{" .. qname .. "}"
 
 local rem_lease = redis.call('ZREM', leases_key, task_id)
 local del_active = redis.call('DEL', active_key)

@@ -14,8 +14,8 @@ local key = ARGV[4] or ""
 local val = ARGV[5] or ""
 local ttl = tonumber(ARGV[6]) or 604800
 
-local kv_key = prefix .. "blackboard:" .. room .. ":kv"
-local lists_index = prefix .. "blackboard:" .. room .. ":lists"
+local kv_key = prefix .. "blackboard:{" .. room .. "}:kv"
+local lists_index = prefix .. "blackboard:{" .. room .. "}:lists"
 
 if action == "set" then
     redis.call('HSET', kv_key, key, val)
@@ -27,7 +27,7 @@ elseif action == "get" then
     if v then
         return v
     end
-    local list_key = prefix .. "blackboard:" .. room .. ":list:" .. key
+    local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     if redis.call('EXISTS', list_key) == 1 then
         local items = redis.call('LRANGE', list_key, 0, -1)
         return cjson.encode(items)
@@ -35,7 +35,7 @@ elseif action == "get" then
     return nil
 
 elseif action == "append" then
-    local list_key = prefix .. "blackboard:" .. room .. ":list:" .. key
+    local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     local len = redis.call('RPUSH', list_key, val)
     redis.call('EXPIRE', list_key, ttl)
     redis.call('SADD', lists_index, key)
@@ -44,7 +44,7 @@ elseif action == "append" then
 
 elseif action == "delete" or action == "del" then
     redis.call('HDEL', kv_key, key)
-    local list_key = prefix .. "blackboard:" .. room .. ":list:" .. key
+    local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     redis.call('DEL', list_key)
     redis.call('SREM', lists_index, key)
     return "OK"
@@ -52,7 +52,7 @@ elseif action == "delete" or action == "del" then
 elseif action == "clear" then
     local list_keys = redis.call('SMEMBERS', lists_index)
     for _, lk in ipairs(list_keys) do
-        redis.call('DEL', prefix .. "blackboard:" .. room .. ":list:" .. lk)
+        redis.call('DEL', prefix .. "blackboard:{" .. room .. "}:list:" .. lk)
     end
     redis.call('DEL', lists_index)
     redis.call('DEL', kv_key)
@@ -68,7 +68,7 @@ elseif action == "snapshot" then
     local lists_table = {}
     local list_keys = redis.call('SMEMBERS', lists_index)
     for _, lk in ipairs(list_keys) do
-        local items = redis.call('LRANGE', prefix .. "blackboard:" .. room .. ":list:" .. lk, 0, -1)
+        local items = redis.call('LRANGE', prefix .. "blackboard:{" .. room .. "}:list:" .. lk, 0, -1)
         lists_table[lk] = items
     end
 

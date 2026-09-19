@@ -12,20 +12,22 @@ if not role or role == "" then
     return redis.error_reply("ERR: Missing role")
 end
 
-local leader_key = prefix .. "leader:" .. role
-local leader_chan = prefix .. "channel:leader:" .. role
+local leader_key = prefix .. "leader:{" .. role .. "}"
+local leader_chan = prefix .. "channel:leader:{" .. role .. "}"
 
 if action == "acquire" then
     local agent = ARGV[4]
     local lease_sec = tonumber(ARGV[5]) or 30
     local ts = (ARGV[6] and ARGV[6] ~= "") and ARGV[6] or tostring(redis.call("TIME")[1])
+    local sig = (ARGV[7] and ARGV[7] ~= "") and ARGV[7] or ""
+    local force = ARGV[8] or ""
 
     if not agent or agent == "" then
         return redis.error_reply("ERR: Missing agent")
     end
 
     local existing = redis.call("GET", leader_key)
-    if existing then
+    if existing and force ~= "force" then
         local current_leader = ""
         local ok, data = pcall(cjson.decode, existing)
         if ok and data and data.leader then
@@ -35,7 +37,15 @@ if action == "acquire" then
         end
 
         if current_leader == agent then
-            redis.call("EXPIRE", leader_key, lease_sec)
+            local obj = {
+                role = role,
+                leader = agent,
+                acquired_at = ts,
+                lease_sec = lease_sec,
+                sig = sig
+            }
+            local payload = cjson.encode(obj)
+            redis.call("SET", leader_key, payload, "EX", lease_sec)
             return "ELECTED"
         else
             return "HELD:" .. current_leader
@@ -46,7 +56,8 @@ if action == "acquire" then
         role = role,
         leader = agent,
         acquired_at = ts,
-        lease_sec = lease_sec
+        lease_sec = lease_sec,
+        sig = sig
     }
     local payload = cjson.encode(obj)
     redis.call("SET", leader_key, payload, "EX", lease_sec)
@@ -56,6 +67,8 @@ if action == "acquire" then
 elseif action == "renew" then
     local agent = ARGV[4]
     local lease_sec = tonumber(ARGV[5]) or 30
+    local ts = (ARGV[6] and ARGV[6] ~= "") and ARGV[6] or tostring(redis.call("TIME")[1])
+    local sig = (ARGV[7] and ARGV[7] ~= "") and ARGV[7] or ""
 
     if not agent or agent == "" then
         return redis.error_reply("ERR: Missing agent")
@@ -78,7 +91,15 @@ elseif action == "renew" then
         return redis.error_reply("ERR: Not leader")
     end
 
-    redis.call("EXPIRE", leader_key, lease_sec)
+    local obj = {
+        role = role,
+        leader = agent,
+        acquired_at = ts,
+        lease_sec = lease_sec,
+        sig = sig
+    }
+    local payload = cjson.encode(obj)
+    redis.call("SET", leader_key, payload, "EX", lease_sec)
     return "RENEWED"
 
 elseif action == "resign" then

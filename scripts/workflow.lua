@@ -12,8 +12,8 @@ if not flow_id or flow_id == "" then
     return redis.error_reply("ERR: Missing flow_id")
 end
 
-local flow_key = prefix .. "workflow:" .. flow_id
-local flow_chan = prefix .. "channel:workflow:" .. flow_id
+local flow_key = prefix .. "workflow:{" .. flow_id .. "}"
+local flow_chan = prefix .. "channel:workflow:{" .. flow_id .. "}"
 
 local function plain_split(input, sep)
     local t = {}
@@ -110,14 +110,53 @@ if action == "define" then
             if #parts == 2 then
                 local child = parts[1]
                 local parents = plain_split(parts[2], ",")
-                if steps[child] then
-                    for _, p in ipairs(parents) do
-                        table.insert(steps[child].deps, p)
-                    end
-                    if #steps[child].deps > 0 then
-                        steps[child].status = "pending"
-                    end
+                if not steps[child] then
+                    return redis.error_reply("ERR: Unknown dependency step '" .. child .. "'")
                 end
+                for _, p in ipairs(parents) do
+                    if not steps[p] then
+                        return redis.error_reply("ERR: Unknown dependency step '" .. p .. "'")
+                    end
+                    if p == child then
+                        return redis.error_reply("ERR: Cycle detected in workflow dependencies")
+                    end
+                    table.insert(steps[child].deps, p)
+                end
+                if #steps[child].deps > 0 then
+                    steps[child].status = "pending"
+                end
+            end
+        end
+    end
+
+    -- Cycle detection via DFS topological traversal
+    local visited = {}
+    local rec_stack = {}
+
+    local function check_cycle(node)
+        visited[node] = true
+        rec_stack[node] = true
+
+        if steps[node] and steps[node].deps then
+            for _, parent in ipairs(steps[node].deps) do
+                if not visited[parent] then
+                    if check_cycle(parent) then
+                        return true
+                    end
+                elseif rec_stack[parent] then
+                    return true
+                end
+            end
+        end
+
+        rec_stack[node] = false
+        return false
+    end
+
+    for _, name in ipairs(step_order) do
+        if not visited[name] then
+            if check_cycle(name) then
+                return redis.error_reply("ERR: Cycle detected in workflow dependencies")
             end
         end
     end

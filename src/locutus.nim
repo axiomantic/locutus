@@ -809,7 +809,10 @@ proc doEnqueue*(cfg: LocutusConfig, queueName, msgType, fromAgent, subject, body
 
 proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1) =
   let secret = getSecret(cfg)
-  let queueKey = cfg.prefix & "queue:" & queueName
+  let queueKey = if queueName.startsWith("dlq:"):
+                   cfg.prefix & "queue:dlq:{" & queueName[4..^1] & "}"
+                 else:
+                   cfg.prefix & "queue:{" & queueName & "}"
   let isForever = (timeoutSec <= 0 and (timeoutSec == 0 or cfg.listenTimeout <= 0))
   let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: (if cfg.listenTimeout > 0: cfg.listenTimeout else: 60)
   let startTime = getTime().toUnix()
@@ -973,12 +976,96 @@ proc doAck*(cfg: LocutusConfig, queueName, taskId: string): int =
     stderr.writeLine("Warning: Task " & taskId & " not found or already acknowledged.")
   return res
 
+proc decryptBlackboardValue(raw: string, secret: string, cfg: LocutusConfig, contextMsg: string): string =
+  if not raw.startsWith("aes256:"):
+    return raw
+  let parts = raw.split(":")
+  if parts.len >= 3:
+    let sig = parts[1]
+    let cipher = parts[2..^1].join(":")
+    if not verifyHmac(secret, cipher, sig):
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered blackboard entry: " & contextMsg)
+      quit(1)
+    try:
+      return decryptAes(cipher, secret, cfg)
+    except ValueError as e:
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted blackboard entry: " & e.msg)
+      quit(1)
+  elif parts.len == 2:
+    try:
+      return decryptAes(parts[1], secret, cfg)
+    except ValueError as e:
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping corrupted blackboard entry: " & e.msg)
+      quit(1)
+  return raw
+
 proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", val: string = ""): string =
   let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
-  let res = runLuaScript(cfg.redisUrl, blackboardLua, blackboardSha, [cfg.prefix, action, room, key, val, $effectiveTtl])
+  let secret = getSecret(cfg)
+  var finalVal = val
+  if cfg.encrypt and (action == "set" or action == "append") and val.len > 0:
+    let cipher = encryptAes(val, secret, cfg)
+    let sig = computeHmacSha256(secret, cipher)
+    finalVal = "aes256:" & sig & ":" & cipher
+
+  let res = runLuaScript(cfg.redisUrl, blackboardLua, blackboardSha, [cfg.prefix, action, room, key, finalVal, $effectiveTtl])
   if res == "(nil)":
     return ""
-  return res.strip()
+
+  let trimmed = res.strip()
+  if action == "get":
+    if trimmed.startsWith("aes256:"):
+      return decryptBlackboardValue(trimmed, secret, cfg, "room: " & room & ", key: " & key)
+    elif trimmed.startsWith("["):
+      try:
+        let j = parseJson(trimmed)
+        if j.kind == JArray:
+          var decryptedArr = newJArray()
+          for item in j.elems:
+            let s = item.getStr("")
+            if s.startsWith("aes256:"):
+              decryptedArr.add(%decryptBlackboardValue(s, secret, cfg, "room: " & room & ", key: " & key))
+            else:
+              decryptedArr.add(item)
+          return $decryptedArr
+      except JsonParsingError:
+        discard
+    return trimmed
+
+  elif action == "snapshot":
+    try:
+      var j = parseJson(trimmed)
+      if j.hasKey("kv") and j["kv"].kind == JObject:
+        var newKv = newJObject()
+        for k, v in j["kv"].pairs:
+          let s = v.getStr("")
+          if s.startsWith("aes256:"):
+            newKv[k] = %decryptBlackboardValue(s, secret, cfg, "room: " & room & ", key: " & k)
+          else:
+            newKv[k] = v
+        j["kv"] = newKv
+
+      if j.hasKey("lists") and j["lists"].kind == JObject:
+        var newLists = newJObject()
+        for lk, lv in j["lists"].pairs:
+          if lv.kind == JArray:
+            var newArr = newJArray()
+            for item in lv.elems:
+              let s = item.getStr("")
+              if s.startsWith("aes256:"):
+                newArr.add(%decryptBlackboardValue(s, secret, cfg, "room: " & room & ", list: " & lk))
+              else:
+                newArr.add(item)
+            newLists[lk] = newArr
+          else:
+            newLists[lk] = lv
+        j["lists"] = newLists
+      return $j
+    except JsonParsingError:
+      return trimmed
+
+  return trimmed
+
 
 proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int = 0, leaseSec: int = 60) =
   let startTime = getTime().toUnix()
@@ -1006,7 +1093,7 @@ proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int =
     remaining = max(0, waitSec - elapsed)
 
   # Dequeue from waiters list on timeout to prevent stale waiter hijacking subsequent yields
-  discard execRedis(cfg.redisUrl, ["LREM", cfg.prefix & "floor:" & room & ":waiters", "0", agentName])
+  discard execRedis(cfg.redisUrl, ["LREM", cfg.prefix & "floor:{" & room & "}:waiters", "0", agentName])
 
   let holder = if res.startsWith("BUSY:"): res[5..^1] else: "unknown"
   stderr.writeLine("Timeout waiting for floor in " & room & ". Currently held by " & holder)
@@ -1033,8 +1120,11 @@ proc doFloorStatus*(cfg: LocutusConfig, room: string) =
   echo res
 
 proc doCancelSet*(cfg: LocutusConfig, runId, reason, byAgent: string, ttlSec: int = 3600) =
+  let secret = getSecret(cfg)
   let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
-  let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "cancel", runId, reason, byAgent, $ttlSec, ts])
+  let canonical = runId & "|" & reason & "|" & byAgent & "|" & ts
+  let sig = computeHmacSha256(secret, canonical)
+  let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "cancel", runId, reason, byAgent, $ttlSec, ts, sig])
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
@@ -1044,6 +1134,7 @@ proc doCancelSet*(cfg: LocutusConfig, runId, reason, byAgent: string, ttlSec: in
   n["reason"] = %reason
   n["by"] = %byAgent
   n["timestamp"] = %ts
+  n["sig"] = %sig
   n["cancelled"] = %true
   echo $n
 
@@ -1054,14 +1145,29 @@ proc doCancelCheck*(cfg: LocutusConfig, runId: string, rawOutput: bool = false, 
       quit(1)
     return
 
-  if rawOutput:
-    try:
-      let parsed = parseJson(res)
-      echo parsed.getOrDefault("reason").getStr("")
-    except JsonParsingError:
+  try:
+    let parsed = parseJson(res)
+    let secret = getSecret(cfg)
+    let reason = parsed.getOrDefault("reason").getStr("")
+    let byAgent = parsed.getOrDefault("by").getStr("")
+    let ts = parsed.getOrDefault("timestamp").getStr("")
+    let sig = parsed.getOrDefault("sig").getStr("")
+    let canonical = runId & "|" & reason & "|" & byAgent & "|" & ts
+
+    if sig.len == 0 or not verifyHmac(secret, canonical, sig):
+      stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered cancellation token (run_id: " & runId & ")")
+      if exitCodeOnUncancelled:
+        quit(1)
+      return
+
+    if rawOutput:
+      echo reason
+    else:
       echo res
-  else:
-    echo res
+  except JsonParsingError:
+    if exitCodeOnUncancelled:
+      quit(1)
+    return
 
 proc doCancelClear*(cfg: LocutusConfig, runId: string) =
   let res = runLuaScript(cfg.redisUrl, cancelLua, cancelSha, [cfg.prefix, "clear", runId])
@@ -1079,7 +1185,11 @@ proc doBallotOpen*(cfg: LocutusConfig, ballotId, options, voters: string, ttlSec
   echo res
 
 proc doBallotCast*(cfg: LocutusConfig, ballotId, voter, choice: string) =
-  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "cast", ballotId, voter, choice])
+  let secret = getSecret(cfg)
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let canonical = voter & "|" & ballotId & "|" & choice & "|" & ts
+  let sig = computeHmacSha256(secret, canonical)
+  let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "cast", ballotId, voter, choice, sig, ts])
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
@@ -1091,14 +1201,60 @@ proc doBallotTally*(cfg: LocutusConfig, ballotId: string, closeBallot: bool = fa
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
-  if rawOutput:
-    try:
-      let parsed = parseJson(res)
-      echo parsed.getOrDefault("winner").getStr("")
-    except JsonParsingError:
-      echo res
-  else:
+
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(res)
+  except JsonParsingError:
     echo res
+    return
+
+  let secret = getSecret(cfg)
+  var verifiedTally = newJObject()
+  var verifiedTotal = 0
+
+  if parsed.hasKey("tally") and parsed["tally"].kind == JObject:
+    for k, _ in parsed["tally"].pairs:
+      verifiedTally[k] = %0
+
+  if parsed.hasKey("votes") and parsed["votes"].kind == JObject:
+    for voter, vInfo in parsed["votes"].pairs:
+      let choice = vInfo.getOrDefault("choice").getStr("")
+      let sigEntry = vInfo.getOrDefault("sig_entry").getStr("")
+      var valid = false
+      if sigEntry.len > 0 and "|" in sigEntry:
+        let p = sigEntry.split("|")
+        if p.len >= 2:
+          let sig = p[0]
+          let ts = p[1..^1].join("|")
+          let canonical = voter & "|" & ballotId & "|" & choice & "|" & ts
+          if verifyHmac(secret, canonical, sig):
+            valid = true
+
+      if valid:
+        verifiedTotal.inc
+        let curr = verifiedTally.getOrDefault(choice).getInt(0)
+        verifiedTally[choice] = %(curr + 1)
+      else:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Discarding unauthenticated/tampered vote from voter: " & voter)
+
+    parsed["total_votes"] = %verifiedTotal
+    parsed["tally"] = verifiedTally
+
+    var maxCount = -1
+    var winner = ""
+    for k, v in verifiedTally.pairs:
+      let cnt = v.getInt(0)
+      if cnt > maxCount:
+        maxCount = cnt
+        winner = k
+    parsed["winner"] = %winner
+    parsed.delete("votes")
+
+  if rawOutput:
+    echo parsed.getOrDefault("winner").getStr("")
+  else:
+    echo $parsed
 
 proc doBallotStatus*(cfg: LocutusConfig, ballotId: string) =
   let res = runLuaScript(cfg.redisUrl, ballotLua, ballotSha, [cfg.prefix, "status", ballotId])
@@ -1108,15 +1264,39 @@ proc doBallotStatus*(cfg: LocutusConfig, ballotId: string) =
   echo res
 
 proc doLeaderAcquire*(cfg: LocutusConfig, role, agentName: string, leaseSec: int = 30) =
+  let secret = getSecret(cfg)
   let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
-  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts])
+  let canonical = role & "|" & agentName & "|" & ts & "|" & $leaseSec
+  let sig = computeHmacSha256(secret, canonical)
+  var res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts, sig])
+  if res.startsWith("HELD:"):
+    let (existing, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "leader:{" & role & "}"])
+    if code == 0 and existing.len > 0 and existing != "(nil)":
+      try:
+        let parsed = parseJson(existing)
+        let exLeader = parsed.getOrDefault("leader").getStr("")
+        let exTs = parsed.getOrDefault("acquired_at").getStr("")
+        let exLease = parsed.getOrDefault("lease_sec").getInt(0)
+        let exSig = parsed.getOrDefault("sig").getStr("")
+        let exCanonical = role & "|" & exLeader & "|" & exTs & "|" & $exLease
+        if exSig.len == 0 or not verifyHmac(secret, exCanonical, exSig):
+          stderr.writeLine("[LOCUTUS SECURITY] WARNING: Preempting unauthenticated/forged leader key for role: " & role)
+          res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts, sig, "force"])
+      except JsonParsingError:
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Preempting corrupt leader key for role: " & role)
+        res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts, sig, "force"])
+
   if res.startsWith("HELD:") or res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
   echo res
 
 proc doLeaderRenew*(cfg: LocutusConfig, role, agentName: string, leaseSec: int = 30) =
-  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "renew", role, agentName, $leaseSec])
+  let secret = getSecret(cfg)
+  let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+  let canonical = role & "|" & agentName & "|" & ts & "|" & $leaseSec
+  let sig = computeHmacSha256(secret, canonical)
+  let res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "renew", role, agentName, $leaseSec, ts, sig])
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
@@ -1134,7 +1314,29 @@ proc doLeaderStatus*(cfg: LocutusConfig, role: string) =
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
-  echo res
+
+  try:
+    let parsed = parseJson(res)
+    let secret = getSecret(cfg)
+    let leader = parsed.getOrDefault("leader").getStr("")
+    let status = parsed.getOrDefault("status").getStr("")
+    if status == "active" and leader.len > 0:
+      let exTs = parsed.getOrDefault("acquired_at").getStr("")
+      let exLease = parsed.getOrDefault("lease_sec").getInt(0)
+      let exSig = parsed.getOrDefault("sig").getStr("")
+      let canonical = role & "|" & leader & "|" & exTs & "|" & $exLease
+      if exSig.len == 0 or not verifyHmac(secret, canonical, exSig):
+        stderr.writeLine("[LOCUTUS SECURITY] WARNING: Dropping unauthenticated/tampered leader key for role: " & role)
+        var vacant = newJObject()
+        vacant["role"] = %role
+        vacant["leader"] = %""
+        vacant["status"] = %"vacant"
+        vacant["ttl"] = %0
+        echo $vacant
+        return
+    echo res
+  except JsonParsingError:
+    echo res
 
 proc doWorkflowDefine*(cfg: LocutusConfig, flowId, steps, deps: string, ttlSec: int = 86400) =
   let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
@@ -1162,7 +1364,11 @@ proc doWorkflowNext*(cfg: LocutusConfig, flowId: string, rawOutput: bool = false
 
 proc doWorkflowResolve*(cfg: LocutusConfig, flowId, step, output: string, rawOutput: bool = false) =
   let ts = now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
-  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "resolve", flowId, step, output, ts])
+  let secret = getSecret(cfg)
+  var finalOutput = output
+  if cfg.encrypt and output.len > 0:
+    finalOutput = "aes256:" & encryptAes(output, secret, cfg)
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "resolve", flowId, step, finalOutput, ts])
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
@@ -1189,17 +1395,37 @@ proc doWorkflowStatus*(cfg: LocutusConfig, flowId: string, rawOutput: bool = fal
   if res.startsWith("ERR:"):
     stderr.writeLine(res)
     quit(1)
+
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(res)
+    let secret = getSecret(cfg)
+    if parsed.hasKey("steps") and parsed["steps"].kind == JObject:
+      for stepName, stepObj in parsed["steps"].pairs:
+        if stepObj.hasKey("output"):
+          let outStr = stepObj["output"].getStr("")
+          if outStr.startsWith("aes256:"):
+            try:
+              stepObj["output"] = %decryptAes(outStr[7..^1], secret, cfg)
+            except ValueError:
+              discard
+  except JsonParsingError:
+    if rawOutput:
+      echo res
+    else:
+      echo res
+    return
+
   if rawOutput:
     try:
-      let n = parseJson(res)
-      if n.hasKey("status"):
-        echo n["status"].getStr()
+      if parsed.hasKey("status"):
+        echo parsed["status"].getStr()
       else:
-        echo res
+        echo $parsed
     except CatchableError:
       echo res
   else:
-    echo res
+    echo $parsed
 
 proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false) =
   let action = if dryRun: "audit" else: "prune"

@@ -12,8 +12,8 @@ local owner = ARGV[3]
 local ttl = tonumber(ARGV[4]) or 30
 local with_fencing = ARGV[5] == "1"
 
-local key = prefix .. "lock:" .. lock_name
-local fencing_key = prefix .. "lock:fencing:" .. lock_name
+local key = prefix .. "lock:{" .. lock_name .. "}"
+local fencing_key = prefix .. "lock:fencing:{" .. lock_name .. "}"
 
 local ok = redis.call('SET', key, owner, 'NX', 'EX', ttl)
 if ok then

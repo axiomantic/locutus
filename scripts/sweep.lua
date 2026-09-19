@@ -38,14 +38,18 @@ for _, agent in ipairs(active_agents) do
     end
 end
 
-local listener_keys = redis.call("KEYS", prefix .. "listener:*")
+local cursor = "0"
 local listeners = {}
-
-for _, lk in ipairs(listener_keys) do
-    local agent = string.sub(lk, string.len(prefix .. "listener:") + 1)
-    local val = redis.call("GET", lk)
-    table.insert(listeners, { agent = agent, key = lk, data = val or "" })
-end
+repeat
+    local scan_res = redis.call("SCAN", cursor, "MATCH", prefix .. "listener:*", "COUNT", 100)
+    cursor = scan_res[1]
+    local keys = scan_res[2]
+    for _, lk in ipairs(keys) do
+        local agent = string.sub(lk, string.len(prefix .. "listener:") + 1)
+        local val = redis.call("GET", lk)
+        table.insert(listeners, { agent = agent, key = lk, data = val or "" })
+    end
+until cursor == "0"
 
 local listeners_parts = {}
 for _, l in ipairs(listeners) do

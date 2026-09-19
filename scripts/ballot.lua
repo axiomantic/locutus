@@ -12,8 +12,8 @@ if not ballot_id or ballot_id == "" then
     return redis.error_reply("ERR: Missing ballot_id")
 end
 
-local meta_key = prefix .. "ballot:" .. ballot_id
-local votes_key = prefix .. "ballot:votes:" .. ballot_id
+local meta_key = prefix .. "ballot:{" .. ballot_id .. "}"
+local votes_key = prefix .. "ballot:votes:{" .. ballot_id .. "}"
 
 local function split(str, sep)
     local t = {}
@@ -91,7 +91,17 @@ elseif action == "cast" then
         end
     end
 
+    local sig = (ARGV[6] and ARGV[6] ~= "") and ARGV[6] or ""
+    local ts = (ARGV[7] and ARGV[7] ~= "") and ARGV[7] or tostring(redis.call("TIME")[1])
     redis.call("HSET", votes_key, voter, choice)
+    local sigs_key = prefix .. "ballot:votes_sig:{" .. ballot_id .. "}"
+    if sig ~= "" then
+        redis.call("HSET", sigs_key, voter, sig .. "|" .. ts)
+        local ttl = redis.call("TTL", meta_key)
+        if ttl > 0 then
+            redis.call("EXPIRE", sigs_key, ttl)
+        end
+    end
     return "VOTED"
 
 elseif action == "tally" then
@@ -113,10 +123,15 @@ elseif action == "tally" then
         tally[opt] = 0
     end
 
+    local sigs_key = prefix .. "ballot:votes_sig:{" .. ballot_id .. "}"
     local raw_votes = redis.call("HGETALL", votes_key)
     local total_votes = 0
+    local vote_entries = {}
     for i = 1, #raw_votes, 2 do
+        local voter = raw_votes[i]
         local choice = raw_votes[i + 1]
+        local sig_entry = redis.call("HGET", sigs_key, voter) or ""
+        vote_entries[voter] = { choice = choice, sig_entry = sig_entry }
         tally[choice] = (tally[choice] or 0) + 1
         total_votes = total_votes + 1
     end
@@ -136,7 +151,8 @@ elseif action == "tally" then
         status = status,
         total_votes = total_votes,
         tally = tally,
-        winner = winner
+        winner = winner,
+        votes = vote_entries
     }
     return cjson.encode(res)
 

@@ -13,9 +13,9 @@ local action = ARGV[2]
 local room = ARGV[3] or "default"
 local agent = ARGV[4] or ""
 
-local holder_key = prefix .. "floor:" .. room .. ":holder"
-local waiters_key = prefix .. "floor:" .. room .. ":waiters"
-local channel = prefix .. "channel:floor:" .. room
+local holder_key = prefix .. "floor:{" .. room .. "}:holder"
+local waiters_key = prefix .. "floor:{" .. room .. "}:waiters"
+local channel = prefix .. "channel:floor:{" .. room .. "}"
 
 if action == "request" then
     local lease_sec = tonumber(ARGV[5]) or 60

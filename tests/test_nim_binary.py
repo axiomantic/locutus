@@ -1566,6 +1566,59 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(snap_empty["kv"], {})
         self.assertEqual(snap_empty["lists"], {})
 
+    def test_47b_blackboard_encryption_and_tamper_detection(self):
+        """Test blackboard transparent encryption with LOCUTUS_ENCRYPT=1 and HMAC verification."""
+        room = f"enc_room_{int(time.time() * 1000)}"
+        enc_env = {"LOCUTUS_ENCRYPT": "1"}
+
+        # 1. Set key-value with encryption
+        res_set = self.run_locutus(["blackboard", "set", room, "secret_cfg", '{"db_pass": "supersecret"}'], env_overrides=enc_env)
+        self.assertEqual(res_set.returncode, 0)
+
+        # Verify stored value in Redis is encrypted (not plaintext) and has aes256 header
+        raw_res = subprocess.run(["redis-cli", "-u", REDIS_URL, "HGET", f"{TEST_PREFIX}blackboard:{{{room}}}:kv", "secret_cfg"], capture_output=True, text=True, check=True)
+        raw_in_redis = raw_res.stdout.strip()
+        self.assertNotIn("supersecret", raw_in_redis)
+        self.assertTrue(raw_in_redis.startswith("aes256:"))
+
+        # Verify get transparently decrypts
+        res_get = self.run_locutus(["blackboard", "get", room, "secret_cfg"], env_overrides=enc_env)
+        self.assertEqual(res_get.returncode, 0)
+        self.assertEqual(json.loads(res_get.stdout.strip()), {"db_pass": "supersecret"})
+
+        # 2. Append to list with encryption
+        res_app1 = self.run_locutus(["blackboard", "append", room, "items", "encrypted_item_1"], env_overrides=enc_env)
+        self.assertEqual(res_app1.returncode, 0)
+        res_app2 = self.run_locutus(["blackboard", "append", room, "items", "encrypted_item_2"], env_overrides=enc_env)
+        self.assertEqual(res_app2.returncode, 0)
+
+        # Verify Redis raw list items are encrypted
+        raw_list = subprocess.run(["redis-cli", "-u", REDIS_URL, "LRANGE", f"{TEST_PREFIX}blackboard:{{{room}}}:list:items", "0", "-1"], capture_output=True, text=True, check=True)
+        self.assertNotIn("encrypted_item_1", raw_list.stdout)
+        self.assertIn("aes256:", raw_list.stdout)
+
+        # Verify get list decrypts items
+        res_get_list = self.run_locutus(["blackboard", "get", room, "items"], env_overrides=enc_env)
+        self.assertEqual(res_get_list.returncode, 0)
+        self.assertEqual(json.loads(res_get_list.stdout.strip()), ["encrypted_item_1", "encrypted_item_2"])
+
+        # 3. Snapshot decrypts kv and lists
+        res_snap = self.run_locutus(["blackboard", "snapshot", room], env_overrides=enc_env)
+        self.assertEqual(res_snap.returncode, 0)
+        snap = json.loads(res_snap.stdout.strip())
+        self.assertEqual(snap["kv"]["secret_cfg"], '{"db_pass": "supersecret"}')
+        self.assertEqual(snap["lists"]["items"], ["encrypted_item_1", "encrypted_item_2"])
+
+        # 4. Tamper detection: modify signature or payload in Redis
+        parts = raw_in_redis.split(":")
+        # Corrupt the ciphertext
+        corrupted = f"{parts[0]}:{parts[1]}:bad_ciphertext"
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "HSET", f"{TEST_PREFIX}blackboard:{{{room}}}:kv", "secret_cfg", corrupted], check=True)
+        res_tampered = self.run_locutus(["blackboard", "get", room, "secret_cfg"], env_overrides=enc_env)
+        # Should fail with nonzero exit code or tamper warning
+        self.assertNotEqual(res_tampered.returncode, 0)
+        self.assertIn("tampered", (res_tampered.stderr + res_tampered.stdout).lower())
+
     def test_48_floor_control_ring(self):
         """Test 'locutus floor' (request, yield, pass, status, waiter queue)."""
         room = f"floor_room_{int(time.time() * 1000)}"
@@ -1656,6 +1709,8 @@ secret = "my_inline_secret_test_555"
         self.assertTrue(c_data.get("cancelled"))
         self.assertEqual(c_data.get("run_id"), run_id)
         self.assertEqual(c_data.get("reason"), "User requested abort")
+        self.assertIn("sig", c_data)
+        self.assertEqual(len(c_data["sig"]), 64)
 
         # 4. Check on cancelled run: returns JSON and code 0
         res_chk = self.run_locutus(["cancel", "check", run_id])
@@ -1663,6 +1718,7 @@ secret = "my_inline_secret_test_555"
         chk_data = json.loads(res_chk.stdout.strip())
         self.assertTrue(chk_data.get("cancelled"))
         self.assertEqual(chk_data.get("reason"), "User requested abort")
+        self.assertEqual(chk_data.get("sig"), c_data["sig"])
 
         # 5. Check with --raw: prints bare reason
         res_raw = self.run_locutus(["cancel", "check", run_id, "--raw"])
@@ -1672,6 +1728,21 @@ secret = "my_inline_secret_test_555"
         # 6. Check with --exit-code on cancelled run: returns code 0
         res_chk_exit0 = self.run_locutus(["cancel", "check", run_id, "--exit-code"])
         self.assertEqual(res_chk_exit0.returncode, 0)
+
+        # 6b. Test rejection of tampered/forged cancellation token
+        forged_run = f"forged_{int(time.time() * 1000)}"
+        forged_payload = json.dumps({
+            "run_id": forged_run,
+            "reason": "Forged malicious abort",
+            "by": "attacker",
+            "timestamp": "2026-09-19T00:00:00Z",
+            "sig": "0000000000000000000000000000000000000000000000000000000000000000",
+            "cancelled": True
+        })
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "SET", f"{TEST_PREFIX}cancel:{forged_run}", forged_payload], check=True)
+        res_chk_forged = self.run_locutus(["cancel", "check", forged_run, "--exit-code"])
+        self.assertEqual(res_chk_forged.returncode, 1)
+        self.assertIn("tampered", (res_chk_forged.stderr + res_chk_forged.stdout).lower())
 
         # 7. Clear the cancellation token
         res_clear = self.run_locutus(["cancel", "clear", run_id])
@@ -1748,6 +1819,23 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(res_tally_raw.returncode, 0)
         self.assertEqual(res_tally_raw.stdout.strip(), "sqlite")
 
+        # 7. Tamper verification on a new ballot
+        ballot_id2 = f"ballot_sec_{int(time.time() * 1000)}"
+        self.run_locutus(["ballot", "open", ballot_id2, "--options", "a,b"])
+        # Cast legitimate vote for 'a'
+        res_legit = self.run_locutus(["ballot", "cast", ballot_id2, "--voter", "agent1", "--vote", "a"])
+        self.assertEqual(res_legit.returncode, 0)
+        # Attacker forges an unauthenticated vote for 'b' in Redis
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "HSET", f"{TEST_PREFIX}ballot:votes:{{{ballot_id2}}}", "rogue_voter", "b"], check=True)
+        # Tally should discard the forged vote from rogue_voter
+        res_tally2 = self.run_locutus(["ballot", "tally", ballot_id2])
+        self.assertEqual(res_tally2.returncode, 0)
+        self.assertIn("tampered", (res_tally2.stderr + res_tally2.stdout).lower())
+        tally2_data = json.loads(res_tally2.stdout.strip())
+        self.assertEqual(tally2_data["total_votes"], 1)
+        self.assertEqual(tally2_data["winner"], "a")
+        self.assertEqual(tally2_data["tally"].get("b", 0), 0)
+
     def test_51_leader_election(self):
         """Test leader election via lease preemption ('locutus leader')."""
         role = f"role_{int(time.time() * 1000)}"
@@ -1777,6 +1865,8 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(st["role"], role)
         self.assertEqual(st["leader"], "lead1")
         self.assertEqual(st["status"], "active")
+        self.assertIn("sig", st)
+        self.assertEqual(len(st["sig"]), 64)
 
         # 4. Lead 1 renews lease
         res_ren = self.run_locutus([
@@ -1810,6 +1900,33 @@ secret = "my_inline_secret_test_555"
             "--lease", "10"
         ])
         self.assertEqual(res_acq2.returncode, 0)
+        self.assertIn("ELECTED", res_acq2.stdout)
+
+        # 7. Test rejection of forged leader key
+        forged_role = f"forged_role_{int(time.time() * 1000)}"
+        forged_payload = json.dumps({
+            "role": forged_role,
+            "leader": "impostor",
+            "acquired_at": "2026-09-19T00:00:00Z",
+            "lease_sec": 60,
+            "sig": "0000000000000000000000000000000000000000000000000000000000000000"
+        })
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "SET", f"{TEST_PREFIX}leader:{{{forged_role}}}", forged_payload], check=True)
+        res_st_forged = self.run_locutus(["leader", "status", forged_role])
+        self.assertEqual(res_st_forged.returncode, 0)
+        self.assertIn("tampered", (res_st_forged.stderr + res_st_forged.stdout).lower())
+        st_forged = json.loads(res_st_forged.stdout.strip())
+        self.assertEqual(st_forged["status"], "vacant")
+
+        # Legitimate agent can preempt/evict forged leader
+        res_preempt = self.run_locutus([
+            "leader", "acquire", forged_role,
+            "--agent", "legit_leader",
+            "--lease", "10"
+        ])
+        self.assertEqual(res_preempt.returncode, 0)
+        self.assertIn("ELECTED", res_preempt.stdout)
+
     def test_52_workflow_dag_engine(self):
         """Test DAG workflow engine ('locutus workflow')."""
         flow_id = f"flow_cli_{int(time.time() * 1000)}"
@@ -1868,10 +1985,61 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(st_data["status"], "completed")
         self.assertEqual(st_data["steps"]["lint"]["output"], "all checks passed")
 
+        # 8. Test cycle rejection in CLI
+        res_cycle = self.run_locutus([
+            "workflow", "define", f"flow_cyc_{int(time.time()*1000)}",
+            "--steps", "a,b",
+            "--deps", "a:b;b:a"
+        ])
+        self.assertEqual(res_cycle.returncode, 1)
+        self.assertIn("Cycle detected", res_cycle.stderr + res_cycle.stdout)
+
+        # 9. Test dangling dependency rejection in CLI
+        res_dangle = self.run_locutus([
+            "workflow", "define", f"flow_dan_{int(time.time()*1000)}",
+            "--steps", "build",
+            "--deps", "build:compile"
+        ])
+        self.assertEqual(res_dangle.returncode, 1)
+        self.assertIn("Unknown dependency step 'compile'", res_dangle.stderr + res_dangle.stdout)
+
         # Status with --raw
         res_st_raw = self.run_locutus(["workflow", "status", flow_id, "--raw"])
         self.assertEqual(res_st_raw.returncode, 0)
         self.assertEqual(res_st_raw.stdout.strip(), "completed")
+
+    def test_52b_workflow_encryption(self):
+        """Test transparent encryption of workflow step outputs."""
+        flow_id = f"flow_enc_{int(time.time() * 1000)}"
+        enc_env = {"LOCUTUS_ENCRYPT": "1"}
+
+        # Define DAG
+        res_def = self.run_locutus([
+            "workflow", "define", flow_id,
+            "--steps", "step1,step2",
+            "--deps", "step2:step1"
+        ], env_overrides=enc_env)
+        self.assertEqual(res_def.returncode, 0)
+
+        # Resolve step1 with sensitive output
+        secret_output = "confidential_api_token_9999"
+        res_res = self.run_locutus([
+            "workflow", "resolve", flow_id, "step1",
+            "--output", secret_output
+        ], env_overrides=enc_env)
+        self.assertEqual(res_res.returncode, 0)
+
+        # Verify raw data in Redis contains ciphertext and aes256 header, not plaintext
+        raw_res = subprocess.run(["redis-cli", "-u", REDIS_URL, "GET", f"{TEST_PREFIX}workflow:{{{flow_id}}}"], capture_output=True, text=True, check=True)
+        raw_in_redis = raw_res.stdout.strip()
+        self.assertNotIn(secret_output, raw_in_redis)
+        self.assertIn("aes256:", raw_in_redis)
+
+        # Verify workflow status transparently decrypts the step output
+        res_st = self.run_locutus(["workflow", "status", flow_id], env_overrides=enc_env)
+        self.assertEqual(res_st.returncode, 0)
+        st_data = json.loads(res_st.stdout.strip())
+        self.assertEqual(st_data["steps"]["step1"]["output"], secret_output)
 
     def test_53_cluster_sweep(self):
         """Test cluster health watchdog and sweeper ('locutus sweep')."""
