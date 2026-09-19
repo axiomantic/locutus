@@ -17,7 +17,7 @@ if not LLM_API_BASE:
         LLM_API_BASE = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 
 if LLM_API_KEY:
-    DEFAULT_MODEL = "deepseek/deepseek-chat:free"
+    DEFAULT_MODEL = "deepseek/deepseek-chat"
 else:
     DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 

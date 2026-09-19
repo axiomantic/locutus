@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: 'LLM Model to test with on OpenRouter (e.g. deepseek/deepseek-chat:free or nvidia/nemotron-3-nano-omni:free)'
+        description: 'LLM Model to test with on OpenRouter (e.g. deepseek/deepseek-chat or nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free)'
         required: false
-        default: 'deepseek/deepseek-chat:free'
+        default: 'deepseek/deepseek-chat'
 
 jobs:
   llm-integration:
@@ -86,6 +86,6 @@ jobs:
             echo "For fork PRs, approval on the 'llm-ci' environment is required to access repository secrets."
             exit 1
           fi
-          export LLM_MODEL="${LLM_MODEL:-deepseek/deepseek-chat:free}"
+          export LLM_MODEL="${LLM_MODEL:-deepseek/deepseek-chat}"
           python -m pytest -v -m llm -s
 

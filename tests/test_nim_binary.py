@@ -529,7 +529,7 @@ encrypt = true
             self.assertEqual(data["heartbeat_ttl"]["value"], "150")
             self.assertEqual(data["message_ttl"]["value"], "604800")
             self.assertEqual(data["listen_timeout"]["value"], "90")
-            self.assertEqual(data["secret_file"]["value"], os.path.expanduser("~/.config/locutus/secret"))
+            self.assertEqual(os.path.normpath(data["secret_file"]["value"]), os.path.normpath(os.path.expanduser("~/.config/locutus/secret")))
 
             # 2. Staging profile verification
             res_stg = self.run_locutus(["--profile", "staging", "config", "show", "--json"], env_overrides=clean_env, cwd=tmp_dir)

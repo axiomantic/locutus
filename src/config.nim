@@ -57,9 +57,12 @@ proc unquote(s: string): string =
 
 # Expand tilde in path
 proc expandPathSafe*(p: string): string =
-  if p.startsWith("~" & $DirSep) or p == "~":
+  if p.startsWith("~" & $DirSep) or p.startsWith("~/") or p == "~":
     let home = getHomeDir()
-    return home / p[1..^1].strip(chars = {DirSep})
+    let rest = p[1..^1].strip(chars = {'/', '\\', DirSep})
+    if rest.len == 0:
+      return normalizedPath(home)
+    return normalizedPath(home / rest)
   return p
 
 # Standard configuration paths
