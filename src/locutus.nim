@@ -3,15 +3,14 @@
 # Embeds Lua scripts at compile time and utilizes EVALSHA caching with automatic EVAL fallback.
 
 import std/[
-  os, osproc, strutils, json, openssl,
+  os, osproc, strutils, json, openssl, sha1,
   times, random, streams
 ]
 
 # OpenSSL C-bindings for native cryptographic operations
-proc SHA1*(d: cstring, n: csize_t, md: pointer): pointer {.cdecl, importc: "SHA1", dynlib: DLLSSLName.}
-proc HMAC*(evp_md: EVP_MD, key: pointer, key_len: cint, d: cstring, n: csize_t, md: pointer, md_len: ptr cuint): cstring {.cdecl, importc: "HMAC", dynlib: DLLSSLName.}
-proc CRYPTO_memcmp*(a: pointer, b: pointer, len: csize_t): cint {.cdecl, importc: "CRYPTO_memcmp", dynlib: DLLSSLName.}
-proc RAND_bytes*(buf: pointer, num: cint): cint {.cdecl, importc: "RAND_bytes", dynlib: DLLSSLName.}
+proc HMAC*(evp_md: EVP_MD, key: pointer, key_len: cint, d: cstring, n: csize_t, md: pointer, md_len: ptr cuint): cstring {.cdecl, importc: "HMAC", dynlib: DLLUtilName.}
+proc CRYPTO_memcmp*(a: pointer, b: pointer, len: csize_t): cint {.cdecl, importc: "CRYPTO_memcmp", dynlib: DLLUtilName.}
+proc RAND_bytes*(buf: pointer, num: cint): cint {.cdecl, importc: "RAND_bytes", dynlib: DLLUtilName.}
 
 # Compile-time embedded Lua scripts
 const
@@ -25,11 +24,7 @@ const
 
 # Cryptographic Helpers
 proc computeSha1*(text: string): string =
-  var digest: array[20, uint8]
-  discard SHA1(text.cstring, text.len.csize_t, digest[0].addr)
-  result = newStringOfCap(40)
-  for b in digest:
-    result.add(toHex(b.int, 2).toLowerAscii)
+  ($secureHash(text)).toLowerAscii
 
 # Precomputed SHA1 hashes for Redis EVALSHA caching
 let

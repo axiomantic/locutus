@@ -27,10 +27,12 @@ jobs:
 
       - name: Setup asdf
         uses: asdf-vm/actions/setup@v3
+        with:
+          asdf_branch: v0.14.1
 
       - name: Install Nim via asdf-nim
         run: |
-          source "${ASDF_DIR:-$HOME/.asdf}/asdf.sh"
+          . "$HOME/.asdf/asdf.sh"
           asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
           asdf install nim 2.2.0
           asdf global nim 2.2.0
@@ -80,10 +82,12 @@ jobs:
 
       - name: Setup asdf
         uses: asdf-vm/actions/setup@v3
+        with:
+          asdf_branch: v0.14.1
 
       - name: Install Nim via asdf-nim
         run: |
-          source "${ASDF_DIR:-$HOME/.asdf}/asdf.sh"
+          . "$HOME/.asdf/asdf.sh"
           asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
           asdf install nim 2.2.0
           asdf global nim 2.2.0
