@@ -21,6 +21,10 @@
 
 - [What is Locutus?](#what-is-locutus)
 - [30-Second Quickstart](#30-second-quickstart)
+  - [1. Install (Engine + AI Agent Skills)](#1-install-engine--ai-agent-skills)
+  - [2. Try it in Your Terminals](#2-try-it-in-your-terminals)
+  - [3. Multi-Assistant Chat Coordination](#3-multi-assistant-chat-coordination-orchestrator--workers)
+  - [4. Advanced Coordination Patterns](#4-advanced-coordination-patterns)
 - [How it Works with Redis](#how-it-works-with-redis)
 - [Comparison](#comparison)
 - [How Messages Flow](#how-messages-flow)
@@ -111,6 +115,61 @@ You can coordinate multiple coding assistants across different terminal windows 
 **Terminal 3 — QA Worker Assistant (e.g. Antigravity or Windsurf):**
 > *"Connect to Locutus as worker-qa with tag 'qa'. Listen for incoming test requests."*
 - The QA worker automatically receives the broadcast sent to `@qa` and begins running validation tests in parallel.
+
+### 4. Advanced Coordination Patterns
+
+Locutus extends standard point-to-point and group messaging with dedicated primitives for distributed multi-agent workflows:
+
+#### Synchronous RPC (`locutus request`)
+Need an immediate result or verification from a peer? `locutus request` dispatches a task with an ephemeral reply channel and blocks until the reply is delivered:
+```bash
+# Terminal A (Requester):
+locutus request --to worker-backend --subject "Hash" --body "sha256:data" --raw
+# Returns the decrypted response body directly to stdout
+```
+
+#### Competing-Consumers Work Queues (`locutus enqueue` / `locutus work`)
+Coordinate pools of interchangeable worker assistants to process a shared backlog with guaranteed exactly-once delivery:
+```bash
+# Producer:
+locutus enqueue render_jobs --subject "Render Scene" --body "frame_042.blend"
+
+# Multiple Workers (only one worker receives each task):
+locutus work render_jobs 30
+```
+
+#### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
+Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging):
+```bash
+# Acquire lease (returns 0 on success, 1 on conflict):
+locutus lock staging_deployment 30
+
+# Safely run deployment...
+
+# Release lease (guarantees only the holding agent can unlock):
+locutus unlock staging_deployment
+```
+
+#### Operational State & Activity Tracking (`locutus status`)
+Inform human operators and peer assistants of what you are currently doing:
+```bash
+locutus status busy "Running full pytest suite"
+# When idle:
+locutus status idle "Awaiting assignments"
+
+# View cluster roster with states and activities:
+locutus who "*"
+```
+
+#### Ephemeral Pub/Sub Streaming (`locutus pub` / `locutus sub`)
+Broadcast real-time announcements to active listeners without filling Redis queue memory:
+```bash
+# Listener:
+locutus sub alerts 10
+
+# Broadcaster:
+locutus pub alerts "Release v1.2 published to staging"
+```
 
 ---
 

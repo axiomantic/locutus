@@ -51,6 +51,10 @@ LUA_DRAIN = load_lua("drain.lua")
 LUA_DIRECTORY = load_lua("directory.lua")
 LUA_UNREGISTER = load_lua("unregister.lua")
 LUA_TAG = load_lua("tag.lua")
+LUA_STATUS = load_lua("status.lua")
+LUA_LOCK = load_lua("lock.lua")
+LUA_UNLOCK = load_lua("unlock.lua")
+LUA_ENQUEUE = load_lua("enqueue.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
@@ -504,6 +508,62 @@ class TestRedisA2AProtocol(unittest.TestCase):
         self.assertNotIn("bob", run_redis("SMEMBERS", f"{PREFIX}tag:qa"))
         self.assertEqual(run_redis("EXISTS", f"{PREFIX}agent:bob"), "0")
 
+    def test_16_status_lua(self):
+        """Test status.lua updates state, activity, and refreshes heartbeat."""
+        run_eval(LUA_REGISTER, 0, PREFIX, "alice", "worker", "120")
+        res = run_eval(LUA_STATUS, 0, PREFIX, "alice", "busy", "Running unit tests", "60")
+        self.assertEqual(res, "OK")
+
+        self.assertEqual(run_redis("HGET", f"{PREFIX}agent:alice", "state"), "busy")
+        self.assertEqual(run_redis("HGET", f"{PREFIX}agent:alice", "activity"), "Running unit tests")
+        self.assertEqual(run_redis("GET", f"{PREFIX}heartbeat:alice"), "1")
+
+        # Verify directory reflects new state and activity
+        directory = run_eval(LUA_DIRECTORY, 0, PREFIX)
+        self.assertIn("alice|1|worker|busy|Running unit tests", directory)
+
+    def test_17_distributed_lock_and_unlock_lua(self):
+        """Test lock.lua and unlock.lua atomic lease acquisition and release semantics."""
+        lock_name = "git_checkout"
+
+        # Alice acquires lock
+        res_a = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "alice", "10")
+        self.assertEqual(res_a, "1")
+        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{lock_name}"), "alice")
+
+        # Bob tries to acquire lock -> rejected (0)
+        res_b = run_eval(LUA_LOCK, 0, PREFIX, lock_name, "bob", "10")
+        self.assertEqual(res_b, "0")
+
+        # Bob tries to unlock Alice's lock -> rejected (0)
+        res_un_b = run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "bob")
+        self.assertEqual(res_un_b, "0")
+        self.assertEqual(run_redis("GET", f"{PREFIX}lock:{lock_name}"), "alice")
+
+        # Alice releases lock -> succeeds (1)
+        res_un_a = run_eval(LUA_UNLOCK, 0, PREFIX, lock_name, "alice")
+        self.assertEqual(res_un_a, "1")
+        self.assertEqual(run_redis("EXISTS", f"{PREFIX}lock:{lock_name}"), "0")
+
+    def test_18_enqueue_work_queue_lua(self):
+        """Test enqueue.lua pushes tasks to queue with LPUSH and sets expiration."""
+        qname = "pipeline_tasks"
+        msg1 = json.dumps({"id": "q1", "body": "task1"})
+        msg2 = json.dumps({"id": "q2", "body": "task2"})
+
+        len1 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg1, "300")
+        self.assertEqual(len1, "1")
+
+        len2 = run_eval(LUA_ENQUEUE, 0, PREFIX, qname, msg2, "300")
+        self.assertEqual(len2, "2")
+
+        # Verify FIFO order with RPOP
+        pop1 = run_redis("RPOP", f"{PREFIX}queue:{qname}")
+        self.assertEqual(pop1, msg1)
+        pop2 = run_redis("RPOP", f"{PREFIX}queue:{qname}")
+        self.assertEqual(pop2, msg2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
