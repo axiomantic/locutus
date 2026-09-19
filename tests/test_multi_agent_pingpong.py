@@ -120,20 +120,15 @@ class TestLocutusMultiAgentPingPong(unittest.TestCase):
 
         scripts_dir = os.path.abspath("scripts")
 
-        # 2. Step 1: Alice registers and sends task to Bob
+        # 2. Step 1: Alice registers and dispatches task to Bob
         print("\n--- Phase 1: Alice Registers and Dispatches Task ---")
-        run_bash(
-            f'redis-cli -u "{REDIS_URL}" EVAL "$(cat "{scripts_dir}/register.lua")" 0 "locutus:" "alice" "locutus,lead" 150',
-            role="ALICE"
-        )
+        run_bash("locutus open alice lead", role="ALICE")
 
         task_id = f"task_{int(time.time())}_alice_{os.getpid()}"
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        task_cmd = (
-            f'redis-cli -u "{REDIS_URL}" EVAL "$(cat "{scripts_dir}/send_o2o.lua")" 0 '
-            f'"locutus:" "bob" "task" "alice" "Compute Product" "Please compute 15 * 15" "locutus" "" "{task_id}" "{ts}"'
+        run_bash(
+            f'locutus send --to bob --id "{task_id}" --subject "Compute Product" --body "Please compute 15 * 15"',
+            role="ALICE"
         )
-        run_bash(task_cmd, role="ALICE")
 
         # Verify task waiting in Bob's inbox
         bob_len = redis_cmd("LLEN", "locutus:inbox:bob")
@@ -157,18 +152,12 @@ PROTOCOL SPECIFICATION:
                 "content": (
                     "You are agent 'bob' with tag 'calc' in project 'locutus'.\n"
                     "A task is waiting in your inbox from 'alice'.\n"
-                    "Follow these steps by calling execute_bash:\n"
-                    "1. Register as 'bob' with tag 'calc' using register.lua.\n"
-                    "2. Pop/drain your incoming task from your inbox (e.g. using drain.lua or RPOP).\n"
-                    "3. Solve the math problem requested in the task (compute 15 * 15 = 225).\n"
-                    "4. Reply to 'alice' with the result '225' using send_o2o.lua:\n"
-                    "   - type: 'reply'\n"
-                    "   - from: 'bob'\n"
-                    "   - subject: 'Re: Compute Product'\n"
-                    "   - body: '225'\n"
-                    f"   - reply_to: '{task_id}'\n"
-                    "   - timestamp: $(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n"
-                    "Execute the bash commands now."
+                    "Execute the following steps by calling the `execute_bash` tool:\n"
+                    "1. Register as 'bob' with tag 'calc' using `locutus open bob calc`.\n"
+                    "2. Read your incoming task using `locutus drain 1`.\n"
+                    "3. Solve the math problem in the task (compute 15 * 15 = 225).\n"
+                    f"4. Send a reply to 'alice' using `locutus send --to alice --type reply --subject \"Re: Compute Product\" --body \"225\" --reply-to {task_id}`.\n"
+                    "Call execute_bash to run these commands now."
                 )
             }
         ]
