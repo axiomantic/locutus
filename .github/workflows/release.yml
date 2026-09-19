@@ -43,7 +43,7 @@ jobs:
       - name: Install cross-compilation toolchains & QEMU
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-arm64-cross qemu-user-static
 
       - name: Compile Linux x86_64 binary
         run: |
@@ -130,15 +130,15 @@ jobs:
           echo "=== [3/4] Verifying Linux arm64 tarball under QEMU ==="
           mkdir -p /tmp/clean-tar-arm64
           tar -xzf dist/locutus-linux-arm64.tar.gz -C /tmp/clean-tar-arm64
-          /tmp/clean-tar-arm64/locutus --help | grep -F "Nim Native"
-          KEY3=$(/tmp/clean-tar-arm64/locutus get-secret)
+          qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus --help | grep -F "Nim Native"
+          KEY3=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-tar-arm64/locutus get-secret)
           test -n "$KEY3"
 
           echo "=== [4/4] Verifying Linux arm64 .deb extraction under QEMU ==="
           mkdir -p /tmp/clean-deb-arm64
           dpkg-deb -x dist/locutus_${VERSION}_arm64.deb /tmp/clean-deb-arm64
-          /tmp/clean-deb-arm64/usr/bin/locutus --help | grep -F "Nim Native"
-          KEY4=$(/tmp/clean-deb-arm64/usr/bin/locutus get-secret)
+          qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus --help | grep -F "Nim Native"
+          KEY4=$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/clean-deb-arm64/usr/bin/locutus get-secret)
           test -n "$KEY4"
 
       - name: Upload Linux artifacts
@@ -229,11 +229,11 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compile native Windows binary
-        shell: bash
+        shell: powershell
         run: |
-          mkdir -p dist/windows-amd64
-          nim c -d:release --opt:speed -o:dist/windows-amd64/locutus.exe src/locutus.nim
-          cd dist/windows-amd64 && zip -9 ../locutus-windows-amd64.zip locutus.exe && cd ../..
+          New-Item -ItemType Directory -Force -Path dist\windows-amd64
+          nim c -d:release --opt:speed -o:dist\windows-amd64\locutus.exe src\locutus.nim
+          Compress-Archive -Path dist\windows-amd64\locutus.exe -DestinationPath dist\locutus-windows-amd64.zip -Force
 
       - name: Verify Windows zip package in clean environment
         shell: powershell
