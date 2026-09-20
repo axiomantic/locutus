@@ -9,7 +9,7 @@ binDir        = "bin"
 
 # Dependencies
 requires "nim >= 2.0.0"
-requires "https://github.com/elijahr/redis.git#redis-streams"
+requires "https://github.com/elijahr/redis.git#rehearsal/05-streams"
 
 task test, "Run test suite":
   exec "uv run pytest -q"
