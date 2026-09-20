@@ -323,6 +323,55 @@ proc connectRedis*(redisUrl: string): Redis =
     stderr.writeLine("Redis error: Could not connect to Redis: " & e.msg)
     quit(1)
 
+proc reconnectRedisClientMs*(redisUrl: string, client: var Redis, remainingMs: var int, isForever: bool): bool =
+  ## Loops with exponential backoff and full jitter until connection is restored
+  ## or until a finite timeout is exhausted. Returns true on successful reconnect,
+  ## or false if timeout expired while disconnected.
+  if client != nil:
+    try: client.close() except CatchableError: discard
+    client = nil
+
+  var attempt = 0
+  let baseMs = 100
+  let capMs = 5000
+  let startEpoch = epochTime()
+  let initialRemaining = remainingMs
+
+  while isForever or remainingMs > 0:
+    let factor = 1 shl min(attempt, 6) # 1, 2, 4, 8, 16, 32, 64
+    let maxInterval = min(capMs, baseMs * factor)
+    let sleepMs = if maxInterval > 0: rand(maxInterval) else: baseMs
+
+    if not isForever:
+      let elapsedMs = int((epochTime() - startEpoch) * 1000)
+      remainingMs = max(0, initialRemaining - elapsedMs)
+      if remainingMs <= 0:
+        return false
+
+    stderr.writeLine("[LOCUTUS] Connection severed. Reconnecting (attempt " & $(attempt + 1) & ") in " & $sleepMs & "ms...")
+    sleep(sleepMs)
+
+    if not isForever:
+      let elapsedMs = int((epochTime() - startEpoch) * 1000)
+      remainingMs = max(0, initialRemaining - elapsedMs)
+      if remainingMs <= 0:
+        return false
+
+    try:
+      client = openRedisClient(redisUrl)
+      stderr.writeLine("[LOCUTUS] Connection re-established successfully.")
+      return true
+    except CatchableError:
+      attempt += 1
+
+  return false
+
+proc reconnectRedisClient*(redisUrl: string, client: var Redis, remainingSec: var int, isForever: bool): bool =
+  var ms = if isForever: 0 else: remainingSec * 1000
+  result = reconnectRedisClientMs(redisUrl, client, ms, isForever)
+  if not isForever:
+    remainingSec = (ms + 999) div 1000
+
 # Graceful Signal Trapping and Resource Cleanup (TASK-18)
 type
   ActiveCleanup = object
@@ -792,8 +841,16 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
       try:
         popRes = client.bRPop(@[inboxKey], waitSec)
       except CatchableError as e:
-        stderr.writeLine("Redis error: " & e.msg)
-        quit(1)
+        if not reconnectRedisClient(cfg.redisUrl, client, remaining, isForever):
+          return # Timeout expired while disconnected
+        # Re-register heartbeat & listener lock on new connection
+        try:
+          discard client.setEx(cfg.prefix & "heartbeat:" & name, hbTtl, "1")
+          discard client.sadd(cfg.prefix & "active_agents", name)
+          discard client.setEx(listenerKey, hbTtl, listenerJson)
+        except CatchableError:
+          discard
+        continue
 
       if popRes.len == 0:
         if not isForever:
@@ -1015,8 +1072,15 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, runId:
     try:
       popRes = client.bRPop(@[queueKey], waitSec)
     except CatchableError as e:
-      stderr.writeLine("Redis error: " & e.msg)
-      quit(1)
+      if not reconnectRedisClient(cfg.redisUrl, client, remaining, isForever):
+        return # Timeout expired while disconnected
+      if workerName.len > 0:
+        try:
+          discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+          discard client.sadd(cfg.prefix & "active_agents", workerName)
+        except CatchableError:
+          discard
+      continue
     if popRes.len == 0:
       if workerName.len > 0:
         try:
@@ -1123,11 +1187,33 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
           let val = client.eval(claimLua, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
           res = formatRedisValue(val)
         except CatchableError as e2:
+          if "Server closed connection" in e2.msg or "recv failed" in e2.msg:
+            if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
+              return
+            continue
           res = e2.msg; exitCode = 1
+      elif "Server closed connection" in e.msg or "recv failed" in e.msg:
+        if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
+          return
+        if workerName.len > 0:
+          try:
+            discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+            discard client.sadd(cfg.prefix & "active_agents", workerName)
+          except CatchableError:
+            discard
+        continue
       else:
         res = e.msg; exitCode = 1
     except CatchableError as e:
-      res = e.msg; exitCode = 1
+      if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
+        return
+      if workerName.len > 0:
+        try:
+          discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+          discard client.sadd(cfg.prefix & "active_agents", workerName)
+        except CatchableError:
+          discard
+      continue
 
     if exitCode == 0 and res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
       backoffMs = 250

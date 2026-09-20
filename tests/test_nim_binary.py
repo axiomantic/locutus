@@ -5001,6 +5001,116 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", agent_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
         self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", f"{TEST_PREFIX}active_agents", dead_agent], capture_output=True, text=True, check=True).stdout.strip(), "0")
 
+    def test_63_listener_reconnect_resilience(self):
+        """Verify that long-running listener automatically reconnects with exponential backoff when connection is severed."""
+        agent = f"reconn_ear_{int(time.time() * 1000)}"
+        listener_key = f"{TEST_PREFIX}listener:{agent}"
+
+        # 1. Spawn background listener
+        p = subprocess.Popen(
+            [BIN_PATH, "listen", agent, "10"],
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            # 2. Wait for listener to register ownership in Redis
+            registered = False
+            for _ in range(20):
+                time.sleep(0.1)
+                chk = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", listener_key], capture_output=True, text=True, check=True)
+                if chk.stdout.strip() == "1":
+                    registered = True
+                    break
+            self.assertTrue(registered, "Listener failed to register in Redis before connection sever test")
+
+            # 3. Sever all normal client connections via Redis CLIENT KILL
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes"], check=True, capture_output=True)
+
+            # 4. Allow listener to detect disconnection and re-establish connection
+            time.sleep(0.6)
+
+            # 5. Send message to the agent
+            res_send = self.run_locutus([
+                "send",
+                "--to", agent,
+                "--from", "reconn_tester",
+                "--subject", "Reconnection Test",
+                "--body", "Payload delivered after disconnect"
+            ])
+            self.assertEqual(res_send.returncode, 0)
+
+            # 6. Wait for listener to process message and exit cleanly
+            stdout, stderr = p.communicate(timeout=8)
+            self.assertEqual(p.returncode, 0, f"Listener failed with code {p.returncode}:\nSTDERR: {stderr}\nSTDOUT: {stdout}")
+
+            # 7. Assert message received and diagnostic log emitted
+            envelope = LocutusPlugin.validate_wire_envelope(stdout.strip())
+            self.assertEqual(envelope["body"], "Payload delivered after disconnect")
+            self.assertIn("Connection severed. Reconnecting", stderr)
+            self.assertIn("Connection re-established successfully.", stderr)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", listener_key], capture_output=True)
+
+    def test_64_claim_reconnect_on_severed_socket(self):
+        """Verify that claim polling loop reconnects and continues claiming tasks after connection is severed."""
+        q = f"claim_reconn_{int(time.time() * 1000)}"
+        worker = f"worker_reconn_{int(time.time() * 1000)}"
+        hb_key = f"{TEST_PREFIX}heartbeat:{worker}"
+
+        # 1. Spawn background claim worker on empty queue
+        p = subprocess.Popen(
+            [BIN_PATH, "claim", q, "10"],
+            env={**self.env, "LOCUTUS_AGENT_NAME": worker},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            # 2. Wait for worker heartbeat to register
+            registered = False
+            for _ in range(20):
+                time.sleep(0.1)
+                chk = subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", hb_key], capture_output=True, text=True, check=True)
+                if chk.stdout.strip() == "1":
+                    registered = True
+                    break
+            self.assertTrue(registered, "Claim worker failed to register heartbeat in Redis")
+
+            # 3. Sever all normal client connections via Redis CLIENT KILL
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes"], check=True, capture_output=True)
+
+            # 4. Allow worker to reconnect
+            time.sleep(0.6)
+
+            # 5. Enqueue a task to the queue
+            res_enq = self.run_locutus([
+                "enqueue", q, "Sever Resilience Task", "Claimed post-sever task",
+                "--from", "dispatcher"
+            ])
+            self.assertEqual(res_enq.returncode, 0)
+
+            # 6. Wait for worker to claim task and exit cleanly
+            stdout, stderr = p.communicate(timeout=8)
+            self.assertEqual(p.returncode, 0, f"Claim worker failed with code {p.returncode}:\nSTDERR: {stderr}\nSTDOUT: {stdout}")
+
+            # 7. Assert task claimed and diagnostic log emitted
+            envelope = LocutusPlugin.validate_wire_envelope(stdout.strip())
+            self.assertEqual(envelope["body"], "Claimed post-sever task")
+            self.assertIn("Connection severed. Reconnecting", stderr)
+            self.assertIn("Connection re-established successfully.", stderr)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", hb_key], capture_output=True)
+
 
 if __name__ == "__main__":
     unittest.main()
