@@ -380,7 +380,7 @@ proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
   try:
     client = openRedisClient(redisUrl)
   except CatchableError as e:
-    return ("Could not connect to Redis: " & e.msg, 1)
+    return ("Redis error: Could not connect to Redis: " & e.msg, 1)
 
   try:
     defer: client.close()
@@ -395,24 +395,37 @@ proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
     return (e.msg, 1)
 
 proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
-  var shaArgs: seq[string] = @["EVALSHA", scriptSha, "0"]
+  var client: Redis
+  try:
+    client = openRedisClient(redisUrl)
+  except CatchableError as e:
+    stderr.writeLine("Redis error: Could not connect to Redis: " & e.msg)
+    quit(1)
+
+  defer:
+    try: client.close() except CatchableError: discard
+
+  var argSeq: seq[string] = @[]
   for a in evalArgs:
-    shaArgs.add(a)
-  let (shaOut, exitCode1) = execRedis(redisUrl, shaArgs)
-  if "NOSCRIPT" in shaOut:
-    # Fallback to EVAL and automatically cache the script in Redis
-    var evalCmd: seq[string] = @["EVAL", scriptText, "0"]
-    for a in evalArgs:
-      evalCmd.add(a)
-    let (evalOut, exitCode2) = execRedis(redisUrl, evalCmd)
-    if exitCode2 != 0:
-      stderr.writeLine("Redis error: " & evalOut.strip())
-      quit(exitCode2)
-    return evalOut.strip()
-  if exitCode1 != 0:
-    stderr.writeLine("Redis error: " & shaOut.strip())
-    quit(exitCode1)
-  return shaOut.strip()
+    argSeq.add(a)
+
+  try:
+    let resp = client.evalSha(scriptSha, @[], argSeq)
+    return formatRedisValue(resp)
+  except RedisError as e:
+    if "NOSCRIPT" in e.msg:
+      try:
+        let evalResp = client.eval(scriptText, @[], argSeq)
+        return formatRedisValue(evalResp)
+      except CatchableError as e2:
+        stderr.writeLine("Redis error: " & e2.msg)
+        quit(1)
+    else:
+      stderr.writeLine("Redis error: " & e.msg)
+      quit(1)
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
 
 # Agent Identity Persistence
 proc currentAgentPath*(): string =
