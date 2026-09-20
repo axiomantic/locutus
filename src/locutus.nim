@@ -30,58 +30,6 @@ proc getHostNameStr*(): string =
     discard
   return getEnv("HOSTNAME", getEnv("COMPUTERNAME", "localhost"))
 
-# Graceful Signal Trapping and Resource Cleanup (TASK-18)
-type
-  ActiveCleanup = object
-    url: string
-    key: string
-    command: seq[string]
-
-var activeCleanups: seq[ActiveCleanup] = @[]
-var isCleaningUp = false
-
-proc registerCleanup*(url, key: string, command: seq[string]) =
-  activeCleanups.add(ActiveCleanup(url: url, key: key, command: command))
-
-proc unregisterCleanup*(key: string) =
-  for i in countdown(activeCleanups.len - 1, 0):
-    if activeCleanups[i].key == key:
-      activeCleanups.delete(i)
-
-proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int)
-
-proc runSignalCleanups*() =
-  if isCleaningUp: return
-  isCleaningUp = true
-  for c in activeCleanups:
-    try:
-      discard execRedis(c.url, c.command)
-    except Exception:
-      discard
-
-when defined(posix):
-  proc handleSignal(sig: cint) {.noconv.} =
-    runSignalCleanups()
-    quit(128 + int(sig))
-
-  proc installSignalHandlers*() =
-    var sa: Sigaction
-    sa.sa_handler = handleSignal
-    discard sigemptyset(sa.sa_mask)
-    sa.sa_flags = 0
-    discard sigaction(SIGINT, sa)
-    discard sigaction(SIGTERM, sa)
-    setControlCHook(proc() {.noconv.} =
-      runSignalCleanups()
-      quit(130)
-    )
-else:
-  proc installSignalHandlers*() =
-    setControlCHook(proc() {.noconv.} =
-      runSignalCleanups()
-      quit(130)
-    )
-
 # OpenSSL C-bindings for native cryptographic operations
 type
   EVP_CIPHER_CTX = pointer
@@ -368,40 +316,66 @@ proc openRedisClient*(redisUrl: string): Redis =
   if parsed.db != 0:
     discard result.select(parsed.db)
 
-# Redis Execution using the native nim-redis driver
-proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
-  var cleanArgs: seq[string] = @[]
-  for a in cmdArgs:
-    if a != "--raw": cleanArgs.add(a)
-  if cleanArgs.len == 0:
-    return ("", 0)
-
-  var client: Redis
+proc connectRedis*(redisUrl: string): Redis =
   try:
-    client = openRedisClient(redisUrl)
-  except CatchableError as e:
-    return ("Redis error: Could not connect to Redis: " & e.msg, 1)
-
-  try:
-    defer: client.close()
-    let cmd = cleanArgs[0]
-    let resp = client.rawCommand(cmd, cleanArgs[1..^1])
-    return (formatRedisValue(resp, cmd), 0)
-  except RedisError as e:
-    return (e.msg, 1)
-  except ReplyError as e:
-    return (e.msg, 1)
-  except CatchableError as e:
-    return (e.msg, 1)
-
-proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
-  var client: Redis
-  try:
-    client = openRedisClient(redisUrl)
+    result = openRedisClient(redisUrl)
   except CatchableError as e:
     stderr.writeLine("Redis error: Could not connect to Redis: " & e.msg)
     quit(1)
 
+# Graceful Signal Trapping and Resource Cleanup (TASK-18)
+type
+  ActiveCleanup = object
+    url: string
+    key: string
+
+var activeCleanups: seq[ActiveCleanup] = @[]
+var isCleaningUp = false
+
+proc registerCleanup*(url, key: string) =
+  activeCleanups.add(ActiveCleanup(url: url, key: key))
+
+proc unregisterCleanup*(key: string) =
+  for i in countdown(activeCleanups.len - 1, 0):
+    if activeCleanups[i].key == key:
+      activeCleanups.delete(i)
+
+proc runSignalCleanups*() =
+  if isCleaningUp: return
+  isCleaningUp = true
+  for c in activeCleanups:
+    try:
+      var client = openRedisClient(c.url)
+      defer: (try: client.close() except CatchableError: discard)
+      discard client.del(@[c.key])
+    except Exception:
+      discard
+
+when defined(posix):
+  proc handleSignal(sig: cint) {.noconv.} =
+    runSignalCleanups()
+    quit(128 + int(sig))
+
+  proc installSignalHandlers*() =
+    var sa: Sigaction
+    sa.sa_handler = handleSignal
+    discard sigemptyset(sa.sa_mask)
+    sa.sa_flags = 0
+    discard sigaction(SIGINT, sa)
+    discard sigaction(SIGTERM, sa)
+    setControlCHook(proc() {.noconv.} =
+      runSignalCleanups()
+      quit(130)
+    )
+else:
+  proc installSignalHandlers*() =
+    setControlCHook(proc() {.noconv.} =
+      runSignalCleanups()
+      quit(130)
+    )
+
+proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
+  var client = connectRedis(redisUrl)
   defer:
     try: client.close() except CatchableError: discard
 
@@ -501,24 +475,32 @@ proc getActiveAgentName*(cfg: LocutusConfig, explicitName: string = "", fallback
   return ""
 
 proc getActiveListenerInfo*(cfg: LocutusConfig, name: string): tuple[active: bool, pid: int, host: string] =
-  let (val, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
-  if code != 0 or val.strip().len == 0 or val.strip() == "(nil)":
-    return (false, 0, "")
+  var client: Redis
   try:
-    let node = parseJson(val.strip())
+    client = openRedisClient(cfg.redisUrl)
+  except CatchableError:
+    return (false, 0, "")
+  defer:
+    try: client.close() except CatchableError: discard
+
+  try:
+    let val = client.get(cfg.prefix & "listener:" & name)
+    if val == redisNil or val.len == 0:
+      return (false, 0, "")
+    let node = parseJson(val)
     let pid = node.getOrDefault("pid").getInt(0)
     let host = node.getOrDefault("host").getStr("")
     let currentHost = getHostNameStr()
     if host == currentHost and pid > 0:
       if not isPidAlive(pid):
         # Stale lock: process is no longer alive on this machine
-        discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+        discard client.del(@[cfg.prefix & "listener:" & name])
         return (false, 0, "")
       else:
         return (true, pid, host)
     else:
       return (true, pid, host)
-  except Exception:
+  except CatchableError:
     return (false, 0, "")
 
 # Core Operations
@@ -533,7 +515,12 @@ proc doUnregister*(cfg: LocutusConfig, name: string): string =
   let saved = loadCurrentAgent()
   if saved == name or name.len == 0:
     clearCurrentAgent()
-  discard execRedis(cfg.redisUrl, ["DEL", cfg.prefix & "listener:" & name])
+  try:
+    var client = openRedisClient(cfg.redisUrl)
+    defer: (try: client.close() except CatchableError: discard)
+    discard client.del(@[cfg.prefix & "listener:" & name])
+  except CatchableError:
+    discard
   return runLuaScript(cfg.redisUrl, unregisterLua, unregisterSha, [cfg.prefix, name])
 
 proc doTag*(cfg: LocutusConfig, name, action, tags: string): string =
@@ -609,20 +596,28 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1)
 proc doOpen*(cfg: LocutusConfig, optName, optTags: string, rearmListen: bool = false, listenTimeoutSec: int = -1) =
   cleanupOldTmpFiles()
   randomize()
+  var client = connectRedis(cfg.redisUrl)
+  defer:
+    try: client.close() except CatchableError: discard
+
   var name = optName
   if name.len == 0:
     for attempt in 1..25:
       let candidate = cfg.project & "-worker-" & $rand(1000..9999)
-      let (outStr, code) = execRedis(cfg.redisUrl, ["EXISTS", cfg.prefix & "heartbeat:" & candidate])
-      if code == 0 and outStr.strip() == "0":
-        name = candidate
-        break
+      try:
+        if not client.exists(cfg.prefix & "heartbeat:" & candidate):
+          name = candidate
+          break
+      except CatchableError:
+        discard
     if name.len == 0:
       name = cfg.project & "-worker-" & $rand(10000..99999)
   else:
-    let (outStr, code) = execRedis(cfg.redisUrl, ["EXISTS", cfg.prefix & "heartbeat:" & name])
-    if code == 0 and outStr.strip() == "1":
-      echo "[NOTICE] Re-attaching to existing active agent '" & name & "'"
+    try:
+      if client.exists(cfg.prefix & "heartbeat:" & name):
+        echo "[NOTICE] Re-attaching to existing active agent '" & name & "'"
+    except CatchableError:
+      discard
   let tags = if optTags.len > 0:
     if optTags.startsWith(cfg.project): optTags else: cfg.project & "," & optTags
   else:
@@ -749,16 +744,26 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   let pollChunk = min(60, max(1, hbTtl div 2))
 
   # Initial Heartbeat & Directory Registration
-  let (hbOut, hbCode) = execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
-  if hbCode != 0:
-    stderr.writeLine("Redis error: " & hbOut.strip())
-    quit(hbCode)
-  discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
-  let (existingTags, _) = execRedis(cfg.redisUrl, ["HGET", cfg.prefix & "agent:" & name, "tags"])
-  if existingTags.strip().len == 0 or existingTags.strip() == "(nil)":
-    let projTag = if cfg.project.len > 0: cfg.project else: "default"
-    discard execRedis(cfg.redisUrl, ["HSET", cfg.prefix & "agent:" & name, "tags", projTag])
-    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "tag:" & projTag, name])
+  var client = connectRedis(cfg.redisUrl)
+  defer:
+    try: client.close() except CatchableError: discard
+
+  try:
+    discard client.setEx(cfg.prefix & "heartbeat:" & name, hbTtl, "1")
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
+
+  try:
+    discard client.sadd(cfg.prefix & "active_agents", name)
+    let existingTags = client.hGet(cfg.prefix & "agent:" & name, "tags")
+    if existingTags == redisNil or existingTags.len == 0:
+      let projTag = if cfg.project.len > 0: cfg.project else: "default"
+      discard client.hSet(cfg.prefix & "agent:" & name, "tags", projTag)
+      discard client.sadd(cfg.prefix & "tag:" & projTag, name)
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
 
   # Register listener ownership in Redis
   let myPid = getCurrentProcessId()
@@ -769,8 +774,12 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   listenerNode["started"] = %(getTime().toUnix())
   let listenerJson = $listenerNode
   let listenerKey = cfg.prefix & "listener:" & name
-  discard execRedis(cfg.redisUrl, ["SET", listenerKey, listenerJson, "EX", $hbTtl])
-  registerCleanup(cfg.redisUrl, listenerKey, @["DEL", listenerKey])
+  try:
+    discard client.setEx(listenerKey, hbTtl, listenerJson)
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
+  registerCleanup(cfg.redisUrl, listenerKey)
 
   let effectiveTimeout = if isForever: 0 elif timeoutSec > 0: timeoutSec else: cfg.listenTimeout
   let startTime = getTime().toUnix()
@@ -779,12 +788,14 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
   try:
     while isForever or remaining > 0:
       let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
-      var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", inboxKey, $waitSec])
-      if exitCode != 0:
-        stderr.writeLine("Redis error: " & outStr.strip())
-        quit(exitCode)
+      var popRes: RedisList
+      try:
+        popRes = client.bRPop(@[inboxKey], waitSec)
+      except CatchableError as e:
+        stderr.writeLine("Redis error: " & e.msg)
+        quit(1)
 
-      if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+      if popRes.len == 0:
         if not isForever:
           let elapsed = int(getTime().toUnix() - startTime)
           remaining = max(0, effectiveTimeout - elapsed)
@@ -792,29 +803,30 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
             return # Silent zero-token exit
 
         # Internal chunk timeout: renew heartbeat & listener lock silently in Redis only if still owner
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & name, "1", "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", name])
-        let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "listener:" & name])
-        if code == 0:
+        try:
+          discard client.setEx(cfg.prefix & "heartbeat:" & name, hbTtl, "1")
+          discard client.sadd(cfg.prefix & "active_agents", name)
+          let currentVal = client.get(cfg.prefix & "listener:" & name)
           var isMyLock = false
-          if currentVal.strip().len == 0 or currentVal.strip() == "(nil)":
+          if currentVal == redisNil or currentVal.len == 0:
             isMyLock = true
           else:
             try:
-              let node = parseJson(currentVal.strip())
+              let node = parseJson(currentVal)
               if node.getOrDefault("pid").getInt(0) == myPid and node.getOrDefault("host").getStr("") == myHost:
                 isMyLock = true
             except Exception:
               discard
           if isMyLock:
-            discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "listener:" & name, listenerJson, "EX", $hbTtl])
+            discard client.setEx(cfg.prefix & "listener:" & name, hbTtl, listenerJson)
+        except CatchableError:
+          discard
         continue
 
-      let firstNl = outStr.find('\n')
-      if firstNl < 0:
+      if popRes.len < 2:
         continue
 
-      let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+      let payloadStr = popRes[1].strip()
 
       var parsed: JsonNode
       try:
@@ -862,14 +874,14 @@ proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1) =
       return
   finally:
     unregisterCleanup(listenerKey)
-    let (currentVal, code) = execRedis(cfg.redisUrl, ["GET", listenerKey])
-    if code == 0 and currentVal.strip().len > 0 and currentVal.strip() != "(nil)":
-      try:
-        let node = parseJson(currentVal.strip())
+    try:
+      let currentVal = client.get(listenerKey)
+      if currentVal != redisNil and currentVal.len > 0:
+        let node = parseJson(currentVal)
         if node.getOrDefault("pid").getInt(0) == myPid and node.getOrDefault("host").getStr("") == myHost:
-          discard execRedis(cfg.redisUrl, ["DEL", listenerKey])
-      except Exception:
-        discard
+          discard client.del(@[listenerKey])
+    except Exception:
+      discard
 
 proc doStatus*(cfg: LocutusConfig, name, state: string, activity: string = ""): string =
   let effectiveTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
@@ -938,11 +950,11 @@ proc doEnqueue*(cfg: LocutusConfig, queueName, msgType, fromAgent, subject, body
   discard runLuaScript(cfg.redisUrl, enqueueLua, enqueueSha, [cfg.prefix, queueName, msgJson, $effectiveTtl])
   return id
 
-proc isRunCancelled*(cfg: LocutusConfig, runId: string): bool =
-  if runId.len == 0: return false
-  let (res, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "cancel:" & runId])
-  if code == 0 and res.len > 0 and res != "(nil)":
-    try:
+proc isRunCancelled*(client: Redis, cfg: LocutusConfig, runId: string): bool =
+  if runId.len == 0 or client == nil: return false
+  try:
+    let res = client.get(cfg.prefix & "cancel:" & runId)
+    if res != redisNil and res.len > 0:
       let parsed = parseJson(res)
       let secret = getSecret(cfg)
       let reason = parsed.getOrDefault("reason").getStr("")
@@ -952,9 +964,20 @@ proc isRunCancelled*(cfg: LocutusConfig, runId: string): bool =
       let canonical = runId & "|" & reason & "|" & byAgent & "|" & ts
       if sig.len > 0 and verifyHmac(secret, canonical, sig):
         return true
-    except JsonParsingError:
-      discard
+  except CatchableError:
+    discard
   return false
+
+proc isRunCancelled*(cfg: LocutusConfig, runId: string): bool =
+  if runId.len == 0: return false
+  var client: Redis
+  try:
+    client = openRedisClient(cfg.redisUrl)
+  except CatchableError:
+    return false
+  defer:
+    try: client.close() except CatchableError: discard
+  return isRunCancelled(client, cfg, runId)
 
 proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, runId: string = "") =
   let secret = getSecret(cfg)
@@ -971,23 +994,36 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, runId:
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
   let pollChunk = min(60, max(1, hbTtl div 2))
 
+  var client = connectRedis(cfg.redisUrl)
+  defer:
+    try: client.close() except CatchableError: discard
+
   if workerName.len > 0:
-    discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-    discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+    try:
+      discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+      discard client.sadd(cfg.prefix & "active_agents", workerName)
+    except CatchableError as e:
+      stderr.writeLine("Redis error: " & e.msg)
+      quit(1)
 
   while isForever or remaining > 0:
-    if runId.len > 0 and isRunCancelled(cfg, runId):
+    if runId.len > 0 and isRunCancelled(client, cfg, runId):
       stderr.writeLine("Run " & runId & " was cancelled. Worker exiting.")
       return
     let waitSec = if isForever: pollChunk else: min(pollChunk, remaining)
-    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", queueKey, $waitSec])
-    if exitCode != 0:
-      stderr.writeLine("Redis error: " & outStr.strip())
-      quit(exitCode)
-    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+    var popRes: RedisList
+    try:
+      popRes = client.bRPop(@[queueKey], waitSec)
+    except CatchableError as e:
+      stderr.writeLine("Redis error: " & e.msg)
+      quit(1)
+    if popRes.len == 0:
       if workerName.len > 0:
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+        try:
+          discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+          discard client.sadd(cfg.prefix & "active_agents", workerName)
+        except CatchableError:
+          discard
       if not isForever:
         let elapsed = int(getTime().toUnix() - startTime)
         remaining = max(0, effectiveTimeout - elapsed)
@@ -995,11 +1031,10 @@ proc doWork*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, runId:
           return # Silent zero-token exit
       continue
 
-    let firstNl = outStr.find('\n')
-    if firstNl < 0:
+    if popRes.len < 2:
       continue
 
-    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+    let payloadStr = popRes[1].strip()
 
     var parsed: JsonNode
     try:
@@ -1058,55 +1093,41 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
 
-  var client: Redis = nil
-  try:
-    client = openRedisClient(cfg.redisUrl)
-  except CatchableError:
-    client = nil
+  var client = connectRedis(cfg.redisUrl)
   defer:
-    if client != nil:
-      try: client.close() except CatchableError: discard
+    try: client.close() except CatchableError: discard
 
   if workerName.len > 0:
     try:
-      if client != nil:
-        discard client.rawCommand("SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl)
-        discard client.rawCommand("SADD", cfg.prefix & "active_agents", workerName)
-      else:
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
-    except CatchableError:
-      discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-      discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+      discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+      discard client.sadd(cfg.prefix & "active_agents", workerName)
+    except CatchableError as e:
+      stderr.writeLine("Redis error: " & e.msg)
+      quit(1)
 
   var backoffMs = 250
 
   while isForever or remainingMs > 0 or effectiveTimeout == 0:
-    if runId.len > 0 and isRunCancelled(cfg, runId):
+    if runId.len > 0 and isRunCancelled(client, cfg, runId):
       stderr.writeLine("Run " & runId & " was cancelled. Worker exiting.")
       return
 
     var res = ""
     var exitCode = 0
-    if client != nil:
-      try:
-        let val = client.evalSha(claimSha, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
-        res = formatRedisValue(val)
-      except RedisError as e:
-        if "NOSCRIPT" in e.msg:
-          try:
-            let val = client.eval(claimLua, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
-            res = formatRedisValue(val)
-          except CatchableError as e2:
-            res = e2.msg; exitCode = 1
-        else:
-          res = e.msg; exitCode = 1
-      except CatchableError:
-        try: client.close() except CatchableError: discard
-        client = nil
-        res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
-    else:
-      res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+    try:
+      let val = client.evalSha(claimSha, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
+      res = formatRedisValue(val)
+    except RedisError as e:
+      if "NOSCRIPT" in e.msg:
+        try:
+          let val = client.eval(claimLua, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
+          res = formatRedisValue(val)
+        except CatchableError as e2:
+          res = e2.msg; exitCode = 1
+      else:
+        res = e.msg; exitCode = 1
+    except CatchableError as e:
+      res = e.msg; exitCode = 1
 
     if exitCode == 0 and res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
       backoffMs = 250
@@ -1119,7 +1140,7 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
       let id = parsed.getOrDefault("id").getStr("")
 
-      if runId.len > 0 and isRunCancelled(cfg, runId):
+      if runId.len > 0 and isRunCancelled(client, cfg, runId):
         stderr.writeLine("Run " & runId & " was cancelled. Discarding task and exiting.")
         discard doAck(cfg, queueName, id)
         return
@@ -1158,15 +1179,10 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
     if workerName.len > 0:
       try:
-        if client != nil:
-          discard client.rawCommand("SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl)
-          discard client.rawCommand("SADD", cfg.prefix & "active_agents", workerName)
-        else:
-          discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-          discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+        discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
+        discard client.sadd(cfg.prefix & "active_agents", workerName)
       except CatchableError:
-        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
+        discard
 
     let elapsed = epochTime() - startTime
     remainingMs = max(0, int((float(effectiveTimeout) - elapsed) * 1000))
@@ -1362,7 +1378,12 @@ proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int =
     remaining = max(0, waitSec - elapsed)
 
   # Dequeue from waiters list on timeout to prevent stale waiter hijacking subsequent yields
-  discard execRedis(cfg.redisUrl, ["LREM", cfg.prefix & "floor:{" & room & "}:waiters", "0", agentName])
+  try:
+    var client = openRedisClient(cfg.redisUrl)
+    defer: (try: client.close() except CatchableError: discard)
+    discard client.lRem(cfg.prefix & "floor:{" & room & "}:waiters", agentName, 0)
+  except CatchableError:
+    discard
 
   let holder = if res.startsWith("BUSY:"): res[5..^1] else: "unknown"
   stderr.writeLine("Timeout waiting for floor in " & room & ". Currently held by " & holder)
@@ -1539,8 +1560,16 @@ proc doLeaderAcquire*(cfg: LocutusConfig, role, agentName: string, leaseSec: int
   let sig = computeHmacSha256(secret, canonical)
   var res = runLuaScript(cfg.redisUrl, leaderLua, leaderSha, [cfg.prefix, "acquire", role, agentName, $leaseSec, ts, sig])
   if res.startsWith("HELD:"):
-    let (existing, code) = execRedis(cfg.redisUrl, ["GET", cfg.prefix & "leader:{" & role & "}"])
-    if code == 0 and existing.len > 0 and existing != "(nil)":
+    var existing = ""
+    try:
+      var client = openRedisClient(cfg.redisUrl)
+      defer: (try: client.close() except CatchableError: discard)
+      let val = client.get(cfg.prefix & "leader:{" & role & "}")
+      if val != redisNil:
+        existing = val
+    except CatchableError:
+      discard
+    if existing.len > 0:
       try:
         let parsed = parseJson(existing)
         let exLeader = parsed.getOrDefault("leader").getStr("")
@@ -1790,6 +1819,7 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
       for a in n["dead_agents"]:
         prunedAgents.add(a.getStr())
     if n.hasKey("listeners"):
+      var keysToDelete: seq[string] = @[]
       for l in n["listeners"]:
         let agent = l["agent"].getStr()
         let lKey = l["key"].getStr()
@@ -1803,7 +1833,7 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
               if pid > 0 and not isPidAlive(pid):
                 prunedListeners.add(agent)
                 if not dryRun:
-                  discard execRedis(cfg.redisUrl, @["DEL", lKey])
+                  keysToDelete.add(lKey)
             else:
               foreignListeners.add(%*{
                 "agent": agent,
@@ -1813,6 +1843,13 @@ proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false)
               })
           except CatchableError:
             discard
+      if not dryRun and keysToDelete.len > 0:
+        try:
+          var client = openRedisClient(cfg.redisUrl)
+          defer: (try: client.close() except CatchableError: discard)
+          discard client.del(keysToDelete)
+        except CatchableError:
+          discard
   except CatchableError as e:
     stderr.writeLine("Error parsing sweep results: " & e.msg)
     quit(1)
@@ -1840,24 +1877,26 @@ proc doRequest*(cfg: LocutusConfig, toAgent, fromAgent, subject, body: string, t
 
   discard doSend(cfg, toAgent, "task", fromAgent, subject, body, tags = @[], replyTo = replyQueue, msgId = reqId, isBroadcast = false, echoResult = false)
 
+  var client = connectRedis(cfg.redisUrl)
+  defer:
+    try: client.close() except CatchableError: discard
+
   let startTime = getTime().toUnix()
   var remaining = timeoutSec
 
   while remaining > 0:
-    var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", replyInboxKey, $remaining])
-    if exitCode != 0:
-      stderr.writeLine("Redis error: " & outStr.strip())
-      quit(exitCode)
-    if outStr.strip().len == 0 or outStr.strip() == "(nil)":
+    var popRes: RedisList
+    try:
+      popRes = client.bRPop(@[replyInboxKey], remaining)
+    except CatchableError as e:
+      stderr.writeLine("Redis error: " & e.msg)
+      quit(1)
+
+    if popRes.len == 0 or popRes.len < 2:
       stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
       quit(1)
 
-    let firstNl = outStr.find('\n')
-    if firstNl < 0:
-      stderr.writeLine("Error: Request timed out waiting for reply from " & toAgent)
-      quit(1)
-
-    let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+    let payloadStr = popRes[1].strip()
 
     var parsed: JsonNode
     try:
@@ -1954,23 +1993,29 @@ proc doScatter*(cfg: LocutusConfig, targets, fromAgent, subject, body: string,
   var seenSenders = initHashSet[string]()
 
   if effectiveQuorum > 0 and delivered > 0:
-    discard execRedis(cfg.redisUrl, ["EXPIRE", replyInboxKey, $(timeoutSec + 60)])
+    var client = connectRedis(cfg.redisUrl)
+    defer:
+      try: client.close() except CatchableError: discard
+
+    try:
+      discard client.expire(replyInboxKey, timeoutSec + 60)
+    except CatchableError:
+      discard
     let startTime = getTime().toUnix()
     var remaining = timeoutSec
 
     while collectedReplies.len < effectiveQuorum and remaining > 0:
-      var (outStr, exitCode) = execRedis(cfg.redisUrl, ["--raw", "BRPOP", replyInboxKey, $remaining])
-      if exitCode != 0:
-        stderr.writeLine("Redis error: " & outStr.strip())
-        break
-      if outStr.strip().len == 0 or outStr.strip() == "(nil)":
-        break
-
-      let firstNl = outStr.find('\n')
-      if firstNl < 0:
+      var popRes: RedisList
+      try:
+        popRes = client.bRPop(@[replyInboxKey], remaining)
+      except CatchableError as e:
+        stderr.writeLine("Redis error: " & e.msg)
         break
 
-      let payloadStr = outStr[firstNl + 1 .. ^1].strip()
+      if popRes.len == 0 or popRes.len < 2:
+        break
+
+      let payloadStr = popRes[1].strip()
       var parsed: JsonNode
       try:
         parsed = parseJson(payloadStr)
@@ -2016,7 +2061,10 @@ proc doScatter*(cfg: LocutusConfig, targets, fromAgent, subject, body: string,
       let elapsed = int(getTime().toUnix() - startTime)
       remaining = max(0, timeoutSec - elapsed)
 
-  discard execRedis(cfg.redisUrl, ["DEL", replyInboxKey])
+    try:
+      discard client.del(@[replyInboxKey])
+    except CatchableError:
+      discard
 
   if rawOutput:
     for r in collectedReplies:
@@ -2029,11 +2077,15 @@ proc doScatter*(cfg: LocutusConfig, targets, fromAgent, subject, body: string,
 
 proc doPub*(cfg: LocutusConfig, channel, message: string): string =
   let fullChan = cfg.prefix & "channel:" & channel
-  let (res, code) = execRedis(cfg.redisUrl, ["PUBLISH", fullChan, message])
-  if code != 0:
-    stderr.writeLine("Redis error: " & res.strip())
-    quit(code)
-  return res.strip()
+  var client = connectRedis(cfg.redisUrl)
+  defer:
+    try: client.close() except CatchableError: discard
+  try:
+    let receivers = client.publish(fullChan, message)
+    return $receivers
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
 
 proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
   let fullChan = cfg.prefix & "channel:" & channel
