@@ -3,7 +3,51 @@
 # Handles cascading resolution across CLI flags, env vars, workspace TOML,
 # user config, system config, defaults, and named profiles.
 
-import std/[os, strutils, tables, json, options]
+import std/[os, strutils, tables, json, options, uri]
+
+# Universal Redis / Valkey URL parser
+proc parseRedisUrl*(rawUrl: string): tuple[host: string, port: int, password: string, db: int, tls: bool] =
+  result.host = "127.0.0.1"
+  result.port = 6379
+  result.password = ""
+  result.db = 0
+  result.tls = false
+
+  if rawUrl.len == 0:
+    return
+
+  var s = rawUrl.strip()
+  if s.startsWith("rediss://"):
+    result.tls = true
+    s = "http://" & s[9..^1]
+  elif s.startsWith("valkeys://"):
+    result.tls = true
+    s = "http://" & s[10..^1]
+  elif s.startsWith("redis://"):
+    s = "http://" & s[8..^1]
+  elif s.startsWith("valkey://"):
+    s = "http://" & s[9..^1]
+  elif "://" in s:
+    let scheme = s.split("://", 1)[0]
+    raise newException(ValueError, "Invalid Redis/Valkey URL scheme '" & scheme & "'. Must be redis://, rediss://, valkey://, or valkeys://")
+  else:
+    s = "http://" & s
+
+  let u = parseUri(s)
+  if u.hostname.len > 0:
+    result.host = u.hostname
+  if u.port.len > 0:
+    try:
+      result.port = parseInt(u.port)
+    except ValueError:
+      raise newException(ValueError, "Invalid port in Redis/Valkey URL: '" & u.port & "'")
+  if u.password.len > 0:
+    result.password = u.password
+  if u.path.len > 1:
+    try:
+      result.db = parseInt(u.path[1..^1])
+    except ValueError:
+      raise newException(ValueError, "Invalid database index in Redis/Valkey URL: '" & u.path[1..^1] & "'")
 
 type
   SettingSource* = enum
@@ -171,7 +215,7 @@ proc applyDict(
   for k, v in dict:
     let lowKey = k.toLowerAscii.replace("-", "_")
     case lowKey
-    of "redis_url", "redisurl", "locutus_redis_url":
+    of "redis_url", "redisurl", "locutus_redis_url", "valkey_url", "valkeyurl", "locutus_valkey_url":
       if v.len > 0:
         cfg.redisUrl = v
         cfg.provenance["redis_url"] = ProvenanceEntry(key: "redis_url", value: v, source: source, detail: detail)
@@ -353,10 +397,10 @@ proc resolveFullConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
       stderr.writeLine("Warning: Specified configuration file does not exist: " & customPath)
 
   # Step 6: Process Environment Variables
-  let envRedisUrl = getEnv("LOCUTUS_REDIS_URL", getEnv("A2A_REDIS_URL", getEnv("REDIS_URL", "")))
+  let envRedisUrl = getEnv("LOCUTUS_REDIS_URL", getEnv("LOCUTUS_VALKEY_URL", getEnv("A2A_REDIS_URL", getEnv("VALKEY_URL", getEnv("REDIS_URL", "")))))
   if envRedisUrl.len > 0:
     result.redisUrl = envRedisUrl
-    result.provenance["redis_url"] = ProvenanceEntry(key: "redis_url", value: envRedisUrl, source: srcEnv, detail: "LOCUTUS_REDIS_URL / REDIS_URL")
+    result.provenance["redis_url"] = ProvenanceEntry(key: "redis_url", value: envRedisUrl, source: srcEnv, detail: "LOCUTUS_REDIS_URL / VALKEY_URL / REDIS_URL")
 
   let envPrefix = getEnv("LOCUTUS_REDIS_PREFIX", getEnv("A2A_REDIS_PREFIX", ""))
   if envPrefix.len > 0:

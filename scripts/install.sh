@@ -168,7 +168,12 @@ build_from_source() {
   if [ -f "src/locutus.nim" ]; then
     echo "Compiling native Locutus binary from local source tree..."
     rm -f "${DEST_DIR}/locutus"
-    nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+    if command -v nimble >/dev/null 2>&1; then
+      nimble build -y -d:release
+      cp -f "bin/locutus" "${DEST_DIR}/locutus"
+    else
+      nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+    fi
     chmod +x "${DEST_DIR}/locutus"
     if [ "${OS}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
       codesign -s - -f "${DEST_DIR}/locutus" 2>/dev/null || true
@@ -193,7 +198,12 @@ build_from_source() {
   cd "${SRC_DIR}"
   echo "Compiling native Locutus binary with release optimizations..."
   rm -f "${DEST_DIR}/locutus"
-  nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+  if command -v nimble >/dev/null 2>&1; then
+    nimble build -y -d:release
+    cp -f "bin/locutus" "${DEST_DIR}/locutus"
+  else
+    nim c -d:release --opt:speed -o:"${DEST_DIR}/locutus" src/locutus.nim
+  fi
   chmod +x "${DEST_DIR}/locutus"
   if [ "${OS}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
     codesign -s - -f "${DEST_DIR}/locutus" 2>/dev/null || true

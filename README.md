@@ -6,8 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/axiomantic/locutus/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/locutus/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-46%20Passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-108%20Passing-success.svg)](tests/)
 [![Redis](https://img.shields.io/badge/Redis-6.2%2B-red.svg)](https://redis.io)
+[![Valkey](https://img.shields.io/badge/Valkey-7.2%2B-purple.svg)](https://valkey.io)
 [![Nim](https://img.shields.io/badge/Nim-2.0%2B-yellow.svg)](https://nim-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue.svg)](README.md)
 
@@ -116,181 +117,27 @@ You can coordinate multiple coding assistants across different terminal windows 
 > *"Connect to Locutus as worker-qa with tag 'qa'. Listen for incoming test requests."*
 - The QA worker automatically receives the broadcast sent to `@qa` and begins running validation tests in parallel.
 
-### 4. Advanced Coordination Patterns
+### 4. Coordination Primitives at a Glance
 
-Locutus extends standard point-to-point and group messaging with dedicated primitives for distributed multi-agent workflows:
+Locutus extends point-to-point and group messaging with dedicated primitives designed specifically for autonomous AI agents and parallel terminal swarms:
 
-#### Synchronous RPC (`locutus request`)
-Need an immediate result or verification from a peer? `locutus request` dispatches a task with an ephemeral reply channel and blocks until the reply is delivered:
-```bash
-# Terminal A (Requester):
-locutus request --to worker-backend --subject "Hash" --body "sha256:data" --raw
-# Returns the decrypted response body directly to stdout
-```
-
-#### Scatter-Gather & Quorum Consensus (`locutus scatter`)
-Need to fan out work to multiple specialists and gather results until a quorum threshold is met? `locutus scatter` multicasts a task and aggregates incoming responses until the desired quorum arrives or timeout expires:
-```bash
-# Fan out to all active agents with tag 'qa' and collect at least 2 results:
-locutus scatter --targets @qa --subject "Regression Suite" --body "Run Smoke Tests" --quorum 2 --timeout 15
-```
-
-#### Competing-Consumers Work Queues (`locutus enqueue` / `locutus work`)
-Coordinate pools of interchangeable worker assistants to process a shared backlog with guaranteed exactly-once delivery:
-```bash
-# Producer:
-locutus enqueue render_jobs --subject "Render Scene" --body "frame_042.blend"
-
-# Multiple Workers (only one worker receives each task):
-locutus work render_jobs 30
-```
-
-#### Reliable Task Leases & Dead-Letter Queues (`locutus claim` / `locutus ack`)
-Avoid task loss if a worker agent crashes mid-task. `locutus claim` claims a task non-destructively with an automatic lease TTL. If the worker crashes before acknowledging with `locutus ack`, the task is automatically returned to the queue (or moved to `dlq:<queue>` after 3 retries):
-```bash
-# Worker claims task with a 120s lease:
-task=$(locutus claim render_jobs 30 --lease 120)
-
-# Acknowledge task upon completion:
-locutus ack render_jobs <task_id>
-```
-
-#### Shared Blackboard / Scratchpad Memory (`locutus blackboard`)
-Stop wasting tokens re-transmitting large files, specs, or conversational state across multi-turn chats. `locutus blackboard` provides room-scoped shared key-value and append memory in Redis with single-call JSON snapshots:
-```bash
-# Set shared architecture state:
-locutus blackboard set room1 spec '{"model": "gpt-4o", "temperature": 0.2}'
-
-# Append notes or logs to a shared list:
-locutus blackboard append room1 action_items "Audit green mirage"
-
-# Dump entire room state as structured JSON:
-locutus blackboard snapshot room1
-```
-
-#### Floor Control & Speaker Ring (`locutus floor`)
-Moderate turn-taking and discussions across agent roundtables without race conditions or agents talking over one another:
-```bash
-# Request the floor (with a 30s speaker lease). Blocks if occupied:
-locutus floor request design_room 30
-
-# Broadcast ideas or write to the blackboard...
-locutus blackboard append design_room notes "Proposal: Use Redis streams for audit logging"
-
-# Yield the floor to the next waiting speaker:
-locutus floor yield design_room
-# Or pass directly:
-locutus floor pass design_room specialist_agent
-```
-
-#### Global Run Cancellation Tokens (`locutus cancel`)
-Instantly abort runaway workflows and prevent background worker agents from spending tokens when plans change:
-```bash
-# Set cancellation token with reason:
-locutus cancel run_042 --reason "Operator cancelled job"
-
-# Fast check in worker loops (returns exit code 0 if cancelled, 1 if running):
-if locutus cancel check run_042 --exit-code; then
-  exit 0
-fi
-```
-
-#### Blind Voting & Ballot Consensus (`locutus ballot`)
-Eliminate anchoring bias and sycophancy in multi-agent architectural debates with sealed ballots:
-```bash
-# Open ballot with options:
-locutus ballot open db_election --options "postgres,sqlite,redis" --voters "arch,lead,qa"
-
-# Agents cast votes (votes remain concealed until tally):
-locutus ballot cast db_election --vote "sqlite" --voter "arch"
-
-# Tally votes and lock ballot:
-locutus ballot tally db_election --close
-```
-
-#### Leader Election via Lease Preemption (`locutus leader`)
-Eliminate single points of failure with self-healing coordinator leases and instant failover:
-```bash
-# Attempt to acquire leader lease (30s):
-locutus leader acquire orchestrator 30
-
-# Leader heartbeats / renews lease:
-locutus leader renew orchestrator 30
-
-# Leader hands off role:
-locutus leader resign orchestrator
-```
-
-#### Directed Acyclic Graph (DAG) Workflow Engine (`locutus workflow`)
-Coordinate multi-stage task pipelines with automatic dependency resolution and stage unlocking:
-```bash
-# 1. Define pipeline DAG:
-locutus workflow define release_pipeline --steps "lint,test,build,deploy" --deps "test:lint;build:lint;deploy:test,build"
-
-# 2. Query ready unblocked steps:
-locutus workflow next release_pipeline --raw
-# => lint
-
-# 3. Resolve completed steps to unlock downstream dependencies:
-locutus workflow resolve release_pipeline lint --output "passed"
-# Unlocks 'test' and 'build'
-
-# 4. Check status or inspect outputs:
-locutus workflow status release_pipeline
-```
-
-#### Distributed Mutex Locking (`locutus lock` / `locutus unlock`)
-Prevent race conditions and protect non-reentrant operations (e.g. git rebase, running database migrations, deploying to staging). Supports monotonic fencing tokens to prevent zombie writes after lease expiration:
-```bash
-# Acquire lease (returns 0 on success, 1 on conflict):
-locutus lock staging_deployment 30
-
-# Acquire lock with monotonic fencing token:
-locutus lock staging_deployment 30 --fencing
-# => LOCKED staging_deployment by alice (fencing: 42)
-
-# Or extract bare token for database updates:
-token=$(locutus lock staging_deployment 30 --fencing --raw)
-
-# Safely run deployment...
-
-# Release lease (guarantees only the holding agent can unlock):
-locutus unlock staging_deployment
-```
-
-#### Operational State & Activity Tracking (`locutus status`)
-Inform human operators and peer assistants of what you are currently doing:
-```bash
-locutus status busy "Running full pytest suite"
-# When idle:
-locutus status idle "Awaiting assignments"
-
-# View cluster roster with states and activities:
-locutus who "*"
-```
-
-#### Cluster Health Watchdog & Sweeper (`locutus sweep`)
-Proactively audit and sweep dead agent heartbeats and stale listener locks left by terminated processes:
-```bash
-# Dry run audit (non-destructive):
-locutus sweep --dry-run
-
-# Prune dead agents and clean stale PID locks:
-locutus sweep
-
-# Output human-readable summary:
-locutus sweep --raw
-```
-
-#### Ephemeral Pub/Sub Streaming (`locutus pub` / `locutus sub`)
-Broadcast real-time announcements to active listeners without filling Redis queue memory:
-```bash
-# Listener:
-locutus sub alerts 10
-
-# Broadcaster:
-locutus pub alerts "Release v1.2 published to staging"
-```
+| Coordination Primitive | Purpose & Architecture Guarantee | Core Command | Recipe |
+|:---|:---|:---|:---:|
+| **Safe File Locking** | Distributed mutual exclusion with automatic lease expiration | `locutus lock file:src/router.ts 60` | [Recipe 1](#1-safe-concurrent-file-editing) |
+| **Worker Pools** | Competing consumers with FIFO dispatch and fair scheduling | `locutus enqueue <q>` / `locutus work <q>` | [Recipe 2](#2-distributing-batch-jobs-across-a-worker-pool) |
+| **Synchronous RPC** | Request-reply blocking on an ephemeral correlation channel | `locutus request --to <agent> --subject "..." --body "..."` | [Recipe 3](#3-synchronous-rpc-delegation-specialist-query) |
+| **Status & Activity** | Real-time cluster presence with focus broadcast and directory queries | `locutus status <busy\|idle> "..."` / `locutus who` | [Recipe 4](#4-team-discovery--live-focus-broadcasting) |
+| **Scatter-Gather** | Fan-out queries across specialist pools with quorum aggregation | `locutus scatter --targets @tag --quorum N --timeout 15` | [Recipe 5](#5-orchestrator-scatter-gather--quorum-consensus) |
+| **Reliable Task Leases** | At-least-once claims, in-flight lease renewal, and DLQ routing | `locutus claim <q> --lease 60` / `locutus ack <q> <id>` | [Recipe 6](#6-fault-tolerant-worker-mesh-with-leases--dead-letter-queue) |
+| **Shared Blackboard** | Durable shared KV & list scratchpad with OCC revision tracking | `locutus blackboard <set\|get\|append\|snapshot\|load>` | [Recipe 7](#7-shared-blackboard--roundtable-scratchpad) |
+| **Floor Control** | Roundtable speaker ring preventing cross-talk during discussions | `locutus floor <request\|yield\|pass\|status> <room>` | [Recipe 8](#8-moderated-roundtable-discussion-with-floor-control) |
+| **Cancellation Tokens** | Global abort signal halting runaway worker executions instantly | `locutus cancel <run_id> --reason "..."` | [Recipe 9](#9-coordinated-run-cancellation-across-workers) |
+| **Blind Consensus Voting** | Secret-ballot consensus eliminating model anchoring bias | `locutus ballot <open\|cast\|tally\|status> <id>` | [Recipe 10](#10-blind-consensus-voting-to-eliminate-anchoring-bias) |
+| **Leader Election** | Resilient coordinator lease with automatic preemption failover | `locutus leader <acquire\|renew\|resign\|status> <role>` | [Recipe 11](#11-self-healing-leader-election--automated-failover) |
+| **DAG Workflow Engine** | Multi-stage pipeline graph with automatic dependency unlocking | `locutus workflow <define\|next\|resolve\|export\|import>` | [Recipe 12](#12-dag-based-multi-stage-workflow-pipeline) |
+| **Cluster Health Sweeper** | Cursor-based SCAN watchdog pruning dead agents & stale listeners | `locutus sweep [--dry-run] [--raw]` | [Recipe 13](#13-cluster-health-sweeping--self-healing-watchdog) |
+| **Fencing Tokens** | Monotonic integer sequence counter preventing zombie writes | `locutus lock <resource> 60 --fencing` | [Recipe 14](#14-distributed-locking-with-monotonic-fencing-tokens) |
+| **Pub/Sub Streaming** | Real-time ephemeral broadcast streaming without queue memory | `locutus pub <channel> "..."` / `locutus sub <channel>` | [CLI Reference](#2-cli-command-reference) |
 
 ---
 
@@ -357,11 +204,12 @@ locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "ru
 ### 6. Fault-Tolerant Worker Mesh with Leases & Dead-Letter Queue
 Non-destructively claim tasks with leases and eliminate task loss on worker crash:
 ```bash
-# 1. Claim task with 120-second lease:
-task=$(locutus claim batch_pipeline --lease 120)
+# 1. Claim task with 60-second lease (supports --run-id for cancellation awareness):
+task=$(locutus claim batch_pipeline --lease 60 --run-id run_042)
 task_id=$(echo "$task" | jq -r '.id')
 
-# 2. Process task safely...
+# 2. For long-running execution (>60s), periodically renew lease to prevent task theft:
+locutus claim renew batch_pipeline "$task_id" --lease 60
 
 # 3. Confirm completion and release lease:
 locutus ack batch_pipeline "$task_id"
@@ -370,14 +218,18 @@ locutus ack batch_pipeline "$task_id"
 ### 7. Shared Blackboard & Roundtable Scratchpad
 Share persistent specs and append ideas across agents without context ballooning:
 ```bash
-# Set shared architecture specification:
+# 1. Set shared architecture specification:
 locutus blackboard set brainstorm arch_spec '{"runtime": "nim", "crypto": "openssl_evp"}'
 
-# Append ideas:
+# 2. Query current Optimistic Concurrency Control (OCC) revision:
+rev=$(locutus blackboard rev brainstorm arch_spec)
+# => "1"
+
+# 3. Append ideas or action items:
 locutus blackboard append brainstorm ideas "Idea 1: Add monotonic fencing tokens to mutex locks"
 locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline engine"
 
-# Take room snapshot:
+# 4. Take room snapshot:
 locutus blackboard snapshot brainstorm
 ```
 
@@ -402,7 +254,10 @@ Publish cancellation tokens to immediately stop background jobs and prevent wast
 # 1. Lead / Orchestrator cancels run:
 locutus cancel run_042 --reason "Aborted by lead: switching models"
 
-# 2. Worker checks token before performing expensive inferences:
+# 2. Workers pass --run-id directly to work/claim loops (exits 0 immediately if cancelled):
+locutus work batch_pipeline 30 --run-id run_042
+
+# Or manual pre-check before expensive inferences:
 if locutus cancel check run_042 --exit-code; then
   echo "Job was cancelled! Halting execution."
   exit 0
@@ -522,6 +377,15 @@ Locutus maps communication directly onto standard Redis data structures:
 
 5. **Redis Cluster Support**:
    - In a Redis Cluster, Locutus groups project keys using hash tags (such as `{locutus:project}:inbox:<name>`). This ensures all keys for a project live on the same cluster node, preventing multi-key errors.
+
+6. **Non-Blocking Memory Deallocation (`UNLINK`)**:
+   - High-throughput operations (such as clearing rooms in `locutus blackboard clear` or sweeping dead agents in `locutus sweep`) execute `UNLINK` rather than blocking `DEL`. Deallocation of large keys and sets occurs asynchronously in background reclaim threads, avoiding latency spikes.
+
+### Supported Engines & Minimum Versions
+
+Locutus requires:
+- **Redis 6.2+** (effects-based Lua replication, `UNLINK` memory deallocation, and atomic multi-key set commands).
+- **Valkey 7.2+ & 8.0+** (wire-compatible drop-in; native support for `valkey://` and `valkeys://` connection schemes, `VALKEY_URL` and `LOCUTUS_VALKEY_URL` environment variables, `--valkey-url` CLI flag, and `valkey_url` configuration keys).
 
 ### Comparison
 
@@ -711,23 +575,27 @@ irm https://raw.githubusercontent.com/axiomantic/locutus/main/scripts/install.ps
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
-| `locutus open [name] [tags]` | Registers identity, sets project tags, drains offline backlog. | `locutus open coder "qa,python"` |
+| `locutus open [name] [tags] [--listen]` | Registers identity, sets project tags, drains offline backlog, and optionally arms background listener. | `locutus open coder "qa,python" --listen` |
 | `locutus listen [name] [timeout]` | Blocks on inbox, refreshes heartbeat, drops tampered messages. | `locutus listen` |
 | `locutus send --to <target> ...` | Sends direct (O2O) message with HMAC signature. | `locutus send --to worker-1 --subject "Fix Bug" --body "src/api.py"` |
+| `locutus reply --to <sender> ...` | Direct reply tagged with `type=reply` and optional `--listen` re-arm. | `locutus reply --to lead --subject "Re: Bug" --body "Fixed" --listen` |
 | `locutus broadcast [--tags <tags>] ...` | Multicasts to all agents matching tags within project. | `locutus broadcast --tags "qa" --subject "New Release" --body "Verify"` |
 | `locutus request --to <target> ...` | Synchronous RPC: dispatches task and blocks until reply received. | `locutus request --to solver --subject "Calc" --body "2+2"` |
 | `locutus scatter --targets <tgts> ...` | Fan out task to agents/tags and gather responses until quorum. | `locutus scatter --targets @qa --subject "Tests" --body "run" --quorum 2` |
 | `locutus enqueue <queue> ...` | Pushes task to competing-consumers worker queue. | `locutus enqueue jobs --subject "Compile" --body "gcc -O2 main.c"` |
-| `locutus work <queue> [timeout]` | Pops task from competing-consumers worker queue. | `locutus work jobs 30` |
-| `locutus claim <queue> [timeout]` | Non-destructively leases task from queue with DLQ escalation. | `locutus claim jobs 30 --lease 60` |
+| `locutus work <queue> [timeout]` | Pops task from competing-consumers worker queue (supports `--run-id`). | `locutus work jobs 30 --run-id run_01` |
+| `locutus claim <queue> [timeout]` | Non-destructively leases task from queue with DLQ escalation. | `locutus claim jobs 30 --lease 60 --run-id run_01` |
+| `locutus claim renew <queue> <id>` | Safely extends active worker lease deadline before task expires. | `locutus claim renew jobs "task_123" --lease 120` |
 | `locutus ack <queue> <task_id>` | Acknowledges task completion and releases active worker lease. | `locutus ack jobs "task_123"` |
-| `locutus blackboard <cmd> <room> ...` | Shared persistent scratchpad memory (set, get, append, snapshot). | `locutus blackboard set room1 key '{"val": 1}'` |
+| `locutus blackboard <cmd> <room> ...` | Shared persistent scratchpad memory (`set`, `get`, `append`, `rev`, `snapshot`/`dump`, `load`/`restore`). | `locutus blackboard snapshot room1 state.json` |
 | `locutus floor <cmd> <room> ...` | Turn-taking floor control for roundtables (request, yield, pass, status). | `locutus floor request room1 30` |
 | `locutus cancel <run_id> ...` | Global run cancellation tokens (cancel, check, clear). | `locutus cancel run_042 --reason "Aborted"` |
 | `locutus ballot <cmd> <ballot_id> ...` | Blind voting and ballot consensus (open, cast, tally, status). | `locutus ballot open b1 --options "A,B"` |
 | `locutus leader <cmd> <role> ...` | Resilient leader election with failover (acquire, renew, resign, status). | `locutus leader acquire lead 30` |
-| `locutus status <state> [activity]` | Updates agent state (`idle`, `busy`, `error`) and activity text. | `locutus status busy "Compiling tests"` |
-| `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease (NX EX). | `locutus lock deploy_lock 30` |
+| `locutus workflow <cmd> <flow_id> ...` | Multi-stage DAG task pipelines (`define`, `next`, `resolve`, `fail`, `status`, `export`, `import`). | `locutus workflow export pipe pipe.json` |
+| `locutus sweep [--dry-run] [--raw]` | Cluster health watchdog: prunes dead agent heartbeats & stale PID locks. | `locutus sweep` |
+| `locutus status <state> [activity] [--listen]` | Updates agent state (`idle`, `busy`, `error`), activity text, and optionally re-arms listener. | `locutus status idle "Awaiting tasks" --listen` |
+| `locutus lock <lock_name> [ttl]` | Acquires atomic distributed mutex lease with optional `--fencing` counter. | `locutus lock deploy_lock 30 --fencing` |
 | `locutus unlock <lock_name>` | Releases distributed mutex lease if caller is owner. | `locutus unlock deploy_lock` |
 | `locutus pub <channel> <msg>` | Ephemeral pub/sub broadcast to subscribers. | `locutus pub alerts "Build finished"` |
 | `locutus sub <channel> [timeout]` | Listens for ephemeral pub/sub broadcasts without queue buildup. | `locutus sub alerts 10` |
@@ -746,8 +614,8 @@ Locutus provides deterministic, multi-tiered cascading configuration resolution:
 
 ```mermaid
 flowchart TD
-    Tier1["1. Explicit CLI Flags<br/><code>--redis-url, --project, --profile, etc.</code>"]
-    Tier2["2. Process Environment Variables<br/><code>LOCUTUS_REDIS_URL, LOCUTUS_PROJECT, etc.</code>"]
+    Tier1["1. Explicit CLI Flags<br/><code>--redis-url, --valkey-url, --project, --profile, etc.</code>"]
+    Tier2["2. Process Environment Variables<br/><code>LOCUTUS_REDIS_URL, VALKEY_URL, LOCUTUS_PROJECT, etc.</code>"]
     Tier3["3. Workspace / Project Config<br/><code>.locutus.toml, locutus.toml (git root)</code>"]
     Tier4["4. Per-User Config<br/><code>~/.config/locutus/config.toml</code>"]
     Tier5["5. Global / System Config<br/><code>/etc/locutus/config.toml</code>"]
@@ -772,6 +640,7 @@ flowchart TD
 ### Example `.locutus.toml`
 
 ```toml
+# Supports redis://, rediss://, valkey://, valkeys:// (or 'valkey_url')
 redis_url = "redis://127.0.0.1:6379"
 prefix = "locutus:"
 project = "my-project"

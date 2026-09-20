@@ -4655,11 +4655,17 @@ secret = "my_inline_secret_test_555"
         self.assertEqual(len(parsed["data"]), 100000)
         self.assertEqual(parsed["data"], large_content)
 
-        # 3. Verify standalone test_resp.nim passes
-        res_nim = subprocess.run(["nim", "r", "--threads:on", "tests/test_resp.nim"], capture_output=True, text=True)
-        self.assertEqual(res_nim.returncode, 0, f"test_resp.nim failed:\n{res_nim.stderr}\n{res_nim.stdout}")
-        self.assertIn("TASK-16: Multi-kilobyte payload parsing with 8KB buffer", res_nim.stdout)
-        self.assertIn("TASK-17: Maximum payload allocation guard (rejects > 32MB)", res_nim.stdout)
+        # 3. Verify large multi-chunk 500KB payload roundtrip through native nim-redis driver
+        large_content_500k = "Y" * 500000
+        large_json_500k = json.dumps({"data": large_content_500k})
+        res_set_500k = self.run_locutus(["blackboard", "set", room, "big_key_500k", large_json_500k])
+        self.assertEqual(res_set_500k.returncode, 0)
+
+        res_get_500k = self.run_locutus(["blackboard", "get", room, "big_key_500k"])
+        self.assertEqual(res_get_500k.returncode, 0)
+        parsed_500k = json.loads(res_get_500k.stdout.strip())
+        self.assertEqual(len(parsed_500k["data"]), 500000)
+        self.assertEqual(parsed_500k["data"], large_content_500k)
 
     def test_56_graceful_signal_trapping(self):
         """Test graceful signal trapping (SIGTERM/SIGINT) cleans up active resources (TASK-18)."""
@@ -4726,6 +4732,274 @@ secret = "my_inline_secret_test_555"
             self.assertEqual(chk.stdout.strip(), "1")
         finally:
             subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", foreign_key], capture_output=True)
+
+    def test_58_blackboard_snapshot_and_load(self):
+        """Test blackboard snapshot export to file and load/restore from file with durability and schema validation."""
+        room = f"bb_snap_room_{int(time.time() * 1000)}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snap_file = os.path.join(tmpdir, "snapshot.json")
+
+            # 1. Populate blackboard
+            self.run_locutus(["blackboard", "set", room, "version", "1.0.0"])
+            self.run_locutus(["blackboard", "append", room, "todos", "write tests"])
+            self.run_locutus(["blackboard", "append", room, "todos", "ship feature"])
+
+            # 2. Export snapshot to file
+            res_snap = self.run_locutus(["blackboard", "snapshot", room, snap_file])
+            self.assertEqual(res_snap.returncode, 0)
+            self.assertEqual(res_snap.stdout.strip(), "OK")
+            self.assertTrue(os.path.isfile(snap_file))
+
+            with open(snap_file, "r") as f:
+                data = json.load(f)
+            self.assertEqual(data["room"], room)
+            self.assertEqual(data["kv"]["version"], "1.0.0")
+            self.assertEqual(data["lists"]["todos"], ["write tests", "ship feature"])
+
+            # 3. Clear room
+            res_clr = self.run_locutus(["blackboard", "clear", room])
+            self.assertEqual(res_clr.returncode, 0)
+            res_get = self.run_locutus(["blackboard", "get", room, "version"])
+            self.assertEqual(res_get.stdout.strip(), "")
+
+            # 4. Restore from snapshot file
+            res_load = self.run_locutus(["blackboard", "load", room, snap_file])
+            self.assertEqual(res_load.returncode, 0)
+            self.assertEqual(res_load.stdout.strip(), "OK")
+
+            # 5. Verify restored state
+            res_ver = self.run_locutus(["blackboard", "get", room, "version"])
+            self.assertEqual(res_ver.returncode, 0)
+            self.assertEqual(res_ver.stdout.strip(), "1.0.0")
+
+            res_snap_again = self.run_locutus(["blackboard", "snapshot", room])
+            self.assertEqual(res_snap_again.returncode, 0)
+            data2 = json.loads(res_snap_again.stdout.strip())
+            self.assertEqual(data2["lists"]["todos"], ["write tests", "ship feature"])
+
+            # Negative control: invalid JSON snapshot file
+            bad_file = os.path.join(tmpdir, "bad.json")
+            with open(bad_file, "w") as f:
+                f.write("not-valid-json")
+            res_bad = self.run_locutus(["blackboard", "load", room, bad_file])
+            self.assertEqual(res_bad.returncode, 1)
+            self.assertIn("ERR: Invalid JSON snapshot", res_bad.stderr)
+
+            # Cleanup
+            self.run_locutus(["blackboard", "clear", room])
+
+    def test_59_workflow_export_and_import(self):
+        """Test workflow export to file and import from file (DAG state persistence)."""
+        flow_id = f"flow_io_{int(time.time() * 1000)}"
+        restored_flow = f"{flow_id}_restored"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_file = os.path.join(tmpdir, "flow_export.json")
+
+            # 1. Define and partially execute workflow
+            res_def = self.run_locutus(["workflow", "define", flow_id, "--steps", "build,test,deploy", "--deps", "test:build;deploy:test"])
+            self.assertEqual(res_def.returncode, 0)
+
+            res_resolve = self.run_locutus(["workflow", "resolve", flow_id, "build", "--output", "binary compiled"])
+            self.assertEqual(res_resolve.returncode, 0)
+
+            # 2. Export workflow to file
+            res_exp = self.run_locutus(["workflow", "export", flow_id, export_file])
+            self.assertEqual(res_exp.returncode, 0)
+            self.assertEqual(res_exp.stdout.strip(), "OK")
+            self.assertTrue(os.path.isfile(export_file))
+
+            with open(export_file, "r") as f:
+                flow_data = json.load(f)
+            self.assertEqual(flow_data["flow_id"], flow_id)
+            self.assertEqual(flow_data["status"], "running")
+            self.assertEqual(flow_data["steps"]["build"]["status"], "completed")
+            self.assertEqual(flow_data["steps"]["build"]["output"], "binary compiled")
+            self.assertEqual(flow_data["steps"]["test"]["status"], "ready")
+
+            # 3. Import into a new workflow instance
+            res_imp = self.run_locutus(["workflow", "import", restored_flow, export_file])
+            self.assertEqual(res_imp.returncode, 0)
+            self.assertEqual(res_imp.stdout.strip(), "OK")
+
+            # 4. Verify unblocked progression on the imported flow
+            res_next = self.run_locutus(["workflow", "next", restored_flow, "--raw"])
+            self.assertEqual(res_next.returncode, 0)
+            self.assertEqual(res_next.stdout.strip(), "test")
+
+            # Negative control: missing import file or invalid payload
+            res_missing = self.run_locutus(["workflow", "import", "bogus_flow"])
+            self.assertEqual(res_missing.returncode, 1)
+
+            bad_flow_file = os.path.join(tmpdir, "bad_flow.json")
+            with open(bad_flow_file, "w") as f:
+                f.write('{"random": "payload"}')
+            res_bad = self.run_locutus(["workflow", "import", "bogus_flow", bad_flow_file])
+            self.assertEqual(res_bad.returncode, 1)
+            self.assertIn("ERR: Invalid JSON workflow payload", res_bad.stderr)
+
+    def test_60_parse_required_int_validation(self):
+        """Test strict integer validation across CLI commands with immediate failure (no silent swallows)."""
+        # lock ttl
+        res = self.run_locutus(["lock", "test_lock", "not_a_number"])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: Invalid integer for lock ttl: 'not_a_number'", res.stderr)
+
+        # claim --lease
+        res = self.run_locutus(["claim", "test_q", "--lease", "bad_lease"])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: Invalid integer for --lease: 'bad_lease'", res.stderr)
+
+        # scatter --quorum
+        res = self.run_locutus(["scatter", "--targets", "a", "--subject", "s", "--body", "b", "--quorum", "bad_quorum"])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: Invalid integer for --quorum: 'bad_quorum'", res.stderr)
+
+        # sub timeout
+        res = self.run_locutus(["sub", "test_chan", "bad_timeout"])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: Invalid integer for sub timeout: 'bad_timeout'", res.stderr)
+
+        # anonymous agent rejection on leader acquire without open or identity
+        with tempfile.TemporaryDirectory() as empty_dir:
+            res_lead = self.run_locutus(["leader", "acquire", "test_role"], cwd=empty_dir, env_overrides={"LOCUTUS_AGENT_NAME": ""})
+            self.assertEqual(res_lead.returncode, 1)
+            self.assertIn("Error: No agent name specified.", res_lead.stderr)
+
+            # anonymous agent rejection on floor request without open or identity
+            res_floor = self.run_locutus(["floor", "request", "test_room"], cwd=empty_dir, env_overrides={"LOCUTUS_AGENT_NAME": ""})
+            self.assertEqual(res_floor.returncode, 1)
+            self.assertIn("Error: No agent name specified.", res_floor.stderr)
+
+            # anonymous agent rejection on ballot cast without open or identity
+            res_ballot = self.run_locutus(["ballot", "cast", "test_ballot", "--vote", "opt1"], cwd=empty_dir, env_overrides={"LOCUTUS_AGENT_NAME": ""})
+            self.assertEqual(res_ballot.returncode, 1)
+            self.assertIn("Error: No voter name specified.", res_ballot.stderr)
+
+    def test_61_valkey_url_and_env_support(self):
+        """Test valkey:// URL schemes, --valkey-url flag, and VALKEY_URL / LOCUTUS_VALKEY_URL env vars."""
+        parsed = re.match(r"(?:redis|valkey)://([^:/]+)(?::(\d+))?", REDIS_URL)
+        host = parsed.group(1) if parsed else "127.0.0.1"
+        port = parsed.group(2) if parsed and parsed.group(2) else "6379"
+        valkey_url = f"valkey://{host}:{port}"
+        agent = f"valkey_agent_{int(time.time() * 1000)}"
+
+        try:
+            # 1. Register agent over valkey:// via --valkey-url
+            res_open = self.run_locutus(["open", agent, "worker", "--valkey-url", valkey_url])
+            self.assertEqual(res_open.returncode, 0)
+
+            # 2. Test who with --valkey-url flag
+            res_flag = self.run_locutus(["who", "--valkey-url", valkey_url])
+            self.assertEqual(res_flag.returncode, 0)
+            self.assertIn("AGENT", res_flag.stdout)
+            self.assertIn(agent, res_flag.stdout)
+
+            # 3. Test who with -u alias with valkey://
+            res_alias = self.run_locutus(["who", "-u", valkey_url])
+            self.assertEqual(res_alias.returncode, 0)
+            self.assertIn(agent, res_alias.stdout)
+
+            # 4. Test VALKEY_URL env override
+            res_env = self.run_locutus(
+                ["who"],
+                env_overrides={
+                    "LOCUTUS_REDIS_URL": "",
+                    "REDIS_URL": "",
+                    "VALKEY_URL": valkey_url,
+                    "LOCUTUS_VALKEY_URL": ""
+                }
+            )
+            self.assertEqual(res_env.returncode, 0)
+            self.assertIn(agent, res_env.stdout)
+
+            # 5. Test LOCUTUS_VALKEY_URL precedence over VALKEY_URL and REDIS_URL
+            res_prec = self.run_locutus(
+                ["who"],
+                env_overrides={
+                    "LOCUTUS_REDIS_URL": "",
+                    "REDIS_URL": "redis://invalid-host-should-fail:6379",
+                    "VALKEY_URL": "valkey://invalid-host-should-fail:6379",
+                    "LOCUTUS_VALKEY_URL": valkey_url
+                }
+            )
+            self.assertEqual(res_prec.returncode, 0)
+            self.assertIn(agent, res_prec.stdout)
+
+            # 6. Test blackboard operations over valkey://
+            room = f"valkey_bb_{int(time.time() * 1000)}"
+            res_bb_set = self.run_locutus(["blackboard", "set", room, "state", "valkey_ok", "--valkey-url", valkey_url])
+            self.assertEqual(res_bb_set.returncode, 0)
+            res_bb_get = self.run_locutus(["blackboard", "get", room, "state", "--valkey-url", valkey_url])
+            self.assertEqual(res_bb_get.returncode, 0)
+            self.assertEqual(res_bb_get.stdout.strip(), "valkey_ok")
+        finally:
+            self.run_locutus(["close", agent], env_overrides={"LOCUTUS_REDIS_URL": valkey_url})
+
+        # 7. Negative controls: invalid scheme and bad port formatting fail fast with code 1
+        res_bad_scheme = self.run_locutus(["who", "--valkey-url", "http://127.0.0.1:6379"])
+        self.assertEqual(res_bad_scheme.returncode, 1)
+        self.assertIn("Invalid Redis/Valkey URL scheme 'http'", res_bad_scheme.stderr)
+
+        res_bad_port = self.run_locutus(["who", "--valkey-url", "valkey://127.0.0.1:not_a_port"])
+        self.assertEqual(res_bad_port.returncode, 1)
+        self.assertIn("Invalid port in Redis/Valkey URL: 'not_a_port'", res_bad_port.stderr)
+
+    def test_62_unlink_nonblocking_cleanup(self):
+        """Test non-blocking UNLINK semantics in blackboard delete/clear and sweep dead-agent pruning."""
+        room = f"unlink_test_{int(time.time() * 1000)}"
+        key1 = "k1"
+        key2 = "k2"
+        list_key = "l1"
+
+        # 1. Blackboard set keys and append to list
+        self.run_locutus(["blackboard", "set", room, key1, '{"v": 1}'])
+        self.run_locutus(["blackboard", "set", room, key2, '{"v": 2}'])
+        self.run_locutus(["blackboard", "append", room, list_key, "item1"])
+
+        # Direct Redis check: keys exist
+        kv_key = f"{TEST_PREFIX}blackboard:{{{room}}}:kv"
+        rev_key = f"{TEST_PREFIX}blackboard:{{{room}}}:rev"
+        lists_idx = f"{TEST_PREFIX}blackboard:{{{room}}}:lists"
+        list_redis_key = f"{TEST_PREFIX}blackboard:{{{room}}}:list:{list_key}"
+
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "HEXISTS", kv_key, key1], capture_output=True, text=True, check=True).stdout.strip(), "1")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "HEXISTS", kv_key, key2], capture_output=True, text=True, check=True).stdout.strip(), "1")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", list_redis_key], capture_output=True, text=True, check=True).stdout.strip(), "1")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", lists_idx, list_key], capture_output=True, text=True, check=True).stdout.strip(), "1")
+
+        # 2. Blackboard delete list key (uses UNLINK)
+        res_del = self.run_locutus(["blackboard", "delete", room, list_key])
+        self.assertEqual(res_del.returncode, 0)
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", list_redis_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", lists_idx, list_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
+
+        # 3. Blackboard clear room (uses UNLINK across multi-key expansion)
+        res_clear = self.run_locutus(["blackboard", "clear", room])
+        self.assertEqual(res_clear.returncode, 0)
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", kv_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", rev_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", lists_idx], capture_output=True, text=True, check=True).stdout.strip(), "0")
+
+        # 4. Sweep dead-agent pruning via UNLINK
+        dead_agent = f"dead_unlink_{int(time.time() * 1000)}"
+        self.run_locutus(["open", dead_agent, "worker"])
+
+        agent_key = f"{TEST_PREFIX}agent:{dead_agent}"
+        hb_key = f"{TEST_PREFIX}heartbeat:{dead_agent}"
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", agent_key], capture_output=True, text=True, check=True).stdout.strip(), "1")
+
+        # Delete heartbeat key so the agent is considered dead by sweep
+        subprocess.run(["redis-cli", "-u", REDIS_URL, "DEL", hb_key], check=True, capture_output=True)
+
+        # Run sweep
+        res_sweep = self.run_locutus(["sweep"])
+        self.assertEqual(res_sweep.returncode, 0)
+        sweep_data = LocutusPlugin.validate_json_schema("sweep", res_sweep.stdout)
+        self.assertIn(dead_agent, sweep_data["pruned_agents"])
+
+        # Verify direct Redis state: agent hash was unlinked and removed from active_agents
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "EXISTS", agent_key], capture_output=True, text=True, check=True).stdout.strip(), "0")
+        self.assertEqual(subprocess.run(["redis-cli", "-u", REDIS_URL, "SISMEMBER", f"{TEST_PREFIX}active_agents", dead_agent], capture_output=True, text=True, check=True).stdout.strip(), "0")
 
 
 if __name__ == "__main__":

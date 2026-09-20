@@ -138,7 +138,12 @@ function Build-FromSource {
         if (-not (Test-Path $InstallDir)) {
             New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         }
-        nim c -d:release --opt:speed -o:"$InstallDir\locutus.exe" src\locutus.nim
+        if (Get-Command nimble -ErrorAction SilentlyContinue) {
+            nimble build -y -d:release
+            Copy-Item -Path "bin\locutus.exe" -Destination "$InstallDir\locutus.exe" -Force
+        } else {
+            nim c -d:release --opt:speed -o:"$InstallDir\locutus.exe" src\locutus.nim
+        }
         return
     }
 
@@ -165,7 +170,12 @@ function Build-FromSource {
     Write-Host "Compiling native binary with optimizations..."
     Push-Location $extractedDir.FullName
     try {
-        nim c -d:release --opt:speed -o:"$InstallDir\locutus.exe" src\locutus.nim
+        if (Get-Command nimble -ErrorAction SilentlyContinue) {
+            nimble build -y -d:release
+            Copy-Item -Path "bin\locutus.exe" -Destination "$InstallDir\locutus.exe" -Force
+        } else {
+            nim c -d:release --opt:speed -o:"$InstallDir\locutus.exe" src\locutus.nim
+        }
     } finally {
         Pop-Location
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue

@@ -39,8 +39,10 @@ if action == "set" then
     end
     redis.call('HSET', kv_key, key, val)
     redis.call('HINCRBY', rev_key, key, 1)
-    redis.call('EXPIRE', kv_key, ttl)
-    redis.call('EXPIRE', rev_key, ttl)
+    if ttl > 0 then
+        redis.call('EXPIRE', kv_key, ttl)
+        redis.call('EXPIRE', rev_key, ttl)
+    end
     return "OK"
 
 elseif action == "rev" or action == "revision" then
@@ -67,27 +69,31 @@ elseif action == "append" then
     end
     local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
     local len = redis.call('RPUSH', list_key, val)
-    redis.call('EXPIRE', list_key, ttl)
+    if ttl > 0 then
+        redis.call('EXPIRE', list_key, ttl)
+    end
     redis.call('SADD', lists_index, key)
-    redis.call('EXPIRE', lists_index, ttl)
+    if ttl > 0 then
+        redis.call('EXPIRE', lists_index, ttl)
+    end
     return tostring(len)
 
 elseif action == "delete" or action == "del" then
     redis.call('HDEL', kv_key, key)
     redis.call('HDEL', rev_key, key)
     local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. key
-    redis.call('DEL', list_key)
+    redis.call('UNLINK', list_key)
     redis.call('SREM', lists_index, key)
     return "OK"
 
 elseif action == "clear" then
     local list_keys = redis.call('SMEMBERS', lists_index)
     for _, lk in ipairs(list_keys) do
-        redis.call('DEL', prefix .. "blackboard:{" .. room .. "}:list:" .. lk)
+        redis.call('UNLINK', prefix .. "blackboard:{" .. room .. "}:list:" .. lk)
     end
-    redis.call('DEL', lists_index)
-    redis.call('DEL', kv_key)
-    redis.call('DEL', rev_key)
+    redis.call('UNLINK', lists_index)
+    redis.call('UNLINK', kv_key)
+    redis.call('UNLINK', rev_key)
     return "OK"
 
 elseif action == "snapshot" then
@@ -113,6 +119,39 @@ elseif action == "snapshot" then
     encoded = string.gsub(encoded, '"kv":%[%]', '"kv":{}')
     encoded = string.gsub(encoded, '"lists":%[%]', '"lists":{}')
     return encoded
+
+elseif action == "load" or action == "restore" then
+    if not val or val == "" then
+        return redis.error_reply("ERR: Missing snapshot payload for load")
+    end
+    local ok, snapshot = pcall(cjson.decode, val)
+    if not ok or type(snapshot) ~= "table" then
+        return redis.error_reply("ERR: Invalid JSON snapshot for blackboard load")
+    end
+    if snapshot.kv and type(snapshot.kv) == "table" then
+        for k, v in pairs(snapshot.kv) do
+            redis.call('HSET', kv_key, k, tostring(v))
+            redis.call('HINCRBY', rev_key, k, 1)
+        end
+    end
+    if snapshot.lists and type(snapshot.lists) == "table" then
+        for lk, items in pairs(snapshot.lists) do
+            if type(items) == "table" then
+                local list_key = prefix .. "blackboard:{" .. room .. "}:list:" .. lk
+                redis.call('UNLINK', list_key)
+                for _, item in ipairs(items) do
+                    redis.call('RPUSH', list_key, tostring(item))
+                end
+                redis.call('SADD', lists_index, lk)
+            end
+        end
+    end
+    if ttl > 0 then
+        redis.call('EXPIRE', kv_key, ttl)
+        redis.call('EXPIRE', rev_key, ttl)
+        redis.call('EXPIRE', lists_index, ttl)
+    end
+    return "OK"
 end
 
 return nil

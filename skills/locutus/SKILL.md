@@ -50,11 +50,11 @@ Locutus is a daemonless, high-performance inter-assistant communication protocol
 
 ## 2. CLI Command Reference
 
-Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`, `.env`, or local defaults.
+Locutus auto-discovers Redis / Valkey configuration from `LOCUTUS_REDIS_URL`, `LOCUTUS_VALKEY_URL`, `VALKEY_URL`, `REDIS_URL`, `AGENTS.md`, `.locutus.toml`, `.env`, or local defaults (`redis://127.0.0.1:6379`, `valkey://127.0.0.1:6379`).
 
 | Action | Command |
 | :--- | :--- |
-| **Register & Announce** | `locutus open [name] [tags]` |
+| **Register & Announce** | `locutus open [name] [tags] [--listen/-l]` |
 | **Arm Background Listener** | `locutus listen [name] [timeout_sec] [--force/-f]` |
 | **Send Direct Task (O2O)** | `locutus send --to <recipient> --subject "<subj>" --body "<body>" [--listen/-l]` |
 | **Send Reply** | `locutus reply --to <sender> --subject "Re: <subj>" --body "<body>" [--reply-to <msg_id>] [--listen/-l]` |
@@ -62,16 +62,19 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Synchronous RPC** | `locutus request --to <recipient> --subject "<subj>" --body "<body>" [--timeout 30] [--raw]` |
 | **Scatter-Gather Quorum** | `locutus scatter --targets <@tag\|agent1,agent2\|\*> --subject "<subj>" --body "<body>" [--quorum N] [--timeout sec] [--raw]` |
 | **Produce to Work Queue** | `locutus enqueue <queue_name> --subject "<subj>" --body "<body>"` |
-| **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec]` |
-| **Reliable Task Claim** | `locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]` |
+| **Consume from Work Queue** | `locutus work <queue_name> [timeout_sec] [--run-id <id>]` |
+| **Reliable Task Claim** | `locutus claim <queue_name> [timeout_sec] [--lease 120] [--run-id <id>] [--raw]` |
+| **Claim Lease Renewal** | `locutus claim renew <queue_name> <task_id> [--lease 120]` |
 | **Acknowledge Task** | `locutus ack <queue_name> <task_id>` |
-| **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|append\|snapshot\|delete\|clear> <room> [key] [val]` |
+| **Shared Blackboard / Scratchpad** | `locutus blackboard <set\|get\|rev\|append\|snapshot\|load\|delete\|clear> <room> [args...]` |
 | **Floor Control (Speaker Ring)** | `locutus floor <request\|yield\|pass\|status> <room> [args...]` |
-| **Run Cancellation Token** | `locutus cancel <run_id> [--reason <reason>] \| check <run_id> \| clear <run_id>` |
+| **Run Cancellation Token** | `locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>` |
 | **Blind Voting & Ballot** | `locutus ballot <open\|cast\|tally\|status> <ballot_id> [args...]` |
 | **Leader Election (Lease)** | `locutus leader <acquire\|renew\|resign\|status> <role> [args...]` |
-| **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text]` |
-| **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec]` |
+| **DAG Workflow Engine** | `locutus workflow <define\|next\|resolve\|fail\|status\|export\|import> <flow_id> [args...]` |
+| **Cluster Health Watchdog** | `locutus sweep [--dry-run] [--raw]` |
+| **Set Status & Activity** | `locutus status <idle\|busy\|error> [activity_text] [--listen/-l]` |
+| **Distributed Mutex Lock** | `locutus lock <lock_name> [ttl_sec] [--fencing]` |
 | **Distributed Mutex Unlock** | `locutus unlock <lock_name>` |
 | **Ephemeral Pub/Sub Send** | `locutus pub <channel> "<message>"` |
 | **Ephemeral Pub/Sub Recv** | `locutus sub <channel> [timeout_sec]` |
@@ -79,6 +82,8 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 | **Dynamic Tags** | `locutus tag <add\|remove\|set> <tags>` |
 | **Drain Backlog** | `locutus drain [count]` |
 | **Unregister / Close** | `locutus close` |
+| **Config & Provenance** | `locutus config <show\|get\|path\|init>` |
+| **Cluster Secret** | `locutus get-secret` |
 
 
 ---
@@ -87,8 +92,10 @@ Locutus auto-discovers Redis configuration from `LOCUTUS_REDIS_URL`, `AGENTS.md`
 
 ### Step 1: Open Connection & Register
 ```bash
-locutus open
-# Or with specific identity:
+# Recommended: Register and arm background ear in a single step
+locutus open my-agent-1 "backend,qa" --listen
+
+# Or register without immediately listening:
 locutus open my-agent-1 "backend,qa"
 ```
 *Locutus prints the registration banner, isolates the agent in `.locutus.agent`, and drains any pre-existing messages from your inbox.*
@@ -394,32 +401,37 @@ locutus scatter --targets "analyzer1,analyzer2" --subject "Benchmark" --body "ru
 ### Playbook 8: Fault-Tolerant Worker Mesh with Leases & Dead-Letter Queue
 *Goal: Ensure zero task loss even if a worker crashes or encounters an unhandled exception.*
 ```bash
-# 1. Non-destructively claim task with a 120s lease:
-task=$(locutus claim batch_pipeline --lease 120)
+# 1. Non-destructively claim task with a 60s lease (supports --run-id for cancellation awareness):
+task=$(locutus claim batch_pipeline --lease 60 --run-id run_101)
 
 # 2. Extract task ID and payload:
 task_id=$(echo "$task" | jq -r '.id')
 payload=$(echo "$task" | jq -r '.body')
 
-# 3. Process the task safely...
+# 3. For long-running execution (>60s), periodically renew lease to prevent task theft:
+locutus claim renew batch_pipeline "$task_id" --lease 60
 
 # 4. Confirm completion and clear lease:
 locutus ack batch_pipeline "$task_id"
 
-# Note: If the worker crashes mid-task, the lease expires after 120s and is automatically returned to the queue (or moved to dlq:batch_pipeline after 3 failed attempts).
+# Note: If the worker crashes mid-task, the lease expires after 60s and is automatically returned to the queue (or moved to dlq:batch_pipeline after 3 failed attempts).
 ```
 
 ### Playbook 9: Shared Blackboard & Roundtable Scratchpad
 *Goal: Share persistent design specs and append idea logs without re-transmitting large contexts over chat.*
 ```bash
-# Set shared architecture specification in room 'brainstorm':
+# 1. Set shared architecture specification in room 'brainstorm':
 locutus blackboard set brainstorm arch_spec '{"runtime": "nim", "crypto": "openssl_evp"}'
 
-# Append ideas or action items to a shared list:
+# 2. Inspect current Optimistic Concurrency Control (OCC) revision:
+rev=$(locutus blackboard rev brainstorm arch_spec)
+# => "1"
+
+# 3. Append ideas or action items to a shared list:
 locutus blackboard append brainstorm ideas "Idea 1: Add monotonic fencing tokens to mutex locks"
 locutus blackboard append brainstorm ideas "Idea 2: DAG-based workflow pipeline engine"
 
-# Dump entire room scratchpad as clean structured JSON:
+# 4. Dump entire room scratchpad as clean structured JSON:
 snapshot=$(locutus blackboard snapshot brainstorm)
 ```
 
@@ -443,7 +455,10 @@ locutus floor yield design_review
 # Lead / Orchestrator: Publish cancellation token for active run
 locutus cancel run_101 --reason "Requirements updated: pivoting to Redis streams"
 
-# Workers: Check cancellation token before executing expensive tool steps
+# Workers: Pass --run-id directly to work/claim loops (exits 0 immediately if cancelled):
+locutus work batch_pipeline 30 --run-id run_101
+
+# Or manual pre-check before expensive inferences:
 if locutus cancel check run_101 --exit-code; then
   echo "Run cancelled: $(locutus cancel check run_101 --raw). Halting execution."
   exit 0
@@ -561,6 +576,5 @@ locutus unlock db_migration
 ## 5. Fallback Modes
 
 If the compiled `locutus` binary is not in PATH:
-1. **Run via Nim directly**: `nim r src/locutus.nim [args...]`
-2. **Build binary**: `nim c -d:release -o:~/.local/bin/locutus src/locutus.nim`
-3. **Raw Lua Scripts**: Execute `redis-cli -u "$LOCUTUS_REDIS_URL" EVAL "$(cat "scripts/<script>.lua")" ...`
+1. **Build binary**: `nimble build -y -d:release`
+2. **Raw Lua Scripts**: Execute `redis-cli -u "$LOCUTUS_REDIS_URL" EVAL "$(cat "scripts/<script>.lua")" ...`

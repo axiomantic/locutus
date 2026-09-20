@@ -178,7 +178,11 @@ if action == "define" then
     }
 
     local payload = encode_flow(flow)
-    redis.call("SET", flow_key, payload, "EX", ttl)
+    if ttl and ttl > 0 then
+        redis.call("SET", flow_key, payload, "EX", ttl)
+    else
+        redis.call("SET", flow_key, payload)
+    end
     redis.call("PUBLISH", flow_chan, cjson.encode({ event = "defined", flow_id = flow_id }))
     return "DEFINED"
 
@@ -341,6 +345,24 @@ elseif action == "status" then
     end
     return raw
 
+elseif action == "import" then
+    local payload = ARGV[4]
+    local ttl = tonumber(ARGV[5]) or 0
+    if not payload or payload == "" then
+        return redis.error_reply("ERR: Missing workflow payload for import")
+    end
+    local ok, flow = pcall(cjson.decode, payload)
+    if not ok or type(flow) ~= "table" or not flow.steps or not flow.status then
+        return redis.error_reply("ERR: Invalid JSON workflow payload for import")
+    end
+    if ttl > 0 then
+        redis.call("SET", flow_key, payload, "EX", ttl)
+    else
+        redis.call("SET", flow_key, payload)
+    end
+    return "OK"
+
 else
     return redis.error_reply("ERR: Unknown workflow action '" .. tostring(action) .. "'")
 end
+

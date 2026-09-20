@@ -3,12 +3,12 @@
 # Embeds Lua scripts at compile time and utilizes EVALSHA caching with automatic EVAL fallback.
 
 import std/[
-  os, osproc, strutils, json, openssl, sha1,
-  times, random, streams, options, base64, tables, sets, nativesockets
+  os, strutils, json, openssl, sha1,
+  times, random, options, base64, tables, sets, nativesockets
 ]
 when defined(posix):
   import posix
-import config, resp
+import config, redis, std/[net, asyncdispatch]
 
 proc isPidAlive*(pid: int): bool =
   if pid <= 0: return false
@@ -48,12 +48,14 @@ proc unregisterCleanup*(key: string) =
     if activeCleanups[i].key == key:
       activeCleanups.delete(i)
 
+proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int)
+
 proc runSignalCleanups*() =
   if isCleaningUp: return
   isCleaningUp = true
   for c in activeCleanups:
     try:
-      discard execRedisAuto(c.url, c.command)
+      discard execRedis(c.url, c.command)
     except Exception:
       discard
 
@@ -165,6 +167,14 @@ proc secureFilePermissions*(path: string) =
       setFilePermissions(path, {fpUserRead, fpUserWrite})
     except CatchableError:
       discard
+
+proc parseRequiredInt*(val, flagName: string): int =
+  try:
+    return parseInt(val)
+  except ValueError:
+    stderr.writeLine("Error: Invalid integer for " & flagName & ": '" & val & "'")
+    quit(1)
+
 
 proc getOpenSslExe*(): string =
   let envExe = getEnv("OPENSSL_BIN", "")
@@ -334,10 +344,55 @@ proc decryptAes*(ciphertext, secret: string, cfg: LocutusConfig = LocutusConfig(
 proc resolveConfig*(cli: CliOverrides = CliOverrides()): LocutusConfig =
   resolveFullConfig(cli)
 
-# Redis Native Socket Execution with automatic fallback to redis-cli / docker
-proc execRedis(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
-  execRedisAuto(redisUrl, cmdArgs)
+proc formatRedisValue*(val: RedisValue, cmd: string = ""): string =
+  case val.kind
+  of vkNil:
+    "(nil)"
+  of vkStatus, vkString:
+    val.strVal
+  of vkInteger:
+    $val.intVal
+  of vkList:
+    if cmd.toUpperAscii in ["BRPOP", "BLPOP"] and val.listVal.len >= 2:
+      return formatRedisValue(val.listVal[0]) & "\n" & formatRedisValue(val.listVal[1])
+    var parts: seq[string] = @[]
+    for item in val.listVal:
+      parts.add(formatRedisValue(item))
+    parts.join("\n")
 
+proc openRedisClient*(redisUrl: string): Redis =
+  let parsed = parseRedisUrl(redisUrl)
+  result = open(parsed.host, parsed.port.Port)
+  if parsed.password.len > 0:
+    result.auth(parsed.password)
+  if parsed.db != 0:
+    discard result.select(parsed.db)
+
+# Redis Execution using the native nim-redis driver
+proc execRedis*(redisUrl: string, cmdArgs: openArray[string]): (string, int) =
+  var cleanArgs: seq[string] = @[]
+  for a in cmdArgs:
+    if a != "--raw": cleanArgs.add(a)
+  if cleanArgs.len == 0:
+    return ("", 0)
+
+  var client: Redis
+  try:
+    client = openRedisClient(redisUrl)
+  except CatchableError as e:
+    return ("Could not connect to Redis: " & e.msg, 1)
+
+  try:
+    defer: client.close()
+    let cmd = cleanArgs[0]
+    let resp = client.rawCommand(cmd, cleanArgs[1..^1])
+    return (formatRedisValue(resp, cmd), 0)
+  except RedisError as e:
+    return (e.msg, 1)
+  except ReplyError as e:
+    return (e.msg, 1)
+  except CatchableError as e:
+    return (e.msg, 1)
 
 proc runLuaScript*(redisUrl, scriptText, scriptSha: string, evalArgs: openArray[string]): string =
   var shaArgs: seq[string] = @["EVALSHA", scriptSha, "0"]
@@ -536,7 +591,9 @@ proc doDirectory*(cfg: LocutusConfig, filterTag: string = "", asJson: bool = fal
     return formatDirectoryJson(raw)
   return formatDirectory(raw)
 
-proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
+proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1)
+
+proc doOpen*(cfg: LocutusConfig, optName, optTags: string, rearmListen: bool = false, listenTimeoutSec: int = -1) =
   cleanupOldTmpFiles()
   randomize()
   var name = optName
@@ -577,7 +634,13 @@ proc doOpen*(cfg: LocutusConfig, optName, optTags: string) =
     echo "\n[PENDING BACKLOG]:"
     echo backlog
 
-proc doListen*(cfg: LocutusConfig, name: string, timeoutSec: int = -1)
+  if rearmListen:
+    let (alreadyListening, existingPid, existingHost) = getActiveListenerInfo(cfg, name)
+    if alreadyListening:
+      stderr.writeLine("[LOCUTUS LISTENER] Listener already active for agent '" & name & "' (PID " & $existingPid & " on " & existingHost & "). Skipping duplicate listener.")
+    else:
+      stderr.writeLine("[LOCUTUS LISTENER] Entering listening mode for agent '" & name & "'...")
+      doListen(cfg, name, listenTimeoutSec)
 
 proc doSend*(cfg: LocutusConfig, toAgent, msgType, fromAgent, subject, body: string,
             tags: seq[string] = @[], replyTo: string = "", msgId: string = "", isBroadcast: bool = false,
@@ -982,13 +1045,23 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
   let hbTtl = if cfg.heartbeatTtl > 0: cfg.heartbeatTtl else: 150
 
-  let client = newRedisClient(cfg.redisUrl)
-  defer: client.close()
+  var client: Redis = nil
+  try:
+    client = openRedisClient(cfg.redisUrl)
+  except CatchableError:
+    client = nil
+  defer:
+    if client != nil:
+      try: client.close() except CatchableError: discard
 
   if workerName.len > 0:
     try:
-      discard client.sendCommand(["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-      discard client.sendCommand(["SADD", cfg.prefix & "active_agents", workerName])
+      if client != nil:
+        discard client.rawCommand("SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl)
+        discard client.rawCommand("SADD", cfg.prefix & "active_agents", workerName)
+      else:
+        discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+        discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
     except CatchableError:
       discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
       discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
@@ -1002,16 +1075,25 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
     var res = ""
     var exitCode = 0
-    try:
-      (res, exitCode) = client.runLua(claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
-    except CatchableError:
-      client.close()
+    if client != nil:
       try:
-        client.connect()
-        (res, exitCode) = client.runLua(claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
+        let val = client.evalSha(claimSha, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
+        res = formatRedisValue(val)
+      except RedisError as e:
+        if "NOSCRIPT" in e.msg:
+          try:
+            let val = client.eval(claimLua, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
+            res = formatRedisValue(val)
+          except CatchableError as e2:
+            res = e2.msg; exitCode = 1
+        else:
+          res = e.msg; exitCode = 1
       except CatchableError:
+        try: client.close() except CatchableError: discard
+        client = nil
         res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
-        exitCode = 0
+    else:
+      res = runLuaScript(cfg.redisUrl, claimLua, claimSha, [cfg.prefix, queueName, workerName, $leaseSec, "3"])
 
     if exitCode == 0 and res.len > 0 and res != "(nil)" and res.strip().startsWith("{"):
       backoffMs = 250
@@ -1063,8 +1145,12 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
 
     if workerName.len > 0:
       try:
-        discard client.sendCommand(["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
-        discard client.sendCommand(["SADD", cfg.prefix & "active_agents", workerName])
+        if client != nil:
+          discard client.rawCommand("SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl)
+          discard client.rawCommand("SADD", cfg.prefix & "active_agents", workerName)
+        else:
+          discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
+          discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
       except CatchableError:
         discard execRedis(cfg.redisUrl, ["SET", cfg.prefix & "heartbeat:" & workerName, "1", "EX", $hbTtl])
         discard execRedis(cfg.redisUrl, ["SADD", cfg.prefix & "active_agents", workerName])
@@ -1123,8 +1209,8 @@ proc decryptBlackboardValue(raw: string, secret: string, cfg: LocutusConfig, con
       quit(1)
   return raw
 
-proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", val: string = ""): string =
-  let effectiveTtl = if cfg.messageTtl > 0: cfg.messageTtl else: 604800
+proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", val: string = "", ttlSec: int = -1): string =
+  let effectiveTtl = if ttlSec >= 0: ttlSec else: (if cfg.messageTtl > 0: cfg.messageTtl else: 604800)
   let secret = getSecret(cfg)
   var finalVal = val
   if cfg.encrypt and (action == "set" or action == "append") and val.len > 0:
@@ -1190,6 +1276,52 @@ proc doBlackboard*(cfg: LocutusConfig, action, room: string, key: string = "", v
 
   return trimmed
 
+proc doBlackboardLoad*(cfg: LocutusConfig, room, snapshotJson: string, ttlSec: int = 0): string =
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(snapshotJson)
+  except JsonParsingError as e:
+    stderr.writeLine("ERR: Invalid JSON snapshot for blackboard load: " & e.msg)
+    quit(1)
+
+  if parsed.kind != JObject:
+    stderr.writeLine("ERR: Invalid JSON snapshot for blackboard load: root must be a JSON object")
+    quit(1)
+
+  let secret = getSecret(cfg)
+  var toLoad = parsed
+
+  if cfg.encrypt:
+    if toLoad.hasKey("kv") and toLoad["kv"].kind == JObject:
+      var encKv = newJObject()
+      for k, v in toLoad["kv"].pairs:
+        let rawStr = if v.kind == JString: v.getStr() else: $v
+        let cipher = encryptAes(rawStr, secret, cfg)
+        let sig = computeHmacSha256(secret, cipher)
+        encKv[k] = %("aes256:" & sig & ":" & cipher)
+      toLoad["kv"] = encKv
+
+    if toLoad.hasKey("lists") and toLoad["lists"].kind == JObject:
+      var encLists = newJObject()
+      for lk, lv in toLoad["lists"].pairs:
+        if lv.kind == JArray:
+          var encArr = newJArray()
+          for item in lv.elems:
+            let rawStr = if item.kind == JString: item.getStr() else: $item
+            let cipher = encryptAes(rawStr, secret, cfg)
+            let sig = computeHmacSha256(secret, cipher)
+            encArr.add(%("aes256:" & sig & ":" & cipher))
+          encLists[lk] = encArr
+        else:
+          encLists[lk] = lv
+      toLoad["lists"] = encLists
+
+  let effectiveTtl = if ttlSec > 0: ttlSec else: (if cfg.messageTtl > 0: cfg.messageTtl else: 0)
+  let res = runLuaScript(cfg.redisUrl, blackboardLua, blackboardSha, [cfg.prefix, "load", room, "", $toLoad, $effectiveTtl])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  return res
 
 proc doFloorRequest*(cfg: LocutusConfig, room, agentName: string, waitSec: int = 0, leaseSec: int = 60) =
   let startTime = getTime().toUnix()
@@ -1551,6 +1683,81 @@ proc doWorkflowStatus*(cfg: LocutusConfig, flowId: string, rawOutput: bool = fal
   else:
     echo $parsed
 
+proc doWorkflowExport*(cfg: LocutusConfig, flowId: string, outputFile: string = "") =
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "status", flowId])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(res)
+    let secret = getSecret(cfg)
+    if parsed.hasKey("steps") and parsed["steps"].kind == JObject:
+      for stepName, stepObj in parsed["steps"].pairs:
+        if stepObj.hasKey("output"):
+          let outStr = stepObj["output"].getStr("")
+          if outStr.startsWith("aes256:"):
+            try:
+              stepObj["output"] = %decryptAes(outStr[7..^1], secret, cfg)
+            except ValueError:
+              discard
+  except JsonParsingError:
+    stderr.writeLine("ERR: Failed to parse workflow state: " & res)
+    quit(1)
+
+  let formatted = $parsed
+  if outputFile.len > 0:
+    try:
+      writeFile(outputFile, formatted)
+      echo "OK"
+    except CatchableError as e:
+      stderr.writeLine("Error writing workflow export to file '" & outputFile & "': " & e.msg)
+      quit(1)
+  else:
+    echo formatted
+
+proc doWorkflowImport*(cfg: LocutusConfig, flowId, fileOrJson: string, ttlSec: int = 0) =
+  var rawJson = fileOrJson
+  if fileExists(fileOrJson):
+    try:
+      rawJson = readFile(fileOrJson)
+    except CatchableError as e:
+      stderr.writeLine("Error reading workflow file '" & fileOrJson & "': " & e.msg)
+      quit(1)
+  elif fileOrJson.startsWith("@") and fileExists(fileOrJson[1..^1]):
+    try:
+      rawJson = readFile(fileOrJson[1..^1])
+    except CatchableError as e:
+      stderr.writeLine("Error reading workflow file '" & fileOrJson[1..^1] & "': " & e.msg)
+      quit(1)
+
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(rawJson)
+  except JsonParsingError as e:
+    stderr.writeLine("ERR: Invalid JSON workflow payload: " & e.msg)
+    quit(1)
+
+  if parsed.kind != JObject or not parsed.hasKey("steps") or not parsed.hasKey("status"):
+    stderr.writeLine("ERR: Invalid JSON workflow payload: must contain 'steps' and 'status'")
+    quit(1)
+
+  if cfg.encrypt:
+    let secret = getSecret(cfg)
+    if parsed.hasKey("steps") and parsed["steps"].kind == JObject:
+      for stepName, stepObj in parsed["steps"].pairs:
+        if stepObj.hasKey("output"):
+          let outStr = stepObj["output"].getStr("")
+          if outStr.len > 0 and not outStr.startsWith("aes256:"):
+            stepObj["output"] = %("aes256:" & encryptAes(outStr, secret, cfg))
+
+  let res = runLuaScript(cfg.redisUrl, workflowLua, workflowSha, [cfg.prefix, "import", flowId, $parsed, $ttlSec])
+  if res.startsWith("ERR:"):
+    stderr.writeLine(res)
+    quit(1)
+  echo res
+
 proc doSweep*(cfg: LocutusConfig, dryRun: bool = false, rawOutput: bool = false) =
   let action = if dryRun: "audit" else: "prune"
   let dryRunArg = if dryRun: "1" else: "0"
@@ -1817,12 +2024,44 @@ proc doPub*(cfg: LocutusConfig, channel, message: string): string =
 
 proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
   let fullChan = cfg.prefix & "channel:" & channel
-  let (res, code) = subscribeOne(cfg.redisUrl, fullChan, timeoutSec)
-  if code != 0:
-    stderr.writeLine(res)
-    quit(code)
-  if res.len > 0:
-    echo res
+  proc asyncSub(): Future[string] {.async.} =
+    let parsed = parseRedisUrl(cfg.redisUrl)
+    let r = await openAsync(parsed.host, parsed.port.Port)
+    if parsed.password.len > 0:
+      await r.auth(parsed.password)
+    if parsed.db != 0:
+      discard await r.select(parsed.db)
+    await r.subscribe(fullChan)
+    if timeoutSec > 0:
+      let msgFut = r.nextMessage()
+      if await withTimeout(msgFut, timeoutSec * 1000):
+        let msg = msgFut.read()
+        try:
+          await r.close()
+        except CatchableError:
+          discard
+        return msg.message
+      else:
+        try:
+          await r.close()
+        except CatchableError:
+          discard
+        return ""
+    else:
+      let msg = await r.nextMessage()
+      try:
+        await r.close()
+      except CatchableError:
+        discard
+      return msg.message
+
+  try:
+    let res = waitFor asyncSub()
+    if res.len > 0:
+      echo res
+  except CatchableError as e:
+    stderr.writeLine("Redis error: " & e.msg)
+    quit(1)
 
 # Main Entrypoint / CLI Router
 proc main() =
@@ -1844,7 +2083,9 @@ proc main() =
       cli.configFile = rawArgs[i+1]; inc i
     elif a.startsWith("--redis-url="):
       cli.redisUrl = a[12..^1]
-    elif (a == "--redis-url" or a == "-u") and i + 1 < rawArgs.len:
+    elif a.startsWith("--valkey-url="):
+      cli.redisUrl = a[13..^1]
+    elif (a == "--redis-url" or a == "--valkey-url" or a == "-u") and i + 1 < rawArgs.len:
       cli.redisUrl = rawArgs[i+1]; inc i
     elif a.startsWith("-u="):
       cli.redisUrl = a[3..^1]
@@ -1881,11 +2122,9 @@ proc main() =
     elif a == "--no-cluster":
       cli.cluster = some(false)
     elif a.startsWith("--timeout="):
-      try: cli.timeout = some(parseInt(a[10..^1]))
-      except ValueError: discard
+      cli.timeout = some(parseRequiredInt(a[10..^1], "--timeout"))
     elif a == "--timeout" and i + 1 < rawArgs.len:
-      try: cli.timeout = some(parseInt(rawArgs[i+1]))
-      except ValueError: discard
+      cli.timeout = some(parseRequiredInt(rawArgs[i+1], "--timeout"))
       inc i
     else:
       positionalArgs.add(a)
@@ -1902,7 +2141,7 @@ proc main() =
     echo "Locutus " & LocutusVersion & " - High Performance Inter-Assistant Redis Bus (Nim Native)"
     echo "Usage:"
     echo "  locutus version"
-    echo "  locutus open [name] [tags]"
+    echo "  locutus open [name] [tags] [--listen/-l]"
     echo "  locutus listen [name] [timeout_sec] [--force/-f]"
     echo "  locutus send --to <agent> [--type task|query|reply|status] --subject <subj> --body <body> [--listen/-l]"
     echo "  locutus reply --to <agent> --subject <subj> --body <body> [--reply-to <id>] [--listen/-l]"
@@ -1913,13 +2152,13 @@ proc main() =
     echo "  locutus work <queue_name> [timeout_sec]"
     echo "  locutus claim <queue_name> [timeout_sec] [--lease 120] [--raw]"
     echo "  locutus ack <queue_name> <task_id>"
-    echo "  locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]"
+    echo "  locutus blackboard <set|get|append|snapshot|load|delete|clear> <room> [key] [value]"
     echo "  locutus floor <request|yield|pass|status> <room> [args...]"
     echo "  locutus cancel <run_id> [--reason <reason>] | check <run_id> | clear <run_id>"
     echo "  locutus ballot <open|cast|tally|status> <ballot_id> [args...]"
     echo "  locutus leader <acquire|renew|resign|status> <role> [args...]"
-    echo "  locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]"
-    echo "  locutus status <idle|busy|error> [activity_text] [name]"
+    echo "  locutus workflow <define|next|resolve|fail|status|export|import> <flow_id> [args...]"
+    echo "  locutus status <idle|busy|error> [activity_text] [name] [--listen/-l]"
     echo "  locutus lock <lock_name> [ttl_sec] [--fencing] [--raw]"
     echo "  locutus unlock <lock_name>"
     echo "  locutus pub <channel> <message>"
@@ -1936,7 +2175,7 @@ proc main() =
     echo "  --version, -v         Print version and exit"
     echo "  --profile <name>      Select configuration profile from config file"
     echo "  --config <file>       Explicit configuration file path"
-    echo "  --redis-url, -u <url> Redis connection endpoint"
+    echo "  --redis-url, --valkey-url, -u <url> Redis / Valkey connection endpoint"
     echo "  --prefix <pfx>        Key namespace prefix"
     echo "  --project <proj>      Project isolation group"
     echo "  --encrypt             Enable AES-256-CBC payload encryption"
@@ -2004,9 +2243,39 @@ proc main() =
       quit(1)
 
   of "open", "register":
-    let name = if args.len > 1: args[1] else: ""
-    let tags = if args.len > 2: args[2] else: ""
-    doOpen(cfg, name, tags)
+    var name = ""
+    var tags = ""
+    var rearmListen = false
+    var listenTimeout = -1
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a in ["--listen", "-l"]:
+        rearmListen = true
+      elif a.startsWith("--listen="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[9..^1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen: '" & a[9..^1] & "'")
+          quit(1)
+      elif a.startsWith("--listen-timeout="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[17..^1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen-timeout: '" & a[17..^1] & "'")
+          quit(1)
+      elif a == "--listen-timeout" and i + 1 < args.len:
+        rearmListen = true
+        try: listenTimeout = parseInt(args[i+1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen-timeout: '" & args[i+1] & "'")
+          quit(1)
+        inc i
+      elif not a.startsWith("-"):
+        if name.len == 0: name = a
+        elif tags.len == 0: tags = a
+      inc i
+    doOpen(cfg, name, tags, rearmListen, listenTimeout)
 
   of "listen":
     var explicitName = ""
@@ -2083,13 +2352,13 @@ proc main() =
         rearmListen = true
       elif a.startsWith("--listen="):
         rearmListen = true
-        try: listenTimeout = parseInt(a[9..^1]) except ValueError: discard
+        listenTimeout = parseRequiredInt(a[9..^1], "--listen")
       elif a.startsWith("--listen-timeout="):
         rearmListen = true
-        try: listenTimeout = parseInt(a[17..^1]) except ValueError: discard
+        listenTimeout = parseRequiredInt(a[17..^1], "--listen-timeout")
       elif a == "--listen-timeout" and i + 1 < args.len:
         rearmListen = true
-        try: listenTimeout = parseInt(args[i+1]) except ValueError: discard
+        listenTimeout = parseRequiredInt(args[i+1], "--listen-timeout")
         inc i
       elif not a.startsWith("-"):
         # Positional arguments fallback: <to> <subject> <body>
@@ -2212,11 +2481,9 @@ proc main() =
       elif a.startsWith("--body="): body = a[7..^1]
       elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
       elif a.startsWith("--timeout="):
-        try: timeout = parseInt(a[10..^1])
-        except ValueError: discard
+        timeout = parseRequiredInt(a[10..^1], "--timeout")
       elif a == "--timeout" and i + 1 < args.len:
-        try: timeout = parseInt(args[i+1])
-        except ValueError: discard
+        timeout = parseRequiredInt(args[i+1], "--timeout")
         inc i
       elif a in ["--raw", "-r"]:
         rawOutput = true
@@ -2254,14 +2521,14 @@ proc main() =
       elif a.startsWith("--body="): body = a[7..^1]
       elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
       elif a.startsWith("--quorum="):
-        try: quorum = parseInt(a[9..^1]) except ValueError: discard
+        quorum = parseRequiredInt(a[9..^1], "--quorum")
       elif a == "--quorum" and i + 1 < args.len:
-        try: quorum = parseInt(args[i+1]) except ValueError: discard
+        quorum = parseRequiredInt(args[i+1], "--quorum")
         inc i
       elif a.startsWith("--timeout="):
-        try: timeout = parseInt(a[10..^1]) except ValueError: discard
+        timeout = parseRequiredInt(a[10..^1], "--timeout")
       elif a == "--timeout" and i + 1 < args.len:
-        try: timeout = parseInt(args[i+1]) except ValueError: discard
+        timeout = parseRequiredInt(args[i+1], "--timeout")
         inc i
       elif a == "--raw": rawOutput = true
       elif a.startsWith("--from="): fromAgent = a[7..^1]
@@ -2348,7 +2615,7 @@ proc main() =
         runId = args[i+1]
         inc i
       elif not a.startsWith("-"):
-        try: timeout = parseInt(a) except ValueError: discard
+        timeout = parseRequiredInt(a, "timeout")
       inc i
     doWork(cfg, queueName, timeout, runId)
 
@@ -2371,9 +2638,9 @@ proc main() =
       while i < args.len:
         let a = args[i]
         if a.startsWith("--lease="):
-          try: lease = parseInt(a[8..^1]) except ValueError: discard
+          lease = parseRequiredInt(a[8..^1], "--lease")
         elif a == "--lease" and i + 1 < args.len:
-          try: lease = parseInt(args[i+1]) except ValueError: discard
+          lease = parseRequiredInt(args[i+1], "--lease")
           inc i
         inc i
       doClaimRenew(cfg, queueName, taskId, lease)
@@ -2388,14 +2655,14 @@ proc main() =
       while i < args.len:
         let a = args[i]
         if a.startsWith("--lease="):
-          try: lease = parseInt(a[8..^1]) except ValueError: discard
+          lease = parseRequiredInt(a[8..^1], "--lease")
         elif a == "--lease" and i + 1 < args.len:
-          try: lease = parseInt(args[i+1]) except ValueError: discard
+          lease = parseRequiredInt(args[i+1], "--lease")
           inc i
         elif a.startsWith("--timeout="):
-          try: timeout = parseInt(a[10..^1]) except ValueError: discard
+          timeout = parseRequiredInt(a[10..^1], "--timeout")
         elif a == "--timeout" and i + 1 < args.len:
-          try: timeout = parseInt(args[i+1]) except ValueError: discard
+          timeout = parseRequiredInt(args[i+1], "--timeout")
           inc i
         elif a.startsWith("--run-id="):
           runId = a[9..^1]
@@ -2405,7 +2672,7 @@ proc main() =
         elif a == "--raw":
           rawOutput = true
         elif not a.startsWith("-"):
-          try: timeout = parseInt(a) except ValueError: discard
+          timeout = parseRequiredInt(a, "timeout")
         inc i
 
       doClaim(cfg, queueName, timeout, lease, rawOutput, runId)
@@ -2421,19 +2688,35 @@ proc main() =
 
   of "blackboard":
     if args.len < 3:
-      stderr.writeLine("Usage: locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]")
+      stderr.writeLine("Usage: locutus blackboard <set|get|rev|append|snapshot|load|delete|clear> <room> [args...]")
       quit(1)
     let action = args[1].toLowerAscii
     let room = args[2]
-    let key = if args.len > 3: args[3] else: ""
-    let val = if args.len > 4: args[4] else: ""
+    var key = ""
+    var val = ""
+    var ttlSec = -1
+
+    var posArgs: seq[string] = @[]
+    var i = 3
+    while i < args.len:
+      let a = args[i]
+      if a.startsWith("--ttl="):
+        ttlSec = parseRequiredInt(a[6..^1], "--ttl")
+      elif a == "--ttl" and i + 1 < args.len:
+        ttlSec = parseRequiredInt(args[i+1], "--ttl"); inc i
+      elif not a.startsWith("-"):
+        posArgs.add(a)
+      inc i
+
+    if posArgs.len > 0: key = posArgs[0]
+    if posArgs.len > 1: val = posArgs[1]
 
     case action
     of "set":
       if key.len == 0 or val.len == 0:
-        stderr.writeLine("Usage: locutus blackboard set <room> <key> <json_value>")
+        stderr.writeLine("Usage: locutus blackboard set <room> <key> <json_value> [--ttl <sec>]")
         quit(1)
-      let res = doBlackboard(cfg, "set", room, key, val)
+      let res = doBlackboard(cfg, "set", room, key, val, ttlSec)
       echo res
     of "get":
       if key.len == 0:
@@ -2442,14 +2725,47 @@ proc main() =
       let res = doBlackboard(cfg, "get", room, key)
       if res.len > 0:
         echo res
+    of "rev":
+      if key.len == 0:
+        stderr.writeLine("Usage: locutus blackboard rev <room> <key>")
+        quit(1)
+      let res = doBlackboard(cfg, "rev", room, key)
+      echo res
     of "append":
       if key.len == 0 or val.len == 0:
-        stderr.writeLine("Usage: locutus blackboard append <room> <list_key> <entry>")
+        stderr.writeLine("Usage: locutus blackboard append <room> <list_key> <entry> [--ttl <sec>]")
         quit(1)
-      let res = doBlackboard(cfg, "append", room, key, val)
+      let res = doBlackboard(cfg, "append", room, key, val, ttlSec)
       echo res
-    of "snapshot":
+    of "snapshot", "dump":
       let res = doBlackboard(cfg, "snapshot", room)
+      if key.len > 0:
+        try:
+          writeFile(key, res)
+          echo "OK"
+        except CatchableError as e:
+          stderr.writeLine("Error writing snapshot to file '" & key & "': " & e.msg)
+          quit(1)
+      else:
+        echo res
+    of "load", "restore":
+      if key.len == 0:
+        stderr.writeLine("Usage: locutus blackboard load <room> <file_or_json> [--ttl <sec>]")
+        quit(1)
+      var snapshotJson = key
+      if fileExists(key):
+        try:
+          snapshotJson = readFile(key)
+        except CatchableError as e:
+          stderr.writeLine("Error reading snapshot file '" & key & "': " & e.msg)
+          quit(1)
+      elif key.startsWith("@") and fileExists(key[1..^1]):
+        try:
+          snapshotJson = readFile(key[1..^1])
+        except CatchableError as e:
+          stderr.writeLine("Error reading snapshot file '" & key[1..^1] & "': " & e.msg)
+          quit(1)
+      let res = doBlackboardLoad(cfg, room, snapshotJson, if ttlSec > 0: ttlSec else: 0)
       echo res
     of "delete", "del":
       if key.len == 0:
@@ -2462,7 +2778,7 @@ proc main() =
       echo res
     else:
       stderr.writeLine("Unknown blackboard action: " & action)
-      stderr.writeLine("Usage: locutus blackboard <set|get|append|snapshot|delete|clear> <room> [key] [value]")
+      stderr.writeLine("Usage: locutus blackboard <set|get|rev|append|snapshot|load|delete|clear> <room> [args...]")
       quit(1)
 
   of "floor":
@@ -2481,20 +2797,23 @@ proc main() =
       while i < args.len:
         let a = args[i]
         if a.startsWith("--lease="):
-          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+          leaseSec = parseRequiredInt(a[8..^1], "--lease")
         elif a == "--lease" and i + 1 < args.len:
-          try: leaseSec = parseInt(args[i+1]) except ValueError: discard
+          leaseSec = parseRequiredInt(args[i+1], "--lease")
           inc i
         elif a.startsWith("--wait="):
-          try: waitSec = parseInt(a[7..^1]) except ValueError: discard
+          waitSec = parseRequiredInt(a[7..^1], "--wait")
         elif a == "--wait" and i + 1 < args.len:
-          try: waitSec = parseInt(args[i+1]) except ValueError: discard
+          waitSec = parseRequiredInt(args[i+1], "--wait")
           inc i
         elif not a.startsWith("-"):
-          try: waitSec = parseInt(a) except ValueError: discard
+          waitSec = parseRequiredInt(a, "wait")
         inc i
       if agentName.len == 0:
-        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = false)
+      if agentName.len == 0:
+        stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+        quit(1)
       doFloorRequest(cfg, room, agentName, waitSec, leaseSec)
 
     of "yield":
@@ -2505,10 +2824,13 @@ proc main() =
         let a = args[i]
         if a in ["--force", "-f"]: force = true
         elif a.startsWith("--lease="):
-          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+          leaseSec = parseRequiredInt(a[8..^1], "--lease")
         inc i
       if agentName.len == 0:
-        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = false)
+      if agentName.len == 0:
+        stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+        quit(1)
       doFloorYield(cfg, room, agentName, force, leaseSec)
 
     of "pass":
@@ -2522,7 +2844,7 @@ proc main() =
         elif a == "--to" and i + 1 < args.len: targetAgent = args[i+1]; inc i
         elif a in ["--force", "-f"]: force = true
         elif a.startsWith("--lease="):
-          try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+          leaseSec = parseRequiredInt(a[8..^1], "--lease")
         elif not a.startsWith("-"):
           if targetAgent.len == 0: targetAgent = a
         inc i
@@ -2530,7 +2852,10 @@ proc main() =
         stderr.writeLine("Error: Missing target agent for floor pass. Use --to <agent>.")
         quit(1)
       if agentName.len == 0:
-        agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+        agentName = getActiveAgentName(cfg, "", fallbackDefault = false)
+      if agentName.len == 0:
+        stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
+        quit(1)
       doFloorPass(cfg, room, agentName, targetAgent, force, leaseSec)
 
     of "status", "show":
@@ -2590,10 +2915,9 @@ proc main() =
         elif a.startsWith("--by="): byAgent = a[5..^1]
         elif a == "--by" and i + 1 < args.len: byAgent = args[i+1]; inc i
         elif a.startsWith("--ttl="):
-          try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+          ttlSec = parseRequiredInt(a[6..^1], "--ttl")
         elif a == "--ttl" and i + 1 < args.len:
-          try: ttlSec = parseInt(args[i+1]) except ValueError: discard
-          inc i
+          ttlSec = parseRequiredInt(args[i+1], "--ttl"); inc i
         elif not a.startsWith("-") and reason == "Cancelled by orchestrator":
           reason = a
         inc i
@@ -2636,10 +2960,9 @@ proc main() =
         elif a.startsWith("--voters="): voters = a[9..^1]
         elif a == "--voters" and i + 1 < args.len: voters = args[i+1]; inc i
         elif a.startsWith("--ttl="):
-          try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+          ttlSec = parseRequiredInt(a[6..^1], "--ttl")
         elif a == "--ttl" and i + 1 < args.len:
-          try: ttlSec = parseInt(args[i+1]) except ValueError: discard
-          inc i
+          ttlSec = parseRequiredInt(args[i+1], "--ttl"); inc i
         elif not a.startsWith("-") and options == "":
           options = a
         inc i
@@ -2650,7 +2973,7 @@ proc main() =
 
     of "cast", "vote":
       var choice = ""
-      var voter = getActiveAgentName(cfg, "", fallbackDefault = true)
+      var voter = ""
       var i = 3
       while i < args.len:
         let a = args[i]
@@ -2665,6 +2988,11 @@ proc main() =
         inc i
       if choice.len == 0:
         stderr.writeLine("Error: Missing --vote for ballot cast.")
+        quit(1)
+      if voter.len == 0:
+        voter = getActiveAgentName(cfg, "", fallbackDefault = false)
+      if voter.len == 0:
+        stderr.writeLine("Error: No voter name specified. Pass --voter <name>, run 'locutus open <name>', or export LOCUTUS_AGENT_NAME=<name>.")
         quit(1)
       doBallotCast(cfg, ballotId, voter, choice)
 
@@ -2700,7 +3028,7 @@ proc main() =
     let action = args[1].toLowerAscii
     let role = args[2]
 
-    var agentName = getActiveAgentName(cfg, "", fallbackDefault = true)
+    var agentName = ""
     var leaseSec = 30
 
     var i = 3
@@ -2709,13 +3037,18 @@ proc main() =
       if a.startsWith("--agent="): agentName = a[8..^1]
       elif a == "--agent" and i + 1 < args.len: agentName = args[i+1]; inc i
       elif a.startsWith("--lease="):
-        try: leaseSec = parseInt(a[8..^1]) except ValueError: discard
+        leaseSec = parseRequiredInt(a[8..^1], "--lease")
       elif a == "--lease" and i + 1 < args.len:
-        try: leaseSec = parseInt(args[i+1]) except ValueError: discard
-        inc i
+        leaseSec = parseRequiredInt(args[i+1], "--lease"); inc i
       elif not a.startsWith("-"):
-        try: leaseSec = parseInt(a) except ValueError: discard
+        leaseSec = parseRequiredInt(a, "lease")
       inc i
+
+    if agentName.len == 0:
+      agentName = getActiveAgentName(cfg, "", fallbackDefault = false)
+    if agentName.len == 0 and action in ["acquire", "elect", "renew", "heartbeat", "resign", "release", "yield"]:
+      stderr.writeLine("Error: No agent name specified. Pass --agent <name>, run 'locutus open <name>', or export LOCUTUS_AGENT_NAME=<name>.")
+      quit(1)
 
     case action
     of "acquire", "elect":
@@ -2740,6 +3073,8 @@ proc main() =
       stderr.writeLine("  locutus workflow resolve <flow_id> <step> [--output <msg>] [--raw]")
       stderr.writeLine("  locutus workflow fail <flow_id> <step> [--reason <msg>]")
       stderr.writeLine("  locutus workflow status <flow_id> [--raw]")
+      stderr.writeLine("  locutus workflow export <flow_id> [output_file]")
+      stderr.writeLine("  locutus workflow import <flow_id> <file_or_json> [--ttl <sec>]")
       quit(1)
 
     let action = args[1].toLowerAscii
@@ -2762,10 +3097,9 @@ proc main() =
       elif a.startsWith("--deps="): deps = a[7..^1]
       elif a == "--deps" and i + 1 < args.len: deps = args[i+1]; inc i
       elif a.startsWith("--ttl="):
-        try: ttlSec = parseInt(a[6..^1]) except ValueError: discard
+        ttlSec = parseRequiredInt(a[6..^1], "--ttl")
       elif a == "--ttl" and i + 1 < args.len:
-        try: ttlSec = parseInt(args[i+1]) except ValueError: discard
-        inc i
+        ttlSec = parseRequiredInt(args[i+1], "--ttl"); inc i
       elif a.startsWith("--output="): outputMsg = a[9..^1]
       elif a == "--output" and i + 1 < args.len: outputMsg = args[i+1]; inc i
       elif a.startsWith("--reason="): reasonMsg = a[9..^1]
@@ -2794,9 +3128,19 @@ proc main() =
       doWorkflowFail(cfg, flowId, stepName, reasonMsg)
     of "status", "show":
       doWorkflowStatus(cfg, flowId, rawOutput)
+    of "export", "dump":
+      let outPath = if posArgs.len > 0: posArgs[0] else: ""
+      doWorkflowExport(cfg, flowId, outPath)
+    of "import", "load":
+      let inPayload = if posArgs.len > 0: posArgs[0] else: ""
+      if inPayload.len == 0:
+        stderr.writeLine("Error: Missing workflow payload or file to import.")
+        stderr.writeLine("Usage: locutus workflow import <flow_id> <file_or_json> [--ttl <sec>]")
+        quit(1)
+      doWorkflowImport(cfg, flowId, inPayload, ttlSec)
     else:
       stderr.writeLine("Unknown workflow action: " & action)
-      stderr.writeLine("Usage: locutus workflow <define|next|resolve|fail|status> <flow_id> [args...]")
+      stderr.writeLine("Usage: locutus workflow <define|next|resolve|fail|status|export|import> <flow_id> [args...]")
       quit(1)
 
   of "sweep":
@@ -2811,18 +3155,62 @@ proc main() =
     doSweep(cfg, dryRun, rawOutput)
 
   of "status":
-    if args.len < 2:
+    var state = ""
+    var activity = ""
+    var explicitName = ""
+    var rearmListen = false
+    var listenTimeout = -1
+    var i = 1
+    while i < args.len:
+      let a = args[i]
+      if a in ["--listen", "-l"]:
+        rearmListen = true
+      elif a.startsWith("--listen="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[9..^1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen: '" & a[9..^1] & "'")
+          quit(1)
+      elif a.startsWith("--listen-timeout="):
+        rearmListen = true
+        try: listenTimeout = parseInt(a[17..^1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen-timeout: '" & a[17..^1] & "'")
+          quit(1)
+      elif a == "--listen-timeout" and i + 1 < args.len:
+        rearmListen = true
+        try: listenTimeout = parseInt(args[i+1])
+        except ValueError:
+          stderr.writeLine("Error: Invalid integer for --listen-timeout: '" & args[i+1] & "'")
+          quit(1)
+        inc i
+      elif not a.startsWith("-"):
+        if state.len == 0: state = a
+        elif activity.len == 0: activity = a
+        elif explicitName.len == 0: explicitName = a
+      inc i
+
+    if state.len == 0:
       stderr.writeLine("Error: Missing state argument for status command.")
-      stderr.writeLine("Usage: locutus status <idle|busy|error> [activity_text] [name]")
+      stderr.writeLine("Usage: locutus status <idle|busy|error> [activity_text] [name] [--listen/-l]")
       quit(1)
-    let state = args[1]
-    let activity = if args.len > 2: args[2] else: ""
-    let explicitName = if args.len > 3: args[3] else: ""
+
     let name = getActiveAgentName(cfg, explicitName, fallbackDefault = false)
     if name.len == 0:
       stderr.writeLine("Error: No agent name specified. Run 'locutus open <name>', pass the agent name, or export LOCUTUS_AGENT_NAME=<name>.")
       quit(1)
-    echo doStatus(cfg, name, state, activity)
+
+    let res = doStatus(cfg, name, state, activity)
+    if not rearmListen:
+      echo res
+    else:
+      stderr.writeLine("[LOCUTUS STATUS] " & res)
+      let (alreadyListening, existingPid, existingHost) = getActiveListenerInfo(cfg, name)
+      if alreadyListening:
+        stderr.writeLine("[LOCUTUS LISTENER] Listener already active for agent '" & name & "' (PID " & $existingPid & " on " & existingHost & "). Skipping duplicate listener.")
+      else:
+        stderr.writeLine("[LOCUTUS LISTENER] Entering listening mode for agent '" & name & "'...")
+        doListen(cfg, name, listenTimeout)
 
   of "lock":
     if args.len < 2:
@@ -2839,7 +3227,7 @@ proc main() =
       if a == "--fencing" or a == "-f": withFencing = true
       elif a == "--raw": rawOutput = true
       elif not a.startsWith("-"):
-        try: ttl = parseInt(a) except ValueError: discard
+        ttl = parseRequiredInt(a, "lock ttl")
       inc i
     let (msg, code) = doLock(cfg, lockName, ttl, withFencing, rawOutput)
     if code != 0:
@@ -2876,8 +3264,7 @@ proc main() =
     let channel = args[1]
     var timeout = -1
     if args.len > 2:
-      try: timeout = parseInt(args[2])
-      except ValueError: discard
+      timeout = parseRequiredInt(args[2], "sub timeout")
     doSub(cfg, channel, timeout)
 
   else:
