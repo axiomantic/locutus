@@ -2214,6 +2214,14 @@ proc doSub*(cfg: LocutusConfig, channel: string, timeoutSec: int = -1) =
     stderr.writeLine("Redis error: " & e.msg)
     quit(1)
 
+proc resolveVal(val: string): string =
+  if val.startsWith("@") and val.len > 1 and fileExists(val[1..^1]):
+    try:
+      return readFile(val[1..^1])
+    except CatchableError:
+      return val
+  return val
+
 # Main Entrypoint / CLI Router
 proc main() =
   installSignalHandlers()
@@ -2483,8 +2491,8 @@ proc main() =
       elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
       elif a.startsWith("--subject="): subject = a[10..^1]
       elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
-      elif a.startsWith("--body="): body = a[7..^1]
-      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--body="): body = resolveVal(a[7..^1])
+      elif a == "--body" and i + 1 < args.len: body = resolveVal(args[i+1]); inc i
       elif a.startsWith("--tags="):
         for t in a[7..^1].split(','):
           if t.strip().len > 0: tags.add(t.strip())
@@ -2629,8 +2637,8 @@ proc main() =
       elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
       elif a.startsWith("--subject="): subject = a[10..^1]
       elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
-      elif a.startsWith("--body="): body = a[7..^1]
-      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--body="): body = resolveVal(a[7..^1])
+      elif a == "--body" and i + 1 < args.len: body = resolveVal(args[i+1]); inc i
       elif a.startsWith("--timeout="):
         timeout = parseRequiredInt(a[10..^1], "--timeout")
       elif a == "--timeout" and i + 1 < args.len:
@@ -2669,8 +2677,8 @@ proc main() =
       elif a == "--target" and i + 1 < args.len: targets = args[i+1]; inc i
       elif a.startsWith("--subject="): subject = a[10..^1]
       elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
-      elif a.startsWith("--body="): body = a[7..^1]
-      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--body="): body = resolveVal(a[7..^1])
+      elif a == "--body" and i + 1 < args.len: body = resolveVal(args[i+1]); inc i
       elif a.startsWith("--quorum="):
         quorum = parseRequiredInt(a[9..^1], "--quorum")
       elif a == "--quorum" and i + 1 < args.len:
@@ -2721,8 +2729,8 @@ proc main() =
       elif a == "--from" and i + 1 < args.len: fromAgent = args[i+1]; inc i
       elif a.startsWith("--subject="): subject = a[10..^1]
       elif a == "--subject" and i + 1 < args.len: subject = args[i+1]; inc i
-      elif a.startsWith("--body="): body = a[7..^1]
-      elif a == "--body" and i + 1 < args.len: body = args[i+1]; inc i
+      elif a.startsWith("--body="): body = resolveVal(a[7..^1])
+      elif a == "--body" and i + 1 < args.len: body = resolveVal(args[i+1]); inc i
       elif a.startsWith("--tags="):
         for t in a[7..^1].split(','):
           if t.strip().len > 0: tags.add(t.strip())
@@ -2867,7 +2875,7 @@ proc main() =
       if key.len == 0 or val.len == 0:
         stderr.writeLine("Usage: locutus blackboard set <room> <key> <json_value> [--ttl <sec>]")
         quit(1)
-      let res = doBlackboard(cfg, "set", room, key, val, ttlSec)
+      let res = doBlackboard(cfg, "set", room, key, resolveVal(val), ttlSec)
       echo res
     of "get":
       if key.len == 0:
@@ -2886,7 +2894,7 @@ proc main() =
       if key.len == 0 or val.len == 0:
         stderr.writeLine("Usage: locutus blackboard append <room> <list_key> <entry> [--ttl <sec>]")
         quit(1)
-      let res = doBlackboard(cfg, "append", room, key, val, ttlSec)
+      let res = doBlackboard(cfg, "append", room, key, resolveVal(val), ttlSec)
       echo res
     of "snapshot", "dump":
       let res = doBlackboard(cfg, "snapshot", room)

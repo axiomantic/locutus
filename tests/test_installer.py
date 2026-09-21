@@ -88,7 +88,7 @@ class TestInstallerAndUninstaller(unittest.TestCase):
 
         # Negative control: broken / unwritable INSTALL_DIR must fail
         env_bad = env.copy()
-        env_bad["INSTALL_DIR"] = "/nonexistent_system_dir_forbidden_xyz/bin"
+        env_bad["INSTALL_DIR"] = "/proc/forbidden_system_dir/bin" if os.path.exists("/proc") else "/nonexistent_system_dir_forbidden_xyz/bin"
         res_bad = subprocess.run(
             ["bash", INSTALL_SH],
             cwd=REPO_ROOT,
@@ -313,7 +313,12 @@ class TestInstallerAndUninstaller(unittest.TestCase):
         if not skilz_cmd:
             venv_skilz = os.path.join(REPO_ROOT, ".venv", "bin", "skilz")
             if os.path.isfile(venv_skilz):
-                skilz_cmd = venv_skilz
+                try:
+                    chk = subprocess.run([venv_skilz, "--version"], capture_output=True, timeout=5)
+                    if chk.returncode == 0 or chk.stdout or chk.stderr:
+                        skilz_cmd = venv_skilz
+                except Exception:
+                    pass
 
         if skilz_cmd:
             proj_dir = os.path.join(self.temp_dir, "test_agent_project")

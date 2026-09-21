@@ -4,4 +4,5 @@ __pycache__/
 .pytest_cache/
 bin/
 .locutus.agent
+*.egg-info/
 uv.lock

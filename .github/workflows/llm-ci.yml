@@ -69,10 +69,7 @@ jobs:
           pip install "pydantic>=2.0" skilz pytest
 
       - name: Compile native Nim binary
-        run: |
-          mkdir -p bin
-          nim c -d:release -o:bin/locutus src/locutus.nim
-          ./bin/locutus --help
+        run: scripts/ci/build.sh
 
       - name: Run LLM Integration Tests
         env:

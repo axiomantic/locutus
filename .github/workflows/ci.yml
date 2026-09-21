@@ -55,23 +55,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install "pydantic>=2.0" skilz pytest
+      - name: Install dependencies
+        run: scripts/ci/install-deps.sh
 
       - name: Compile native Nim binary
-        run: |
-          mkdir -p bin
-          nim c -d:release -o:bin/locutus src/locutus.nim
-          ./bin/locutus --help
+        run: scripts/ci/build.sh
 
       - name: Run test suite
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
-        run: |
-          python -m pytest -v -m "not llm"
+        run: scripts/ci/test.sh
 
+  # NOTE: The macOS leg is GitHub-Actions-only because the self-hosted
+  # Forgejo runner is Linux/Podman-only; no private macOS runner capacity exists.
   test-macos:
     name: Tests (macOS / asdf-nim)
     runs-on: macos-latest
@@ -110,23 +106,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install "pydantic>=2.0" skilz pytest
+      - name: Install dependencies
+        run: scripts/ci/install-deps.sh
 
       - name: Compile native Nim binary
-        run: |
-          mkdir -p bin
-          nim c -d:release -o:bin/locutus src/locutus.nim
-          ./bin/locutus --help
+        run: scripts/ci/build.sh
 
       - name: Run test suite
         env:
           LOCUTUS_REDIS_URL: redis://127.0.0.1:6379
-        run: |
-          python -m pytest -v -m "not llm"
+        run: scripts/ci/test.sh
 
+  # NOTE: The Windows leg is GitHub-Actions-only because the self-hosted
+  # Forgejo runner is Linux/Podman-only; no private Windows runner capacity exists.
   test-windows:
     name: Tests (Windows / setup-nimble-action)
     runs-on: windows-latest

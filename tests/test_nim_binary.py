@@ -39,18 +39,37 @@ class TestLocutusNimBinary(unittest.TestCase):
         cmd_env["PYTHONUTF8"] = "1"
         if env_overrides:
             cmd_env.update(env_overrides)
-        res = subprocess.run(
-            [BIN_PATH] + args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=cmd_env,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            timeout=15,
-        )
-        return res
+        import tempfile
+        temp_files = []
+        clean_args = []
+        for arg in args:
+            if isinstance(arg, str) and len(arg) > 120000:
+                tf = tempfile.NamedTemporaryFile(delete=False, prefix="locutus_large_arg_")
+                tf.write(arg.encode("utf-8"))
+                tf.close()
+                temp_files.append(tf.name)
+                clean_args.append(f"@{tf.name}")
+            else:
+                clean_args.append(arg)
+        try:
+            res = subprocess.run(
+                [BIN_PATH] + clean_args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=cmd_env,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return res
+        finally:
+            for tf_name in temp_files:
+                try:
+                    os.unlink(tf_name)
+                except OSError:
+                    pass
 
     def test_01_help_and_get_secret(self):
         # 1. Verify --help output, exit code, and exhaustive subcommand manifest

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  test-linux:
+    name: Test (Linux / Nim ${{ matrix.nim_version }})
+    runs-on: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        nim_version: ["2.2.10", "2.2.0"]
+    container:
+      image: nimlang/nim:${{ matrix.nim_version }}
+    steps:
+      - name: Check out repository
+        run: |
+          git init .
+          git remote add origin "https://${{ github.actor }}:${{ github.token }}@git.axiomantic.dev/${{ github.repository }}.git"
+          git fetch --depth 1 origin "${{ github.sha }}"
+          git checkout FETCH_HEAD
+
+      - name: Install dependencies
+        run: scripts/ci/install-deps.sh
+
+      - name: Compile native Nim binary
+        run: scripts/ci/build.sh
+
+      - name: Run test suite
+        run: scripts/ci/test.sh

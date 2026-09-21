@@ -43,9 +43,17 @@ python3 -m unittest discover tests
 3. **EVALSHA Caching**:
    - All Lua scripts in `scripts/` are embedded at compile-time into `src/locutus.nim` and cached using Redis `EVALSHA` with automatic `EVAL` fallback.
 
+## Continuous Integration & Dual-CI Architecture
+
+Locutus uses a dual-CI architecture with shared execution scripts:
+- **Shared CI Scripts**: Build and test logic lives in `scripts/ci/` (`install-deps.sh`, `build.sh`, `test.sh`). These scripts can be run directly by developers locally from any terminal.
+- **Forgejo Actions (`.forgejo/workflows/ci.yml`)**: Covers Linux builds and test suite matrices against multiple Nim versions on the self-hosted Linux (Podman-backed) runner.
+- **GitHub Actions (`.github/workflows/ci.yml`)**: Preserves macOS (`macos-latest`) and Windows (`windows-latest`) platform verification legs where private runner capacity is not available, as well as release packaging.
+
 ## Pull Request Process
 
 1. Fork the repo and create a topic branch from `main`.
-2. Ensure all 32 unit tests pass: `python3 -m unittest discover tests`.
-3. If modifying `scripts/*.lua`, remember to recompile `bin/locutus` (`nim c -d:release -o:bin/locutus src/locutus.nim`).
+2. Ensure all unit and integration tests pass: `./scripts/ci/test.sh` (or `pytest`).
+3. If modifying `scripts/*.lua`, recompile `bin/locutus` (`./scripts/ci/build.sh`).
 4. Submit a Pull Request describing your changes, motivation, and test evidence.
+
