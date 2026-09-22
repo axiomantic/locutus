@@ -54,17 +54,19 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if command -v uv >/dev/null 2>&1; then
   echo "Using uv to install Python dependencies..."
-  uv pip install --system -e . 2>/dev/null || uv pip install -e .
+  uv pip install --system -e . "skilz>=0.1.0" 2>/dev/null || uv pip install -e . "skilz>=0.1.0" 2>/dev/null || uv pip install --system -e . 2>/dev/null || uv pip install -e .
 elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/pip" ]; then
   echo "Using active virtualenv pip..."
   "${VIRTUAL_ENV}/bin/pip" install --upgrade pip
-  "${VIRTUAL_ENV}/bin/pip" install -e .
+  "${VIRTUAL_ENV}/bin/pip" install -e . "skilz>=0.1.0" 2>/dev/null || "${VIRTUAL_ENV}/bin/pip" install -e .
 elif command -v pip3 >/dev/null 2>&1; then
   echo "Using pip3..."
-  pip3 install --break-system-packages -e . 2>/dev/null || pip3 install -e .
+  pip3 install --upgrade pip 2>/dev/null || true
+  pip3 install --break-system-packages -e . "skilz>=0.1.0" 2>/dev/null || pip3 install -e . "skilz>=0.1.0" 2>/dev/null || pip3 install --break-system-packages -e . 2>/dev/null || pip3 install -e .
 elif command -v pip >/dev/null 2>&1; then
   echo "Using pip..."
-  pip install --break-system-packages -e . 2>/dev/null || pip install -e .
+  pip install --upgrade pip 2>/dev/null || true
+  pip install --break-system-packages -e . "skilz>=0.1.0" 2>/dev/null || pip install -e . "skilz>=0.1.0" 2>/dev/null || pip install --break-system-packages -e . 2>/dev/null || pip install -e .
 else
   echo "Warning: pip not found. Ensure python packages are installed."
 fi

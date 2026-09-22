@@ -18,6 +18,10 @@ else
 fi
 
 echo "=== Verifying compiled binary ==="
-"./${OUT_DIR}/locutus" --version || "./${OUT_DIR}/locutus" --help >/dev/null
-
-echo "=== Build succeeded: ${OUT_DIR}/locutus ==="
+if [ -f "./${OUT_DIR}/locutus.exe" ]; then
+  "./${OUT_DIR}/locutus.exe" --version || "./${OUT_DIR}/locutus.exe" --help >/dev/null
+  echo "=== Build succeeded: ${OUT_DIR}/locutus.exe ==="
+else
+  "./${OUT_DIR}/locutus" --version || "./${OUT_DIR}/locutus" --help >/dev/null
+  echo "=== Build succeeded: ${OUT_DIR}/locutus ==="
+fi

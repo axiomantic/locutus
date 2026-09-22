@@ -39,6 +39,8 @@ if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ] && "${VIRTUAL
   PY_CMD="${VIRTUAL_ENV}/bin/python"
 elif [ -x ".venv/bin/python" ] && .venv/bin/python -c "" 2>/dev/null; then
   PY_CMD=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY_CMD="python3"
 elif command -v python >/dev/null 2>&1; then
   PY_CMD="python"
 fi
