@@ -1189,12 +1189,12 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
           let val = client.eval(claimLua, @[], @[cfg.prefix, queueName, workerName, $leaseSec, "3"])
           res = formatRedisValue(val)
         except CatchableError as e2:
-          if "Server closed connection" in e2.msg or "recv failed" in e2.msg:
-            if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
-              return
-            continue
-          res = e2.msg; exitCode = 1
-      elif "Server closed connection" in e.msg or "recv failed" in e.msg:
+          if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
+            return
+          continue
+      elif e of RedisResponseError:
+        res = e.msg; exitCode = 1
+      else:
         if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
           return
         if workerName.len > 0:
@@ -1204,8 +1204,6 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
           except CatchableError:
             discard
         continue
-      else:
-        res = e.msg; exitCode = 1
     except CatchableError as e:
       if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
         return

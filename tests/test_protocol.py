@@ -69,12 +69,12 @@ LUA_SWEEP = load_lua("sweep.lua")
 
 def run_redis(*args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=15)
+    res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()
 
 def run_eval(script, numkeys, *args):
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=15)
+    res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()
 
 

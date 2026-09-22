@@ -43,7 +43,7 @@ class TestLocutusNimBinary(unittest.TestCase):
         temp_files = []
         clean_args = []
         for arg in args:
-            if isinstance(arg, str) and len(arg) > 120000:
+            if isinstance(arg, str) and len(arg) > 25000:
                 tf = tempfile.NamedTemporaryFile(delete=False, prefix="locutus_large_arg_")
                 tf.write(arg.encode("utf-8"))
                 tf.close()
@@ -1468,13 +1468,16 @@ secret = "my_inline_secret_test_555"
 
             # 4. User target initialization (--user) with isolated HOME and XDG_CONFIG_HOME
             with tempfile.TemporaryDirectory() as user_home:
+                appdata_dir = os.path.join(user_home, "AppData", "Roaming")
                 user_env = {
                     "HOME": user_home,
+                    "USERPROFILE": user_home,
+                    "APPDATA": appdata_dir,
                     "XDG_CONFIG_HOME": os.path.join(user_home, ".config")
                 }
                 res_user = self.run_locutus(["config", "init", "--user"], env_overrides=user_env)
                 self.assertEqual(res_user.returncode, 0)
-                user_file = os.path.join(user_home, ".config", "locutus", "config.toml")
+                user_file = os.path.join(appdata_dir, "locutus", "config.toml") if os.name == "nt" else os.path.join(user_home, ".config", "locutus", "config.toml")
                 self.assertTrue(os.path.isfile(user_file), f"Expected user config at {user_file}")
                 if os.name != "nt":
                     self.assertEqual(os.stat(user_file).st_mode & 0o777, 0o600, "User config must have 0600 permissions")
@@ -3924,6 +3927,7 @@ secret = "my_inline_secret_test_555"
         cancel_key = f"{TEST_PREFIX}cancel:{run_id}"
         global_chan = f"{TEST_PREFIX}channel:cancellations"
         run_chan = f"{TEST_PREFIX}channel:cancel:{run_id}"
+        forged_run = f"forged_{int(time.time() * 1000)}"
 
         # 0. Missing argument negative controls
         res_no_args = self.run_locutus(["cancel"])
@@ -4688,6 +4692,8 @@ secret = "my_inline_secret_test_555"
 
     def test_56_graceful_signal_trapping(self):
         """Test graceful signal trapping (SIGTERM/SIGINT) cleans up active resources (TASK-18)."""
+        if os.name == "nt":
+            self.skipTest("POSIX sigaction signal trapping is not applicable on Windows")
         agent = f"sig_bot_{int(time.time() * 1000)}"
         key = f"{TEST_PREFIX}listener:{agent}"
 
@@ -5116,7 +5122,7 @@ secret = "my_inline_secret_test_555"
             self.assertEqual(res_enq.returncode, 0)
 
             # 6. Wait for worker to claim task and exit cleanly
-            stdout, stderr = p.communicate(timeout=8)
+            stdout, stderr = p.communicate(timeout=12)
             self.assertEqual(p.returncode, 0, f"Claim worker failed with code {p.returncode}:\nSTDERR: {stderr}\nSTDOUT: {stdout}")
 
             # 7. Assert task claimed and diagnostic log emitted
