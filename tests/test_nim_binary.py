@@ -3950,7 +3950,7 @@ secret = "my_inline_secret_test_555"
             self.assertEqual(res_chk_exit1.returncode, 1)
 
             # 3. Subscribe to Redis broadcast channels
-            r_sub = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+            r_sub = redis.Redis.from_url(REDIS_URL, decode_responses=True, protocol=2)
             p_sub = r_sub.pubsub()
             p_sub.subscribe(global_chan, run_chan)
             # Wait for subscription confirmation

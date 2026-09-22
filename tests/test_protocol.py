@@ -73,15 +73,23 @@ _protocol_redis_client = None
 def get_protocol_redis():
     global _protocol_redis_client
     if _protocol_redis_client is None:
-        _protocol_redis_client = redis.Redis.from_url(LOCUTUS_REDIS_URL, decode_responses=True)
+        _protocol_redis_client = redis.Redis.from_url(LOCUTUS_REDIS_URL, decode_responses=True, protocol=2)
     return _protocol_redis_client
 
 def run_redis(*args):
     if os.name == "nt":
         r = get_protocol_redis()
-        res = r.execute_command(*args)
+        try:
+            res = r.execute_command(*args)
+        except redis.exceptions.ResponseError as e:
+            msg = str(e.args[0])
+            if not msg.startswith("ERR"):
+                return f"(error) ERR {msg}"
+            return f"(error) {msg}"
         if res is None:
             return ""
+        if isinstance(res, bool):
+            return "1" if res else "0"
         if isinstance(res, (list, tuple, set)):
             return "\n".join(str(item) for item in res)
         return str(res).strip()
@@ -92,9 +100,17 @@ def run_redis(*args):
 def run_eval(script, numkeys, *args):
     if os.name == "nt":
         r = get_protocol_redis()
-        res = r.eval(script, numkeys, *args)
+        try:
+            res = r.eval(script, numkeys, *args)
+        except redis.exceptions.ResponseError as e:
+            msg = str(e.args[0])
+            if not msg.startswith("ERR"):
+                return f"(error) ERR {msg}"
+            return f"(error) {msg}"
         if res is None:
             return ""
+        if isinstance(res, bool):
+            return "1" if res else "0"
         if isinstance(res, (list, tuple)):
             return "\n".join(str(item) for item in res)
         return str(res).strip()
