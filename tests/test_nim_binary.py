@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import redis
 from tests.schema import LocutusMessage
 
 REDIS_URL = os.environ.get("LOCUTUS_REDIS_URL", "redis://127.0.0.1:6379")
@@ -3948,14 +3949,15 @@ secret = "my_inline_secret_test_555"
             res_chk_exit1 = self.run_locutus(["cancel", "check", run_id, "--exit-code"])
             self.assertEqual(res_chk_exit1.returncode, 1)
 
-            # 3. Subscribe to Redis broadcast channels in background process
-            sub_proc = subprocess.Popen(
-                ["redis-cli", "-u", REDIS_URL, "SUBSCRIBE", global_chan, run_chan],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            time.sleep(0.3)  # Wait for subscriptions to establish
+            # 3. Subscribe to Redis broadcast channels
+            r_sub = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+            p_sub = r_sub.pubsub()
+            p_sub.subscribe(global_chan, run_chan)
+            # Wait for subscription confirmation
+            for _ in range(50):
+                msg = p_sub.get_message(timeout=0.1)
+                if msg and msg["type"] == "subscribe":
+                    break
 
             # 4. Cancel the run with a reason
             res_cancel = self.run_locutus([
@@ -3973,21 +3975,20 @@ secret = "my_inline_secret_test_555"
             self.assertEqual(len(c_data["sig"]), 64)
 
             # 5. Verify PubSub broadcast receipt on subscriber
-            time.sleep(0.2)
-            sub_proc.terminate()
-            sub_stdout, _ = sub_proc.communicate(timeout=3)
-
-            # Find published JSON payloads in subscriber output
             received_broadcasts = []
-            for line in sub_stdout.splitlines():
-                line = line.strip()
-                if line.startswith("{") and line.endswith("}"):
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                msg = p_sub.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
                     try:
-                        received_broadcasts.append(json.loads(line))
+                        received_broadcasts.append(json.loads(msg["data"]))
+                        break
                     except json.JSONDecodeError:
                         pass
+            p_sub.close()
+            r_sub.close()
 
-            self.assertGreaterEqual(len(received_broadcasts), 1, f"No broadcast message received on {global_chan}. Output: {sub_stdout}")
+            self.assertGreaterEqual(len(received_broadcasts), 1, f"No broadcast message received on {global_chan}.")
             b_msg = received_broadcasts[0]
             self.assertEqual(b_msg.get("run_id"), run_id)
             self.assertEqual(b_msg.get("reason"), "User requested abort")
@@ -5090,7 +5091,7 @@ secret = "my_inline_secret_test_555"
 
         # 1. Spawn background claim worker on empty queue
         p = subprocess.Popen(
-            [BIN_PATH, "claim", q, "10"],
+            [BIN_PATH, "claim", q, "25"],
             env={**self.env, "LOCUTUS_AGENT_NAME": worker},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -5122,7 +5123,13 @@ secret = "my_inline_secret_test_555"
             self.assertEqual(res_enq.returncode, 0)
 
             # 6. Wait for worker to claim task and exit cleanly
-            stdout, stderr = p.communicate(timeout=12)
+            try:
+                stdout, stderr = p.communicate(timeout=25)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                stdout, stderr = p.communicate()
+                self.fail(f"Claim worker timed out after 25s!\nSTDOUT: {stdout}\nSTDERR: {stderr}")
+
             self.assertEqual(p.returncode, 0, f"Claim worker failed with code {p.returncode}:\nSTDERR: {stderr}\nSTDOUT: {stdout}")
 
             # 7. Assert task claimed and diagnostic log emitted

@@ -67,12 +67,37 @@ LUA_LEADER = load_lua("leader.lua")
 LUA_WORKFLOW = load_lua("workflow.lua")
 LUA_SWEEP = load_lua("sweep.lua")
 
+import redis
+_protocol_redis_client = None
+
+def get_protocol_redis():
+    global _protocol_redis_client
+    if _protocol_redis_client is None:
+        _protocol_redis_client = redis.Redis.from_url(LOCUTUS_REDIS_URL, decode_responses=True)
+    return _protocol_redis_client
+
 def run_redis(*args):
+    if os.name == "nt":
+        r = get_protocol_redis()
+        res = r.execute_command(*args)
+        if res is None:
+            return ""
+        if isinstance(res, (list, tuple, set)):
+            return "\n".join(str(item) for item in res)
+        return str(res).strip()
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL] + list(args)
     res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()
 
 def run_eval(script, numkeys, *args):
+    if os.name == "nt":
+        r = get_protocol_redis()
+        res = r.eval(script, numkeys, *args)
+        if res is None:
+            return ""
+        if isinstance(res, (list, tuple)):
+            return "\n".join(str(item) for item in res)
+        return str(res).strip()
     cmd = ["redis-cli", "-u", LOCUTUS_REDIS_URL, "EVAL", script, str(numkeys)] + list(args)
     res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", check=True, stdin=subprocess.DEVNULL, timeout=15)
     return res.stdout.strip()

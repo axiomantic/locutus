@@ -1197,6 +1197,7 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
       else:
         if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
           return
+        backoffMs = 250
         if workerName.len > 0:
           try:
             discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
@@ -1207,6 +1208,7 @@ proc doClaim*(cfg: LocutusConfig, queueName: string, timeoutSec: int = -1, lease
     except CatchableError as e:
       if not reconnectRedisClientMs(cfg.redisUrl, client, remainingMs, isForever):
         return
+      backoffMs = 250
       if workerName.len > 0:
         try:
           discard client.setEx(cfg.prefix & "heartbeat:" & workerName, hbTtl, "1")
