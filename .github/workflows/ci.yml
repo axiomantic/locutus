@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-linux:
-    name: Tests (Ubuntu / asdf-nim)
+    name: Tests (Ubuntu / vfox-nim)
     runs-on: ubuntu-latest
 
     services:
@@ -31,24 +31,21 @@ jobs:
           sudo apt-get install -y redis-tools
           redis-cli ping
 
-      - name: Setup asdf
-        uses: asdf-vm/actions/setup@v3
+      - name: Set up Nim via mise (vfox-nim)
+        uses: jdx/mise-action@v4
         with:
-          asdf_branch: v0.14.1
-
-      - name: Install Nim via asdf-nim
-        run: |
-          . "$HOME/.asdf/asdf.sh"
-          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
-          asdf install nim 2.2.0
-          asdf global nim 2.2.0
-          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
-          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+          tool_versions: |
+            vfox:elijahr/vfox-nim 2.2.0
+          cache: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify Nim compiler
         run: |
           which nim
           nim -v
+          which nimble
+          nimble -v
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,7 +66,7 @@ jobs:
   # NOTE: The macOS leg is GitHub-Actions-only because the self-hosted
   # Forgejo runner is Linux/Podman-only; no private macOS runner capacity exists.
   test-macos:
-    name: Tests (macOS / asdf-nim)
+    name: Tests (macOS / vfox-nim)
     runs-on: macos-latest
 
     steps:
@@ -82,24 +79,21 @@ jobs:
           sleep 2
           redis-cli ping
 
-      - name: Setup asdf
-        uses: asdf-vm/actions/setup@v3
+      - name: Set up Nim via mise (vfox-nim)
+        uses: jdx/mise-action@v4
         with:
-          asdf_branch: v0.14.1
-
-      - name: Install Nim via asdf-nim
-        run: |
-          . "$HOME/.asdf/asdf.sh"
-          asdf plugin add nim https://github.com/asdf-community/asdf-nim.git
-          asdf install nim 2.2.0
-          asdf global nim 2.2.0
-          echo "$HOME/.asdf/shims" >> $GITHUB_PATH
-          echo "$HOME/.asdf/bin" >> $GITHUB_PATH
+          tool_versions: |
+            vfox:elijahr/vfox-nim 2.2.0
+          cache: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify Nim compiler
         run: |
           which nim
           nim -v
+          which nimble
+          nimble -v
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -120,7 +114,7 @@ jobs:
   # NOTE: The Windows leg is GitHub-Actions-only because the self-hosted
   # Forgejo runner is Linux/Podman-only; no private Windows runner capacity exists.
   test-windows:
-    name: Tests (Windows / setup-nimble-action)
+    name: Tests (Windows / vfox-nim)
     runs-on: windows-latest
 
     steps:
@@ -136,16 +130,25 @@ jobs:
           Start-Sleep -Seconds 2
           & "C:\redis\redis-cli.exe" ping
 
-      - name: Set up Nim compiler
-        uses: jiro4989/setup-nim-action@v2
+      - name: Set up Nim via mise (vfox-nim)
+        uses: jdx/mise-action@v4
         with:
-          nim-version: '2.2.0'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool_versions: |
+            vfox:elijahr/vfox-nim 2.2.0
+          cache: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up official Nimble & DLLs
-        uses: nim-lang/setup-nimble-action@v1
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # Windows requires runtime DLLs for HTTPS and SSL support in Nimble
+      - name: Install Nim Windows runtime DLLs
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest https://nim-lang.org/download/dlls.zip -OutFile dlls.zip
+          Expand-Archive dlls.zip -DestinationPath "$env:GITHUB_WORKSPACE\nim-dlls" -Force
+          Add-Content $env:GITHUB_PATH "$env:GITHUB_WORKSPACE\nim-dlls"
+          Invoke-WebRequest https://curl.se/ca/cacert.pem -OutFile "$env:GITHUB_WORKSPACE\cacert.pem"
+          Add-Content $env:GITHUB_ENV "SSL_CERT_FILE=$env:GITHUB_WORKSPACE\cacert.pem"
 
       - name: Verify Nim and Nimble
         shell: bash
