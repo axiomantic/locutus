@@ -46,6 +46,10 @@ elif command -v python >/dev/null 2>&1; then
 fi
 
 echo "=== Running Locutus pytest suite with ${PY_CMD} ==="
-"${PY_CMD}" -m pytest -v -m "not llm" "${@}"
+if [ "$#" -gt 0 ]; then
+  "${PY_CMD}" -m pytest -v -m "not llm" "$@"
+else
+  "${PY_CMD}" -m pytest -v -m "not llm"
+fi
 
 echo "=== All Locutus test checks passed! ==="
