@@ -8,6 +8,8 @@ import std/[
 ]
 when defined(posix):
   import posix
+elif defined(windows):
+  import std/osproc
 import config, redis, std/[net, asyncdispatch]
 
 proc isPidAlive*(pid: int): bool =
