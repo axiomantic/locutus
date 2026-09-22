@@ -9,7 +9,7 @@ binDir        = "bin"
 
 # Dependencies
 requires "nim >= 2.0.0"
-requires "https://github.com/elijahr/redis.git#a9ce032da61508f5af655856459047bed21cf4d6"
+requires "https://github.com/elijahr/redis.git#feat/timeouts-and-reconnect"
 
 task test, "Run test suite":
   exec "uv run pytest -q"
